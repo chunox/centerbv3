@@ -39,7 +39,9 @@ uvicorn app.main:app --reload --port 8000
 | `GET /api/v1/auth/me` | Usuario + orgs (Bearer) |
 | `GET /api/v1/auth/onboarding-status` | ¿Necesita onboarding? |
 
-Las mutaciones de dominio siguen usando `actor_user_id` en body; el listado de proyectos acepta JWT sin `user_id` en query.
+Las mutaciones de dominio siguen usando `actor_user_id` en body; con JWT válido debe coincidir con `sub` del token en rutas endurecidas (`perform_feature_action`, `POST .../members`). El listado de proyectos acepta JWT sin `user_id` en query.
+
+**Portfolio PM:** `GET /api/v1/projects/pm-portfolio?organization_id=` — agregado multi-proyecto para la vista PM global del frontend.
 
 ## Hitos — orden
 
@@ -69,7 +71,7 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/central_v3
 pytest -q
 ```
 
-73 tests (suite completa). Smoke en vivo: `scripts/qa_live_smoke.py`.
+88 tests (suite completa; incl. `test_pm_portfolio`, `test_deletions`, `test_comments_thread`). Smoke en vivo: `scripts/qa_live_smoke.py`.
 
 **Datos demo (reinicio completo):**
 
