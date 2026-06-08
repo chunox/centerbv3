@@ -1,3 +1,13 @@
+"""
+Aplicación FastAPI — Center v3 backend.
+
+Arranque:
+- Migraciones Alembic al importar (database_migrations)
+- Scheduler de jobs (sync estados de hitos)
+- CORS según settings.cors_origin_list (frontend Vite en :5173)
+
+API REST bajo /api/v1. Health en /health.
+"""
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI

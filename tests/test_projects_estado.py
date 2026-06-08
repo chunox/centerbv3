@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database import Base
 from app.models.entities import Project, ProjectMember, User
 from app.services.projects import apply_project_estado_action
+from tests.org_helpers import create_organization
 
 
 @pytest.fixture
@@ -30,7 +31,9 @@ def _seed(session: Session):
     session.add(
         User(id=pm_id, nombre="PM", email="pm@est.test", password_hash="x")
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="P",
         tipo="interno",

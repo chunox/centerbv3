@@ -1,3 +1,4 @@
+"""Engine SQLAlchemy + sesión. SQLite con foreign_keys=ON en cada conexión."""
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 

@@ -16,6 +16,7 @@ from app.schemas.projects import ProjectUpdate
 from app.services.features import update_feature
 from app.services.milestones import update_milestone
 from app.services.projects import apply_project_estado_action, update_project
+from tests.org_helpers import create_organization
 
 
 @pytest.fixture
@@ -35,7 +36,9 @@ def _seed_project(session: Session):
     session.add(
         User(id=pm_id, nombre="PM", email="pm@patch.test", password_hash="x")
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="Original",
         descripcion="Desc",

@@ -12,6 +12,7 @@ MemberRol = Literal["cliente", "pm", "dev", "qa"]
 
 
 class ProjectCreate(BaseModel):
+    organization_id: UUID
     nombre: str = Field(min_length=1, max_length=150)
     descripcion: str | None = None
     tipo: ProjectTipo = "con_cliente"
@@ -37,6 +38,7 @@ class ProjectUpdate(BaseModel):
 
 class ProjectRead(BaseModel):
     id: UUID
+    organization_id: UUID
     nombre: str
     descripcion: str | None
     tipo: ProjectTipo

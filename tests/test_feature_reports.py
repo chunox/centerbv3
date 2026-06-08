@@ -23,6 +23,7 @@ from app.models.entities import (
     User,
 )
 from app.services.feature_reports import apply_report_action
+from tests.org_helpers import create_organization
 
 
 @pytest.fixture
@@ -55,7 +56,9 @@ def _seed_con_cliente(session: Session, *, fecha_fin_milestone: date):
             ),
         ]
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="CC",
         tipo="con_cliente",

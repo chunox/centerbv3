@@ -1,3 +1,11 @@
+"""
+Modelos SQLAlchemy — schema v8 (organizaciones + dominio PM).
+
+Relaciones principales:
+  User ↔ OrganizationMember ↔ Organization
+  Organization → Project → Milestone → Feature → Task
+  ProjectMember: rol por proyecto (pm/dev/qa/cliente), independiente de org
+"""
 from __future__ import annotations
 
 import uuid
@@ -74,9 +82,100 @@ class User(Base):
     notifications: Mapped[list[Notification]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    organization_memberships: Mapped[list[OrganizationMember]] = relationship(
+        back_populates="user"
+    )
+    organization_invites_created: Mapped[list[OrganizationInvite]] = relationship(
+        back_populates="creator"
+    )
+
+
+# ── SaaS: organización como tenant superior a proyectos ──────────────────
+
+class Organization(Base):
+    """Espacio de trabajo del equipo (multi-org por usuario)."""
+    __tablename__ = "organizations"
+    __table_args__ = (
+        CheckConstraint(
+            "estado IN ('activa', 'suspendida')", name="chk_organizations_estado"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    nombre: Mapped[str] = mapped_column(String(150), nullable=False)
+    slug: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="activa")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+    members: Mapped[list[OrganizationMember]] = relationship(
+        back_populates="organization", cascade="all, delete-orphan"
+    )
+    invites: Mapped[list[OrganizationInvite]] = relationship(
+        back_populates="organization", cascade="all, delete-orphan"
+    )
+    projects: Mapped[list[Project]] = relationship(back_populates="organization")
+
+
+class OrganizationMember(Base):
+    """Membresía org: owner/admin ven todos los proyectos; member necesita project_member."""
+    __tablename__ = "organization_members"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "user_id", name="uq_organization_member"),
+        CheckConstraint(
+            "rol IN ('owner', 'admin', 'member')", name="chk_organization_member_rol"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    rol: Mapped[str] = mapped_column(String(20), nullable=False)
+    joined_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    organization: Mapped[Organization] = relationship(back_populates="members")
+    user: Mapped[User] = relationship(back_populates="organization_memberships")
+
+
+class OrganizationInvite(Base):
+    __tablename__ = "organization_invites"
+    __table_args__ = (
+        CheckConstraint(
+            "rol IN ('admin', 'member')", name="chk_organization_invite_rol"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    rol: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
+    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    organization: Mapped[Organization] = relationship(back_populates="invites")
+    creator: Mapped[User] = relationship(back_populates="organization_invites_created")
 
 
 class Project(Base):
+    """Proyecto acotado a una organization_id (obligatorio desde schema v8)."""
     __tablename__ = "projects"
     __table_args__ = (
         CheckConstraint("fecha_fin >= fecha_inicio", name="chk_project_fechas"),
@@ -91,6 +190,9 @@ class Project(Base):
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="activo")
     fecha_inicio: Mapped[date] = mapped_column(Date, nullable=False)
     fecha_fin: Mapped[date] = mapped_column(Date, nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+    )
     created_by: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -99,6 +201,7 @@ class Project(Base):
         DateTime, default=_utcnow, onupdate=_utcnow
     )
 
+    organization: Mapped[Organization] = relationship(back_populates="projects")
     creator: Mapped[User] = relationship(back_populates="projects_created")
     members: Mapped[list[ProjectMember]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
@@ -121,6 +224,7 @@ class Project(Base):
 
 
 class ProjectMember(Base):
+    """Acceso por proyecto; un cliente puede ser member sin OrganizationMember (guest)."""
     __tablename__ = "project_members"
     __table_args__ = (
         UniqueConstraint("project_id", "user_id", "rol", name="uq_project_member"),

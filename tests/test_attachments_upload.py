@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import Base, get_db
 from app.main import app
 from app.models.entities import Feature, Milestone, Project, ProjectMember, User
+from tests.org_helpers import create_organization
 
 
 def _session():
@@ -30,7 +31,9 @@ def _seed(session: Session):
     session.add(
         User(id=pm_id, nombre="PM", email="pm@up.test", password_hash="x")
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="P",
         tipo="interno",

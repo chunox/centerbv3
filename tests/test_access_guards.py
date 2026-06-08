@@ -23,6 +23,7 @@ from app.models.entities import (
     User,
 )
 from app.services.features import apply_feature_action, ensure_default_task
+from tests.org_helpers import create_organization
 
 
 def _seed_task_transitions(session: Session) -> None:
@@ -81,7 +82,9 @@ def _seed_interno_blocked(session: Session):
             User(id=qa_id, nombre="QA", email="qa@guard.test", password_hash="x"),
         ]
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="Guard",
         tipo="interno",
@@ -172,7 +175,9 @@ def test_create_milestone_en_proyecto_cerrado_falla(
     db_session.add(
         User(id=pm_id, nombre="PM", email="pm@closed.test", password_hash="x")
     )
+    org = create_organization(db_session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="Cerrado",
         tipo="interno",
@@ -210,7 +215,9 @@ def test_create_feature_sin_rol_pm_falla(db_session: Session, api_client: TestCl
             User(id=dev_id, nombre="Dev", email="dev@feat.test", password_hash="x"),
         ]
     )
+    org = create_organization(db_session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="P",
         tipo="interno",
@@ -266,7 +273,9 @@ def test_reporte_solo_cliente(db_session: Session, api_client: TestClient):
             ),
         ]
     )
+    org = create_organization(db_session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="CC",
         tipo="con_cliente",
@@ -346,7 +355,9 @@ def test_adjunto_patch_solo_autor_o_pm(db_session: Session, api_client: TestClie
             ),
         ]
     )
+    org = create_organization(db_session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="P",
         tipo="interno",

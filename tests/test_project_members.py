@@ -15,6 +15,7 @@ from app.main import app
 from app.models.entities import Project, ProjectMember, User
 from app.schemas.projects import ProjectMemberUpdate
 from app.services.project_members import remove_project_member, update_project_member_role
+from tests.org_helpers import create_organization
 
 
 @pytest.fixture
@@ -53,7 +54,9 @@ def _seed(session: Session):
             User(id=dev_id, nombre="Dev", email="dev@mem.test", password_hash="x"),
         ]
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="P",
         tipo="interno",

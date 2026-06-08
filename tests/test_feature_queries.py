@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database import Base
 from app.models.entities import Feature, FeatureQuery, Milestone, Project, ProjectMember, User
 from app.services.feature_queries import apply_query_action, sync_feature_bloqueada
+from tests.org_helpers import create_organization
 
 
 @pytest.fixture
@@ -51,7 +52,9 @@ def _seed_con_cliente(session: Session):
             ),
         ]
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="P",
         tipo="con_cliente",
@@ -225,7 +228,9 @@ def test_interno_pm_self_block(db_session: Session):
     db_session.add(
         User(id=pm_id, nombre="PM", email="pm2@test.com", password_hash="x")
     )
+    org = create_organization(db_session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="Interno",
         tipo="interno",

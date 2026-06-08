@@ -1,3 +1,9 @@
+"""
+Registro de auditoría por proyecto.
+
+GET filtra por viewer_rol (pm/dev/qa/cliente) según entidades visibles para cada rol.
+Usado por la vista Actividad del frontend PM.
+"""
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query

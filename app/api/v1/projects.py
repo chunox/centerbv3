@@ -1,3 +1,13 @@
+"""
+API de proyectos y sub-recursos anidados (hitos, features, inbox, timeline…).
+
+Listado con tres modos (query params):
+- guest=true: project_member sin organization_member (clientes invitados)
+- organization_id: proyectos de la org (requiere membership)
+- user_id solo: todos los proyectos donde es project_member
+
+Crear proyecto exige rol owner/admin en la org (require_org_admin).
+"""
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -5,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth_deps import AuthContext, get_optional_auth
 from app.api.v1.deps import get_project_or_404
 from app.api.v1 import audit_logs as audit_logs_routes
 from app.api.v1 import document_exposures as document_exposures_routes
@@ -14,7 +25,13 @@ from app.api.v1 import feature_reports as feature_reports_routes
 from app.api.v1 import milestones as milestones_routes
 from app.api.v1 import timeline as timeline_routes
 from app.database import get_db
-from app.models.entities import Project, ProjectMember, User
+from app.models.entities import Organization, Project, ProjectMember, User
+from app.services.organizations import (
+    list_guest_projects,
+    list_org_projects,
+    require_org_admin,
+    user_has_project_access,
+)
 from app.schemas.projects import (
     ProjectCreate,
     ProjectEstadoAction,
@@ -42,21 +59,57 @@ router.include_router(feature_reports_routes.inbox_router)
 router.include_router(timeline_routes.router)
 
 
+def _resolve_list_user_id(
+    user_id: UUID | None,
+    auth: AuthContext | None,
+) -> UUID:
+    if user_id is not None:
+        return user_id
+    if auth is not None:
+        return auth.user.id
+    raise HTTPException(
+        status_code=401,
+        detail="Se requiere autenticación JWT o user_id en query",
+    )
+
+
 @router.get("", response_model=list[ProjectRead])
 def list_projects(
     user_id: UUID | None = Query(
         default=None,
-        description="Filtra proyectos donde el usuario es miembro (demo sin JWT)",
+        description="Opcional con JWT; si falta, se usa el usuario del token",
     ),
+    organization_id: UUID | None = Query(
+        default=None,
+        description="Proyectos de la organización activa",
+    ),
+    guest: bool = Query(
+        default=False,
+        description="Proyectos invitados (project_member sin organization_member)",
+    ),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    auth: AuthContext | None = Depends(get_optional_auth),
     db: Session = Depends(get_db),
 ):
+    effective_user_id = _resolve_list_user_id(user_id, auth)
+
+    # Modo invitado: acceso por project_members sin pertenecer a la org del proyecto.
+    if guest:
+        projects = list_guest_projects(db, effective_user_id)
+        return projects[offset : offset + limit]
+
+    if organization_id is not None:
+        projects = list_org_projects(db, organization_id, effective_user_id)
+        return projects[offset : offset + limit]
+
     stmt = select(Project).order_by(Project.created_at.desc())
-    if user_id is not None:
-        stmt = (
-            stmt.join(ProjectMember, ProjectMember.project_id == Project.id)
-            .where(ProjectMember.user_id == user_id)
-            .distinct()
-        )
+    stmt = (
+        stmt.join(ProjectMember, ProjectMember.project_id == Project.id)
+        .where(ProjectMember.user_id == effective_user_id)
+        .distinct()
+    )
+    stmt = stmt.offset(offset).limit(limit)
     return list(db.scalars(stmt))
 
 
@@ -65,6 +118,11 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
     creator = db.get(User, payload.created_by)
     if not creator:
         raise HTTPException(status_code=404, detail="Usuario creador no encontrado")
+
+    org = db.get(Organization, payload.organization_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organización no encontrada")
+    require_org_admin(db, payload.organization_id, payload.created_by)
 
     project = Project(**payload.model_dump())
     db.add(project)
@@ -82,8 +140,15 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{project_id}", response_model=ProjectRead)
-def get_project(project_id: UUID, db: Session = Depends(get_db)):
-    return get_project_or_404(project_id, db)
+def get_project(
+    project_id: UUID,
+    user_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    project = get_project_or_404(project_id, db)
+    if user_id is not None and not user_has_project_access(db, project, user_id):
+        raise HTTPException(status_code=403, detail="Sin acceso al proyecto")
+    return project
 
 
 @router.patch("/{project_id}", response_model=ProjectRead)

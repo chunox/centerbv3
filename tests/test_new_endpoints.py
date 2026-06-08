@@ -21,6 +21,7 @@ from app.models.entities import (
     Task,
     User,
 )
+from tests.org_helpers import create_organization
 
 
 @pytest.fixture
@@ -66,7 +67,9 @@ def _seed_kanban(session: Session):
             ),
         ]
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="P",
         tipo="interno",
@@ -164,8 +167,10 @@ def test_pm_no_puede_crear_tarea(db_session: Session, api_client: TestClient):
 
 def test_list_projects_filtrado_por_miembro(db_session: Session, api_client: TestClient):
     project, _, _, _, _, dev_id, _ = _seed_kanban(db_session)
+    other_org = create_organization(db_session, owner_id=dev_id)
     other = Project(
         id=uuid4(),
+        organization_id=other_org.id,
         nombre="Otro",
         tipo="interno",
         estado="activo",

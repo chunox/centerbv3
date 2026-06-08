@@ -21,6 +21,7 @@ from app.models.entities import (
 )
 from app.services.access import assert_member_has_role, assert_project_active
 from app.services.audit import record_audit_log
+from app.services.milestones import compact_milestone_ordenes
 
 
 def _delete_polymorphic_for_ids(
@@ -113,6 +114,7 @@ def delete_milestone(
         accion="deleted",
     )
     db.delete(milestone)
+    compact_milestone_ordenes(db, project.id)
 
 
 def delete_project(

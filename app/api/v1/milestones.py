@@ -1,3 +1,4 @@
+"""Hitos de proyecto. Crear hito exige project_member con rol pm (assert_member_has_role)."""
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,7 +18,11 @@ from app.schemas.milestones import (
 )
 from app.services.access import assert_member_has_role, assert_project_active
 from app.services.deletions import delete_milestone
-from app.services.milestones import cancel_milestone_cascade, update_milestone
+from app.services.milestones import (
+    cancel_milestone_cascade,
+    next_milestone_orden,
+    update_milestone,
+)
 
 router = APIRouter(tags=["milestones"])
 router.include_router(features_routes.router)
@@ -45,7 +50,9 @@ def create_milestone(
         raise HTTPException(status_code=404, detail="Usuario creador no encontrado")
     assert_member_has_role(db, project_id, payload.created_by, "pm")
 
-    milestone = Milestone(project_id=project_id, **payload.model_dump())
+    data = payload.model_dump()
+    data["orden"] = next_milestone_orden(db, project_id)
+    milestone = Milestone(project_id=project_id, **data)
     db.add(milestone)
     try:
         db.commit()

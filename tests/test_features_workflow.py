@@ -25,6 +25,7 @@ from app.services.features import (
     uat_gate_status,
 )
 from app.services.tasks import move_task
+from tests.org_helpers import create_organization
 
 
 def _seed_task_transitions(session: Session) -> None:
@@ -71,7 +72,9 @@ def _seed_project(session: Session):
             User(id=qa_id, nombre="QA", email="qa@wf.test", password_hash="x"),
         ]
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="WF",
         tipo="interno",

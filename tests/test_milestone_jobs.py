@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database import Base
 from app.models.entities import Feature, Milestone, Project, ProjectMember, User
 from app.services.milestones import sync_all_milestone_states
+from tests.org_helpers import create_organization
 
 
 def test_bug_fuera_de_plazo_marca_cerrado_con_bug():
@@ -20,7 +21,9 @@ def test_bug_fuera_de_plazo_marca_cerrado_con_bug():
     session.add(
         User(id=pm_id, nombre="PM", email="pm@job.test", password_hash="x")
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="P",
         tipo="interno",

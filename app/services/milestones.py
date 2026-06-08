@@ -6,7 +6,7 @@ import uuid
 from datetime import date
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import Feature, Milestone, Project
@@ -24,6 +24,68 @@ WORK_ACTIVE_FEATURE = frozenset(
     }
 )
 TERMINAL_FEATURE = frozenset({"completado", "cancelado"})
+
+
+def _ordered_milestones(db: Session, project_id: uuid.UUID) -> list[Milestone]:
+    return list(
+        db.scalars(
+            select(Milestone)
+            .where(Milestone.project_id == project_id)
+            .order_by(Milestone.orden.asc(), Milestone.created_at.asc())
+        )
+    )
+
+
+def compact_milestone_ordenes(db: Session, project_id: uuid.UUID) -> None:
+    """Renumerar hitos 1..N tras borrados o datos legacy con huecos."""
+    for index, milestone in enumerate(_ordered_milestones(db, project_id), start=1):
+        if milestone.orden != index:
+            milestone.orden = index
+
+
+def next_milestone_orden(db: Session, project_id: uuid.UUID) -> int:
+    count = db.scalar(
+        select(func.count())
+        .select_from(Milestone)
+        .where(Milestone.project_id == project_id)
+    )
+    return int(count or 0) + 1
+
+
+def reorder_milestone(
+    db: Session,
+    project_id: uuid.UUID,
+    milestone_id: uuid.UUID,
+    target_orden: int,
+    *,
+    actor_user_id: uuid.UUID,
+) -> None:
+    rows = _ordered_milestones(db, project_id)
+    moving = next((m for m in rows if m.id == milestone_id), None)
+    if moving is None:
+        return
+
+    previous = moving.orden
+    remaining = [m for m in rows if m.id != milestone_id]
+    slot = max(1, min(target_orden, len(remaining) + 1))
+    remaining.insert(slot - 1, moving)
+
+    for index, milestone in enumerate(remaining, start=1):
+        if milestone.orden == index:
+            continue
+        milestone.orden = index
+        if milestone.id == moving.id:
+            record_audit_log(
+                db,
+                project_id=project_id,
+                user_id=actor_user_id,
+                entidad_tipo="milestone",
+                entidad_id=milestone.id,
+                accion="updated",
+                campo="orden",
+                valor_anterior=str(previous),
+                valor_nuevo=str(index),
+            )
 
 
 def sync_milestone_state(
@@ -106,6 +168,7 @@ def update_milestone(
         )
 
     fecha_changed = "fecha_inicio" in changes or "fecha_fin" in changes
+    new_orden = changes.pop("orden", None)
 
     for field, nuevo in changes.items():
         anterior = getattr(milestone, field)
@@ -123,6 +186,15 @@ def update_milestone(
             campo=field,
             valor_anterior=str(anterior),
             valor_nuevo=str(nuevo),
+        )
+
+    if new_orden is not None and new_orden != milestone.orden:
+        reorder_milestone(
+            db,
+            project.id,
+            milestone.id,
+            new_orden,
+            actor_user_id=payload.actor_user_id,
         )
 
     if fecha_changed:

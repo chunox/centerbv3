@@ -21,6 +21,7 @@ from app.models.entities import (
 )
 from app.services.audit import record_audit_log
 from app.services.timeline import build_project_timeline
+from tests.org_helpers import create_organization
 
 
 def _session():
@@ -38,7 +39,9 @@ def _seed(session: Session):
     session.add(
         User(id=pm_id, nombre="PM", email="pm@tl.test", password_hash="x")
     )
+    org = create_organization(session, owner_id=pm_id)
     project = Project(
+        organization_id=org.id,
         id=uuid4(),
         nombre="P",
         tipo="interno",
