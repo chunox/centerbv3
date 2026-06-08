@@ -7,7 +7,16 @@ import uuid
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.entities import Comment, Project, User
+from sqlalchemy import select
+
+from app.models.entities import (
+    Comment,
+    FeatureQuery,
+    FeatureReport,
+    Project,
+    ProjectMember,
+    User,
+)
 from app.schemas.comments import CommentCreate
 from app.services.access import (
     assert_member_of_project,
@@ -17,6 +26,64 @@ from app.services.access import (
 )
 from app.services.audit import record_audit_log
 from app.services.notifications import create_notification
+
+CLIENTE_QUERY_STATES = frozenset({"esperando_cliente", "respuesta_cliente"})
+
+
+def _notify_thread_participants(
+    db: Session,
+    *,
+    project: Project,
+    author_id: uuid.UUID,
+    entidad_tipo: str,
+    entidad_id: uuid.UUID,
+    mentioned_ids: set[uuid.UUID],
+) -> None:
+    if entidad_tipo not in ("feature_query", "feature_report"):
+        return
+
+    recipients: set[uuid.UUID] = set(
+        db.scalars(
+            select(ProjectMember.user_id).where(
+                ProjectMember.project_id == project.id,
+                ProjectMember.rol == "pm",
+            )
+        )
+    )
+
+    if entidad_tipo == "feature_report":
+        report = db.get(FeatureReport, entidad_id)
+        if report:
+            recipients.add(report.reported_by)
+    else:
+        query = db.get(FeatureQuery, entidad_id)
+        if query:
+            recipients.add(query.created_by)
+            if (
+                project.tipo == "con_cliente"
+                and query.estado in CLIENTE_QUERY_STATES
+            ):
+                recipients.update(
+                    db.scalars(
+                        select(ProjectMember.user_id).where(
+                            ProjectMember.project_id == project.id,
+                            ProjectMember.rol == "cliente",
+                        )
+                    )
+                )
+
+    recipients.discard(author_id)
+    recipients -= mentioned_ids
+
+    for user_id in recipients:
+        create_notification(
+            db,
+            user_id=user_id,
+            project_id=project.id,
+            tipo="comentario_nuevo",
+            entidad_tipo=entidad_tipo,  # type: ignore[arg-type]
+            entidad_id=entidad_id,
+        )
 
 
 def create_comment(
@@ -48,6 +115,8 @@ def create_comment(
         entidad_tipo="comment",
         entidad_id=comment.id,
         accion="created",
+        campo=payload.entidad_tipo,
+        valor_nuevo=str(payload.entidad_id),
     )
 
     notif_entidad_map = {
@@ -56,9 +125,11 @@ def create_comment(
         "feature_query": "feature_query",
         "feature_report": "feature_report",
     }
+    mentioned_ids: set[uuid.UUID] = set()
     for mentioned_id in parse_mention_user_ids(payload.contenido):
         if mentioned_id == payload.user_id:
             continue
+        mentioned_ids.add(mentioned_id)
         assert_member_of_project(db, project_id, mentioned_id)
         create_notification(
             db,
@@ -68,5 +139,14 @@ def create_comment(
             entidad_tipo=notif_entidad_map[payload.entidad_tipo],  # type: ignore[arg-type]
             entidad_id=payload.entidad_id,
         )
+
+    _notify_thread_participants(
+        db,
+        project=project,
+        author_id=payload.user_id,
+        entidad_tipo=payload.entidad_tipo,
+        entidad_id=payload.entidad_id,
+        mentioned_ids=mentioned_ids,
+    )
 
     return comment

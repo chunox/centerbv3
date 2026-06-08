@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import Project, ProjectMember
 from app.schemas.projects import ProjectMemberCreate, ProjectMemberUpdate
-from app.services.access import assert_member_has_role, assert_project_active
+from app.services.access import (
+    assert_member_has_role,
+    assert_pm_or_org_admin_of_project,
+    assert_project_active,
+)
 from app.services.audit import record_audit_log
 
 
@@ -20,7 +24,7 @@ def add_project_member(
     payload: ProjectMemberCreate,
 ) -> ProjectMember:
     assert_project_active(project)
-    assert_member_has_role(db, project.id, payload.actor_user_id, "pm")
+    assert_pm_or_org_admin_of_project(db, project, payload.actor_user_id)
 
     member = ProjectMember(
         project_id=project.id,

@@ -27,6 +27,7 @@ NotificationTipo = Literal[
     "feature_desbloqueada",
     "reporte_recibido",
     "reporte_resuelto",
+    "comentario_nuevo",
 ]
 NotificationEntidadTipo = Literal["feature", "tarea", "feature_query", "feature_report"]
 
@@ -64,6 +65,7 @@ TITULO_POR_TIPO: dict[str, str] = {
     "feature_desbloqueada": "Feature desbloqueada",
     "reporte_recibido": "Nuevo reporte",
     "reporte_resuelto": "Reporte resuelto",
+    "comentario_nuevo": "Nuevo comentario",
 }
 
 
@@ -105,7 +107,7 @@ def _actor_nombre_for_notification(
             user = db.get(User, report.reported_by)
             return user.nombre if user else None
 
-    if notification.tipo == "mencionado":
+    if notification.tipo in ("mencionado", "comentario_nuevo"):
         log = db.scalar(
             select(AuditLog)
             .where(
@@ -170,6 +172,7 @@ def _build_notification_mensaje(
         "feature_desbloqueada": f"{actor} desbloqueó la feature «{entity}»{project}",
         "reporte_recibido": f"{actor} envió un reporte sobre «{entity}»{project}",
         "reporte_resuelto": f"{actor} resolvió el reporte «{entity}»{project}",
+        "comentario_nuevo": f"{actor} comentó en «{entity}»{project}",
     }
     return mensajes.get(tipo, f"{actor} · {entity}{project}")
 

@@ -58,6 +58,31 @@ def assert_project_active(project: Project) -> None:
         )
 
 
+def assert_pm_or_org_admin_of_project(
+    db: Session,
+    project: Project,
+    user_id: uuid.UUID,
+) -> None:
+    """PM del proyecto u owner/admin de la org pueden gestionar el proyecto."""
+    from app.services.organizations import ORG_ADMIN_ROLES, get_org_member
+
+    is_pm = db.scalar(
+        select(
+            exists().where(
+                ProjectMember.project_id == project.id,
+                ProjectMember.user_id == user_id,
+                ProjectMember.rol == "pm",
+            )
+        )
+    )
+    if is_pm:
+        return
+    org_member = get_org_member(db, project.organization_id, user_id)
+    if org_member and org_member.rol in ORG_ADMIN_ROLES:
+        return
+    assert_member_has_role(db, project.id, user_id, "pm")
+
+
 def assert_member_has_role(
     db: Session,
     project_id: uuid.UUID,
