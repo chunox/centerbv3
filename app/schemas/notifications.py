@@ -32,5 +32,6 @@ class NotificationRead(BaseModel):
     mensaje: str | None = None
     entidad_nombre: str | None = None
     project_nombre: str | None = None
+    actor_nombre: str | None = None
 
     model_config = {"from_attributes": True}

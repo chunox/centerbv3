@@ -1,15 +1,19 @@
 import uuid
+from datetime import timedelta
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.entities import (
+    AuditLog,
     Feature,
     FeatureQuery,
     FeatureReport,
     Notification,
     Project,
     Task,
+    User,
 )
 
 NotificationTipo = Literal[
@@ -87,6 +91,89 @@ def _entity_display_name(
     return None
 
 
+def _actor_nombre_for_notification(
+    db: Session,
+    notification: Notification,
+) -> str | None:
+    window = timedelta(seconds=10)
+    t0 = notification.created_at - window
+    t1 = notification.created_at + timedelta(seconds=2)
+
+    if notification.tipo == "reporte_recibido":
+        report = db.get(FeatureReport, notification.entidad_id)
+        if report:
+            user = db.get(User, report.reported_by)
+            return user.nombre if user else None
+
+    if notification.tipo == "mencionado":
+        log = db.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.project_id == notification.project_id,
+                AuditLog.entidad_tipo == "comment",
+                AuditLog.accion == "created",
+                AuditLog.user_id != notification.user_id,
+                AuditLog.created_at >= t0,
+                AuditLog.created_at <= t1,
+            )
+            .order_by(AuditLog.created_at.desc())
+            .limit(1)
+        )
+        if log:
+            user = db.get(User, log.user_id)
+            return user.nombre if user else None
+
+    log = db.scalar(
+        select(AuditLog)
+        .where(
+            AuditLog.project_id == notification.project_id,
+            AuditLog.entidad_tipo == notification.entidad_tipo,
+            AuditLog.entidad_id == notification.entidad_id,
+            AuditLog.created_at >= t0,
+            AuditLog.created_at <= t1,
+        )
+        .order_by(AuditLog.created_at.desc())
+        .limit(1)
+    )
+    if log:
+        user = db.get(User, log.user_id)
+        return user.nombre if user else None
+
+    if notification.entidad_tipo == "feature_query":
+        query = db.get(FeatureQuery, notification.entidad_id)
+        if query:
+            user = db.get(User, query.created_by)
+            return user.nombre if user else None
+
+    return None
+
+
+def _build_notification_mensaje(
+    *,
+    tipo: str,
+    actor_nombre: str | None,
+    entidad_nombre: str | None,
+    project_nombre: str | None,
+) -> str:
+    actor = actor_nombre or "Alguien"
+    entity = entidad_nombre or "un elemento"
+    project = f" en {project_nombre}" if project_nombre else ""
+
+    mensajes: dict[str, str] = {
+        "estado_changed": f"{actor} cambió el estado de la tarea «{entity}»{project}",
+        "asignado": f"{actor} te asignó la tarea «{entity}»{project}",
+        "mencionado": f"{actor} te mencionó en «{entity}»{project}",
+        "query_creada": f"{actor} creó la consulta «{entity}»{project}",
+        "query_pendiente_aprobacion": f"{actor} envió la consulta «{entity}» para tu aprobación{project}",
+        "query_respondida": f"{actor} respondió la consulta «{entity}»{project}",
+        "feature_bloqueada": f"{actor} bloqueó la feature «{entity}»{project}",
+        "feature_desbloqueada": f"{actor} desbloqueó la feature «{entity}»{project}",
+        "reporte_recibido": f"{actor} envió un reporte sobre «{entity}»{project}",
+        "reporte_resuelto": f"{actor} resolvió el reporte «{entity}»{project}",
+    }
+    return mensajes.get(tipo, f"{actor} · {entity}{project}")
+
+
 def notification_display(
     db: Session,
     notification: Notification,
@@ -97,13 +184,13 @@ def notification_display(
     )
     titulo = TITULO_POR_TIPO.get(notification.tipo, notification.tipo)
     project_nombre = project.nombre if project else None
-
-    mensaje_parts: list[str] = []
-    if entidad_nombre:
-        mensaje_parts.append(entidad_nombre)
-    if project_nombre:
-        mensaje_parts.append(project_nombre)
-    mensaje = " · ".join(mensaje_parts) if mensaje_parts else titulo
+    actor_nombre = _actor_nombre_for_notification(db, notification)
+    mensaje = _build_notification_mensaje(
+        tipo=notification.tipo,
+        actor_nombre=actor_nombre,
+        entidad_nombre=entidad_nombre,
+        project_nombre=project_nombre,
+    )
 
     return {
         "id": notification.id,
@@ -118,4 +205,5 @@ def notification_display(
         "mensaje": mensaje,
         "entidad_nombre": entidad_nombre,
         "project_nombre": project_nombre,
+        "actor_nombre": actor_nombre,
     }

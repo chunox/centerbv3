@@ -15,7 +15,7 @@ from app.models.entities import (
     Project,
     Task,
 )
-from app.schemas.audit_logs import AuditLogRead
+from app.services.audit_display import audit_logs_to_read
 from app.schemas.feature_queries import FeatureQueryRead
 from app.schemas.feature_reports import FeatureReportRead
 from app.schemas.project_bundle import (
@@ -144,6 +144,6 @@ def build_project_bundle(
         feature_context=feature_context,
         reports=enriched_reports,
         queries=enriched_queries,
-        audit_logs=[AuditLogRead.model_validate(log) for log in audit_logs],
+        audit_logs=audit_logs_to_read(db, audit_logs),
         inbox_action_count=inbox_action_count,
     )

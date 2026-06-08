@@ -36,6 +36,7 @@ from app.services.organizations import (
     require_org_admin,
     user_has_project_access,
 )
+from app.schemas.pm_portfolio import PmPortfolioRead
 from app.schemas.project_bundle import ProjectBundleRead
 from app.schemas.projects import (
     MemberRol,
@@ -47,6 +48,7 @@ from app.schemas.projects import (
     ProjectRead,
     ProjectUpdate,
 )
+from app.services.pm_portfolio import build_pm_portfolio
 from app.services.project_bundle import build_project_bundle
 from app.services.deletions import delete_project
 from app.services.project_members import (
@@ -118,6 +120,16 @@ def list_projects(
     )
     stmt = stmt.offset(offset).limit(limit)
     return list(db.scalars(stmt))
+
+
+@router.get("/pm-portfolio", response_model=PmPortfolioRead)
+def get_pm_portfolio(
+    organization_id: UUID,
+    auth: AuthContext | None = Depends(get_optional_auth),
+    db: Session = Depends(get_db),
+):
+    user_id = _resolve_list_user_id(None, auth)
+    return build_pm_portfolio(db, organization_id, user_id)
 
 
 @router.post("", response_model=ProjectRead, status_code=201)

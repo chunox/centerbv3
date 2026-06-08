@@ -24,6 +24,7 @@ from app.models.entities import (
     User,
 )
 from app.schemas.audit_logs import AuditLogCreate, AuditLogRead
+from app.services.audit_display import audit_log_to_read, audit_logs_to_read
 from app.schemas.projects import MemberRol
 from app.services.access import filter_audit_logs_for_viewer
 from app.services.audit import AuditEntidadTipo, record_audit_log
@@ -107,12 +108,13 @@ def list_audit_logs(
         stmt = stmt.where(AuditLog.user_id == user_id)
     stmt = stmt.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
     logs = list(db.scalars(stmt))
-    return filter_audit_logs_for_viewer(
+    visible = filter_audit_logs_for_viewer(
         db,
         logs,
         viewer_user_id=viewer_user_id,
         viewer_rol=viewer_rol,
     )
+    return audit_logs_to_read(db, visible)
 
 
 @router.post("/{project_id}/audit-logs", response_model=AuditLogRead, status_code=201)
@@ -143,7 +145,7 @@ def create_audit_log(
     )
     db.commit()
     db.refresh(entry)
-    return entry
+    return audit_log_to_read(db, entry)
 
 
 @router.get("/{project_id}/audit-logs/{log_id}", response_model=AuditLogRead)
@@ -166,4 +168,4 @@ def get_audit_log(
     )
     if not visible:
         raise HTTPException(status_code=403, detail="Sin permiso para ver este registro")
-    return visible[0]
+    return audit_log_to_read(db, visible[0])
