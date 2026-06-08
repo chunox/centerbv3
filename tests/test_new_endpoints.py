@@ -214,6 +214,8 @@ def test_comentario_mencion_notifica(db_session: Session, api_client: TestClient
 
 
 def test_patch_y_delete_user(db_session: Session, api_client: TestClient):
+    from app.services.auth_tokens import create_access_token
+
     user_id = uuid4()
     db_session.add(
         User(
@@ -225,9 +227,11 @@ def test_patch_y_delete_user(db_session: Session, api_client: TestClient):
     )
     db_session.commit()
 
+    token = create_access_token(user_id=user_id)
     response = api_client.patch(
         f"/api/v1/users/{user_id}",
         json={"nombre": "Actualizado"},
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
     assert response.json()["nombre"] == "Actualizado"

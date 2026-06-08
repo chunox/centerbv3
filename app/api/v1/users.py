@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth_deps import AuthContext, get_current_auth
 from app.api.v1 import notifications as notifications_routes
 from app.database import get_db
 from app.models.entities import User
@@ -49,8 +50,12 @@ def get_user(user_id: UUID, db: Session = Depends(get_db)):
 def patch_user(
     user_id: UUID,
     payload: UserUpdate,
+    auth: AuthContext = Depends(get_current_auth),
     db: Session = Depends(get_db),
 ):
+    if auth.user.id != user_id:
+        raise HTTPException(status_code=403, detail="Solo podés editar tu propio perfil")
+
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")

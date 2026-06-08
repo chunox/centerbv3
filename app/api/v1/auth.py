@@ -23,7 +23,7 @@ from app.schemas.auth import (
 )
 from app.schemas.organizations import OrganizationRead
 from app.schemas.users import UserRead
-from app.security import hash_password, verify_password
+from app.security import hash_password, needs_rehash, verify_password
 from app.services.auth_tokens import create_access_token
 from app.services.organizations import (
     list_guest_projects,
@@ -74,6 +74,10 @@ def login(payload: AuthLogin, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.email == payload.email.lower().strip()))
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
+    if needs_rehash(user.password_hash):
+        user.password_hash = hash_password(payload.password)
+        db.commit()
+        db.refresh(user)
     return _token_response(db, user)
 
 

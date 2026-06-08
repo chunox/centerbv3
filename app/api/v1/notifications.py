@@ -62,6 +62,8 @@ def list_notifications(
     user_id: UUID,
     leida: bool | None = Query(default=None),
     project_id: UUID | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
     _get_user_or_404(user_id, db)
@@ -70,7 +72,9 @@ def list_notifications(
         stmt = stmt.where(Notification.leida == leida)
     if project_id is not None:
         stmt = stmt.where(Notification.project_id == project_id)
-    stmt = stmt.order_by(Notification.created_at.desc())
+    stmt = (
+        stmt.order_by(Notification.created_at.desc()).offset(offset).limit(limit)
+    )
     return list(db.scalars(stmt))
 
 

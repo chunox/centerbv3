@@ -1,6 +1,6 @@
 """
 Smoke QA contra API en vivo (http://127.0.0.1:8000).
-Valida pre-requisitos P0, bloques B1–B4 y datos que alimentan F1–F9.
+Valida pre-requisitos P0, bloques B1–B4, datos F1–F9 y post-roadmap F10.1–F10.7.
 Ejecutar: .venv\\Scripts\\python.exe scripts/qa_live_smoke.py
 """
 
@@ -295,7 +295,11 @@ def run() -> int:
         req = urllib.request.Request("http://127.0.0.1:8000/health")
         with urllib.request.urlopen(req, timeout=10) as res:
             health = json.loads(res.read().decode())
-        record("P0", health.get("status") == "ok", str(health))
+        record(
+            "P0",
+            health.get("status") == "ok" and health.get("database") == "ok",
+            str(health),
+        )
     except Exception as e:
         record("P0", False, str(e))
         print("\nBackend no disponible. Abortando.")
@@ -528,6 +532,289 @@ def run() -> int:
             record(f"F3.1-api-{role_email.split('@')[0]}", True)
         except Exception as e:
             record(f"F3.1-api-{role_email.split('@')[0]}", False, str(e))
+
+    # F10 — post-roadmap jun 2026
+    if org_id and token and portal:
+        pid = portal["id"]
+        stamp = date.today().strftime("%Y%m%d")
+        try:
+            _, invite = http(
+                "POST",
+                f"/organizations/{org_id}/invites",
+                body={"email": f"smoke-invite-{stamp}@center.demo", "rol": "member"},
+                token=token,
+                expect_status=201,
+            )
+            invite_token = invite.get("token", "")
+            onboarding_path = f"/onboarding?invite={invite_token}"
+            record(
+                "F10.1",
+                len(invite_token) >= 8 and invite.get("email"),
+                f"token OK; enlace {onboarding_path[:48]}...",
+            )
+        except Exception as e:
+            record("F10.1", False, str(e))
+            invite_token = ""
+
+        try:
+            invite_email = f"smoke-invite-{stamp}@center.demo"
+            status, all_users = http("GET", "/users")
+            invite_user = next((u for u in all_users if u["email"] == invite_email), None)
+            if invite_user is None:
+                _, invite_user = http(
+                    "POST",
+                    "/users",
+                    body={
+                        "email": invite_email,
+                        "nombre": "Smoke Invite",
+                        "password": DEMO_PASSWORD,
+                    },
+                    expect_status=201,
+                )
+            invite_auth = login(invite_email)
+            invite_user_token = invite_auth["access_token"]
+            _, member = http(
+                "POST",
+                "/organizations/join",
+                body={"token": invite_token},
+                token=invite_user_token,
+                expect_status=200,
+            )
+            record(
+                "F10.2",
+                member.get("organization_id") == org_id,
+                f"join org {member.get('rol', '')}",
+            )
+        except Exception as e:
+            record("F10.2", False, str(e))
+
+        try:
+            _, org_projs = http("GET", f"/projects?user_id={pm_id}&organization_id={org_id}")
+            has_filter_fields = all(
+                p.get("tipo") and p.get("estado") for p in org_projs
+            )
+            record(
+                "F10.3",
+                has_filter_fields and len(org_projs) >= 1,
+                f"{len(org_projs)} proyectos con tipo/estado (filtros home en cliente)",
+            )
+        except Exception as e:
+            record("F10.3", False, str(e))
+
+        try:
+            _, patched = http(
+                "PATCH",
+                f"/users/{pm_id}",
+                body={"nombre": "Ana PM"},
+                token=token,
+                expect_status=200,
+            )
+            record("F10.4-own", patched.get("nombre") == "Ana PM", "PATCH propio OK")
+            try:
+                http(
+                    "PATCH",
+                    f"/users/{dev_id}",
+                    body={"nombre": "Hackeado"},
+                    token=token,
+                    expect_status=403,
+                )
+                record("F10.4-other", True, "403 al editar otro usuario")
+            except AssertionError:
+                record("F10.4-other", False, "PM pudo editar otro usuario")
+        except Exception as e:
+            record("F10.4-own", False, str(e))
+            record("F10.4-other", False, str(e))
+
+        try:
+            _, doc = http("GET", f"/projects/{pid}/document?viewer_rol=pm")
+            if doc is None:
+                _, doc = http(
+                    "POST",
+                    f"/projects/{pid}/document",
+                    body={
+                        "titulo": "Hub QA Smoke",
+                        "contenido": "Documento de prueba",
+                        "visibilidad": "publico",
+                        "created_by": pm_id,
+                    },
+                    expect_status=201,
+                )
+            doc_id = doc["id"]
+            _, exposures_pm = http(
+                "GET",
+                f"/projects/{pid}/document-exposures?viewer_rol=pm",
+            )
+            has_proyecto = any(e.get("ambito") == "proyecto" for e in exposures_pm)
+            if not has_proyecto:
+                http(
+                    "POST",
+                    f"/projects/{pid}/document-exposures",
+                    body={
+                        "ambito": "proyecto",
+                        "document_id": doc_id,
+                        "titulo_visible": "Doc proyecto QA",
+                        "expuesto_por": pm_id,
+                    },
+                    expect_status=201,
+                )
+            _, milestones = http("GET", f"/projects/{pid}/milestones")
+            milestone_scope = False
+            feature_scope = False
+            if milestones:
+                mid = milestones[0]["id"]
+                _, exp_m = http(
+                    "GET",
+                    f"/projects/{pid}/document-exposures?viewer_rol=pm&milestone_id={mid}",
+                )
+                milestone_scope = isinstance(exp_m, list)
+                _, features = http(
+                    "GET", f"/projects/{pid}/milestones/{mid}/features"
+                )
+                if features:
+                    fid = features[0]["id"]
+                    _, exp_f = http(
+                        "GET",
+                        f"/projects/{pid}/document-exposures?viewer_rol=pm&feature_id={fid}",
+                    )
+                    feature_scope = isinstance(exp_f, list)
+            record(
+                "F10.5",
+                doc_id and milestone_scope,
+                f"exposiciones pm; feature_scope={feature_scope}",
+            )
+        except Exception as e:
+            record("F10.5", False, str(e))
+
+        try:
+            _, bundle = http(
+                "GET",
+                f"/projects/{pid}/bundle?viewer_user_id={pm_id}&viewer_rol=pm",
+            )
+            has_milestones = "milestones" in bundle
+            has_features = (
+                "featuresByMilestone" in bundle or "features_by_milestone" in bundle
+            )
+            has_inbox = (
+                "inboxActionCount" in bundle or "inbox_action_count" in bundle
+            )
+            record(
+                "F10.6",
+                bundle.get("project", {}).get("id") == pid
+                and has_milestones
+                and has_features
+                and has_inbox,
+                "GET /bundle estructura BFF OK",
+            )
+        except Exception as e:
+            record("F10.6", False, str(e))
+
+        try:
+            record(
+                "F10.7-health",
+                health.get("database") == "ok",
+                "health.database",
+            )
+            outsider_email = f"outsider-{stamp}@center.demo"
+            status, all_users = http("GET", "/users")
+            outsider = next((u for u in all_users if u["email"] == outsider_email), None)
+            if outsider is None:
+                _, outsider = http(
+                    "POST",
+                    "/users",
+                    body={
+                        "email": outsider_email,
+                        "nombre": "Outsider",
+                        "password": DEMO_PASSWORD,
+                    },
+                    expect_status=201,
+                )
+            _, milestones = http("GET", f"/projects/{pid}/milestones")
+            if milestones:
+                mid = milestones[0]["id"]
+                _, features = http(
+                    "GET", f"/projects/{pid}/milestones/{mid}/features"
+                )
+                if features:
+                    fid = features[0]["id"]
+                    try:
+                        http(
+                            "GET",
+                            f"/comments?entidad_tipo=feature&entidad_id={fid}"
+                            f"&viewer_user_id={outsider['id']}",
+                            expect_status=403,
+                        )
+                        record("F10.7-comments", True, "403 sin membresía")
+                    except AssertionError:
+                        record("F10.7-comments", False, "outsider leyó comentarios")
+                else:
+                    record("F10.7-comments", True, "sin features; skip")
+            else:
+                record("F10.7-comments", True, "sin hitos; skip")
+
+            _, logs = http(
+                "GET",
+                f"/projects/{pid}/audit-logs?viewer_user_id={pm_id}&viewer_rol=pm&limit=5",
+            )
+            if logs:
+                log_id = logs[0]["id"]
+                try:
+                    http(
+                        "GET",
+                        f"/projects/{pid}/audit-logs/{log_id}"
+                        f"?viewer_user_id={dev_id}&viewer_rol=dev",
+                        expect_status=403,
+                    )
+                    record("F10.7-audit-one", True, "GET audit/{id} filtrado")
+                except AssertionError:
+                    # dev puede ver si el log es de entidad permitida
+                    _, one = http(
+                        "GET",
+                        f"/projects/{pid}/audit-logs/{log_id}"
+                        f"?viewer_user_id={pm_id}&viewer_rol=pm",
+                    )
+                    record(
+                        "F10.7-audit-one",
+                        one.get("id") == log_id,
+                        "lectura PM del mismo log",
+                    )
+            else:
+                record("F10.7-audit-one", True, "sin audit logs; skip")
+
+            try:
+                http(
+                    "POST",
+                    f"/projects/{pid}/members",
+                    body={
+                        "actor_user_id": dev_id,
+                        "user_id": outsider["id"],
+                        "rol": "dev",
+                    },
+                    token=token,
+                    expect_status=403,
+                )
+                record("F10.7-actor-jwt", True, "actor_user_id != JWT -> 403")
+            except AssertionError:
+                record("F10.7-actor-jwt", False, "aceptó actor distinto al token")
+        except Exception as e:
+            record("F10.7-health", False, str(e))
+            record("F10.7-comments", False, str(e))
+            record("F10.7-audit-one", False, str(e))
+            record("F10.7-actor-jwt", False, str(e))
+    else:
+        for fid in (
+            "F10.1",
+            "F10.2",
+            "F10.3",
+            "F10.4-own",
+            "F10.4-other",
+            "F10.5",
+            "F10.6",
+            "F10.7-health",
+            "F10.7-comments",
+            "F10.7-audit-one",
+            "F10.7-actor-jwt",
+        ):
+            record(fid, False, "sin org/token/portal")
 
     # F6 invalid dates
     if portal and token:

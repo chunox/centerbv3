@@ -13,8 +13,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from sqlalchemy import text
+
 from app.api.v1.router import api_router
 from app.config import settings
+from app.database import engine
 from app.database_migrations import run_migrations
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.schemas.health import HealthResponse
@@ -49,7 +52,14 @@ app.include_router(api_router)
 
 @app.get("/health", response_model=HealthResponse)
 def health():
-    return HealthResponse(status="ok", version="3.0.0")
+    db_status = "ok"
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception:
+        db_status = "error"
+    status = "ok" if db_status == "ok" else "degraded"
+    return HealthResponse(status=status, version="3.0.0", database=db_status)
 
 
 @app.get("/")

@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -37,6 +37,8 @@ def list_tasks(
     project_id: UUID,
     milestone_id: UUID,
     feature_id: UUID,
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
     get_feature_or_404(project_id, milestone_id, feature_id, db)
@@ -44,6 +46,8 @@ def list_tasks(
         select(Task)
         .where(Task.feature_id == feature_id)
         .order_by(Task.created_at.asc())
+        .offset(offset)
+        .limit(limit)
     )
     return list(db.scalars(stmt))
 

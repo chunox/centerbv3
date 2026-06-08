@@ -12,10 +12,11 @@ from app.schemas.document_exposures import (
     DocumentExposureRead,
     DocumentExposureUpdate,
 )
+from app.schemas.projects import MemberRol
+from app.services.access import list_exposures_for_viewer
 from app.services.document_exposures import (
     create_document_exposure,
     delete_document_exposure,
-    list_document_exposures,
     update_document_exposure,
 )
 
@@ -31,16 +32,21 @@ def list_project_document_exposures(
     ambito: DocumentExposureAmbito | None = Query(default=None),
     milestone_id: UUID | None = Query(default=None),
     feature_id: UUID | None = Query(default=None),
+    viewer_user_id: UUID | None = Query(default=None),
+    viewer_rol: MemberRol | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     get_project_or_404(project_id, db)
-    return list_document_exposures(
+    exposures = list_exposures_for_viewer(
         db,
         project_id,
-        ambito=ambito,
+        viewer_rol=viewer_rol,
         milestone_id=milestone_id,
         feature_id=feature_id,
     )
+    if ambito is not None:
+        exposures = [e for e in exposures if e.ambito == ambito]
+    return exposures
 
 
 @router.post(

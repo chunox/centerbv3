@@ -15,7 +15,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.v1.auth_deps import AuthContext, get_optional_auth
+from app.api.v1.auth_deps import (
+    AuthContext,
+    assert_actor_matches_token,
+    get_optional_auth,
+)
 from app.api.v1.deps import get_project_or_404
 from app.api.v1 import audit_logs as audit_logs_routes
 from app.api.v1 import document_exposures as document_exposures_routes
@@ -32,7 +36,9 @@ from app.services.organizations import (
     require_org_admin,
     user_has_project_access,
 )
+from app.schemas.project_bundle import ProjectBundleRead
 from app.schemas.projects import (
+    MemberRol,
     ProjectCreate,
     ProjectEstadoAction,
     ProjectMemberCreate,
@@ -41,6 +47,7 @@ from app.schemas.projects import (
     ProjectRead,
     ProjectUpdate,
 )
+from app.services.project_bundle import build_project_bundle
 from app.services.deletions import delete_project
 from app.services.project_members import (
     add_project_member,
@@ -151,6 +158,22 @@ def get_project(
     return project
 
 
+@router.get("/{project_id}/bundle", response_model=ProjectBundleRead)
+def get_project_bundle(
+    project_id: UUID,
+    viewer_user_id: UUID | None = Query(default=None),
+    viewer_rol: MemberRol | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    project = get_project_or_404(project_id, db)
+    return build_project_bundle(
+        db,
+        project,
+        viewer_user_id=viewer_user_id,
+        viewer_rol=viewer_rol,
+    )
+
+
 @router.patch("/{project_id}", response_model=ProjectRead)
 def patch_project(
     project_id: UUID,
@@ -220,8 +243,12 @@ def list_project_members(project_id: UUID, db: Session = Depends(get_db)):
     "/{project_id}/members", response_model=ProjectMemberRead, status_code=201
 )
 def add_project_member_endpoint(
-    project_id: UUID, payload: ProjectMemberCreate, db: Session = Depends(get_db)
+    project_id: UUID,
+    payload: ProjectMemberCreate,
+    auth: AuthContext | None = Depends(get_optional_auth),
+    db: Session = Depends(get_db),
 ):
+    assert_actor_matches_token(payload.actor_user_id, auth)
     project = get_project_or_404(project_id, db)
     user = db.get(User, payload.user_id)
     if not user:

@@ -93,6 +93,8 @@ def list_audit_logs(
         default=None,
         description="Rol demo del usuario que consulta",
     ),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
     get_project_or_404(project_id, db)
@@ -103,7 +105,7 @@ def list_audit_logs(
         stmt = stmt.where(AuditLog.entidad_id == entidad_id)
     if user_id is not None:
         stmt = stmt.where(AuditLog.user_id == user_id)
-    stmt = stmt.order_by(AuditLog.created_at.desc())
+    stmt = stmt.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
     logs = list(db.scalars(stmt))
     return filter_audit_logs_for_viewer(
         db,
@@ -146,10 +148,22 @@ def create_audit_log(
 
 @router.get("/{project_id}/audit-logs/{log_id}", response_model=AuditLogRead)
 def get_audit_log(
-    project_id: UUID, log_id: UUID, db: Session = Depends(get_db)
+    project_id: UUID,
+    log_id: UUID,
+    viewer_user_id: UUID | None = Query(default=None),
+    viewer_rol: MemberRol | None = Query(default=None),
+    db: Session = Depends(get_db),
 ):
     get_project_or_404(project_id, db)
     entry = db.get(AuditLog, log_id)
     if not entry or entry.project_id != project_id:
         raise HTTPException(status_code=404, detail="Registro de auditoría no encontrado")
-    return entry
+    visible = filter_audit_logs_for_viewer(
+        db,
+        [entry],
+        viewer_user_id=viewer_user_id,
+        viewer_rol=viewer_rol,
+    )
+    if not visible:
+        raise HTTPException(status_code=403, detail="Sin permiso para ver este registro")
+    return visible[0]

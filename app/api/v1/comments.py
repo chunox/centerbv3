@@ -13,6 +13,7 @@ from app.models.entities import (
     Task,
 )
 from app.schemas.comments import CommentCreate, CommentRead, EntidadTipo
+from app.services.access import assert_member_of_project
 from app.services.comments import create_comment as create_comment_service
 
 router = APIRouter(prefix="/comments", tags=["comments"])
@@ -25,22 +26,40 @@ _ENTITY_GETTERS: dict[EntidadTipo, type] = {
 }
 
 
-def _ensure_entidad_exists(entidad_tipo: EntidadTipo, entidad_id: UUID, db: Session) -> None:
+def _project_id_for_entidad(
+    entidad_tipo: EntidadTipo, entidad_id: UUID, db: Session
+) -> UUID:
     model = _ENTITY_GETTERS[entidad_tipo]
-    if not db.get(model, entidad_id):
+    row = db.get(model, entidad_id)
+    if not row:
         raise HTTPException(
             status_code=404,
             detail=f"No existe {entidad_tipo} con id {entidad_id}",
         )
+    if entidad_tipo == "feature":
+        return row.project_id
+    if entidad_tipo == "tarea":
+        return row.project_id
+    feature = db.get(Feature, row.feature_id)
+    if not feature:
+        raise HTTPException(status_code=404, detail="Feature no encontrada")
+    return feature.project_id
+
+
+def _ensure_entidad_exists(entidad_tipo: EntidadTipo, entidad_id: UUID, db: Session) -> UUID:
+    return _project_id_for_entidad(entidad_tipo, entidad_id, db)
 
 
 @router.get("", response_model=list[CommentRead])
 def list_comments(
     entidad_tipo: EntidadTipo = Query(...),
     entidad_id: UUID = Query(...),
+    viewer_user_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    _ensure_entidad_exists(entidad_tipo, entidad_id, db)
+    project_id = _ensure_entidad_exists(entidad_tipo, entidad_id, db)
+    if viewer_user_id is not None:
+        assert_member_of_project(db, project_id, viewer_user_id)
     stmt = (
         select(Comment)
         .where(
@@ -58,12 +77,4 @@ def create_comment(payload: CommentCreate, db: Session = Depends(get_db)):
     comment = create_comment_service(db, payload)
     db.commit()
     db.refresh(comment)
-    return comment
-
-
-@router.get("/{comment_id}", response_model=CommentRead)
-def get_comment(comment_id: UUID, db: Session = Depends(get_db)):
-    comment = db.get(Comment, comment_id)
-    if not comment:
-        raise HTTPException(status_code=404, detail="Comentario no encontrado")
     return comment

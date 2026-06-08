@@ -64,6 +64,20 @@ def get_current_user(auth: AuthContext = Depends(get_current_auth)) -> User:
     return auth.user
 
 
+def assert_actor_matches_token(
+    actor_user_id: UUID,
+    auth: AuthContext | None,
+) -> None:
+    """Con JWT válido, el actor del body debe coincidir con el usuario del token."""
+    if auth is None:
+        return
+    if auth.user.id != actor_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="actor_user_id no coincide con el usuario autenticado",
+        )
+
+
 def get_current_org_id(auth: AuthContext = Depends(get_current_auth)) -> UUID:
     if auth.organization_id is None:
         raise HTTPException(status_code=400, detail="No hay organización activa en la sesión")

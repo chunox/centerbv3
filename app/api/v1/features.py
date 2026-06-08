@@ -1,6 +1,8 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app.api.v1.auth_deps import AuthContext, assert_actor_matches_token, get_optional_auth
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -44,13 +46,19 @@ router.include_router(feature_queries_routes.router)
     response_model=list[FeatureRead],
 )
 def list_features(
-    project_id: UUID, milestone_id: UUID, db: Session = Depends(get_db)
+    project_id: UUID,
+    milestone_id: UUID,
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
 ):
     get_milestone_or_404(project_id, milestone_id, db)
     stmt = (
         select(Feature)
         .where(Feature.milestone_id == milestone_id)
         .order_by(Feature.created_at.asc())
+        .offset(offset)
+        .limit(limit)
     )
     return list(db.scalars(stmt))
 
@@ -199,8 +207,10 @@ def perform_feature_action(
     milestone_id: UUID,
     feature_id: UUID,
     payload: FeatureActionRequest,
+    auth: AuthContext | None = Depends(get_optional_auth),
     db: Session = Depends(get_db),
 ):
+    assert_actor_matches_token(payload.actor_user_id, auth)
     feature = get_feature_or_404(project_id, milestone_id, feature_id, db)
     project = get_project_or_404(project_id, db)
 
