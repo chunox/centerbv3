@@ -12,7 +12,11 @@ from app.schemas.notifications import (
     NotificationRead,
     NotificationUpdate,
 )
-from app.services.notifications import NotificationEntidadTipo, create_notification
+from app.services.notifications import (
+    NotificationEntidadTipo,
+    create_notification,
+    notification_display,
+)
 
 router = APIRouter(tags=["notifications"])
 
@@ -75,7 +79,8 @@ def list_notifications(
     stmt = (
         stmt.order_by(Notification.created_at.desc()).offset(offset).limit(limit)
     )
-    return list(db.scalars(stmt))
+    rows = list(db.scalars(stmt))
+    return [notification_display(db, row) for row in rows]
 
 
 @router.post("/{user_id}/notifications", response_model=NotificationRead, status_code=201)
@@ -100,7 +105,7 @@ def create_user_notification(
     )
     db.commit()
     db.refresh(notification)
-    return notification
+    return notification_display(db, notification)
 
 
 @router.get("/{user_id}/notifications/{notification_id}", response_model=NotificationRead)
@@ -111,7 +116,7 @@ def get_notification(
     notification = db.get(Notification, notification_id)
     if not notification or notification.user_id != user_id:
         raise HTTPException(status_code=404, detail="Notificación no encontrada")
-    return notification
+    return notification_display(db, notification)
 
 
 @router.patch("/{user_id}/notifications/{notification_id}", response_model=NotificationRead)
@@ -129,4 +134,4 @@ def update_notification(
     notification.leida = payload.leida
     db.commit()
     db.refresh(notification)
-    return notification
+    return notification_display(db, notification)

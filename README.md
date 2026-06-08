@@ -69,7 +69,24 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/central_v3
 pytest -q
 ```
 
-70 tests (suite completa). Smoke en vivo: `scripts/qa_live_smoke.py`.
+73 tests (suite completa). Smoke en vivo: `scripts/qa_live_smoke.py`.
+
+**Datos demo (reinicio completo):**
+
+```powershell
+.\.venv\Scripts\python.exe scripts/reset_and_seed_demo.py
+```
+
+Crea 5 usuarios `*@center.demo` (password `demo12345`), org Center Demo y 4 proyectos:
+
+| Proyecto | Tipo | Contenido destacado |
+| -------- | ---- | ------------------- |
+| Portal Cliente Demo | con_cliente | 3 hitos (1 cancelado), inbox, 2 reportes, hub, Kanban denso |
+| Sprint Interno | interno | 2 sprints, UAT, consultas, doc interno |
+| App Móvil Retail | con_cliente | Catálogo en UAT, exposición por feature |
+| Migración Legacy | interno | Proyecto **cerrado** (lectura only) |
+
+Si `v3.db` está bloqueado por uvicorn, el script vacía tablas sin detener el servidor.
 
 ## Estructura
 

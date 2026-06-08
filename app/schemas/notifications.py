@@ -28,5 +28,9 @@ class NotificationRead(BaseModel):
     entidad_id: UUID
     leida: bool
     created_at: datetime
+    titulo: str | None = None
+    mensaje: str | None = None
+    entidad_nombre: str | None = None
+    project_nombre: str | None = None
 
     model_config = {"from_attributes": True}
