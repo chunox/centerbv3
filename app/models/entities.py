@@ -88,6 +88,9 @@ class User(Base):
     organization_invites_created: Mapped[list[OrganizationInvite]] = relationship(
         back_populates="creator"
     )
+    password_reset_tokens: Mapped[list[PasswordResetToken]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 # ── SaaS: organización como tenant superior a proyectos ──────────────────
@@ -172,6 +175,23 @@ class OrganizationInvite(Base):
 
     organization: Mapped[Organization] = relationship(back_populates="invites")
     creator: Mapped[User] = relationship(back_populates="organization_invites_created")
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="password_reset_tokens")
 
 
 class Project(Base):

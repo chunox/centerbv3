@@ -16,8 +16,11 @@ from app.api.v1.auth_deps import AuthContext, get_current_auth, get_optional_aut
 from app.database import get_db
 from app.models.entities import User
 from app.schemas.auth import (
+    AuthForgotPassword,
     AuthLogin,
+    AuthMessageResponse,
     AuthRegister,
+    AuthResetPassword,
     AuthSwitchOrganization,
     AuthTokenResponse,
 )
@@ -29,6 +32,10 @@ from app.services.organizations import (
     list_guest_projects,
     list_user_organizations,
     require_org_member,
+)
+from app.services.password_reset import (
+    request_password_reset,
+    reset_password_with_token,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -114,3 +121,17 @@ def onboarding_status(
         "has_guest_projects": len(guests) > 0,
         "needs_onboarding": len(orgs) == 0 and len(guests) == 0,
     }
+
+
+@router.post("/forgot-password", response_model=AuthMessageResponse)
+def forgot_password(payload: AuthForgotPassword, db: Session = Depends(get_db)):
+    message = request_password_reset(db, payload.email)
+    db.commit()
+    return AuthMessageResponse(message=message)
+
+
+@router.post("/reset-password", response_model=AuthMessageResponse)
+def reset_password(payload: AuthResetPassword, db: Session = Depends(get_db)):
+    reset_password_with_token(db, payload.token, payload.password)
+    db.commit()
+    return AuthMessageResponse(message="Contraseña actualizada. Ya podés iniciar sesión.")

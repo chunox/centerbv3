@@ -29,3 +29,16 @@ class AuthTokenResponse(BaseModel):
     user: UserRead
     organization_id: UUID | None = None
     organizations: list[OrganizationRead] = []
+
+
+class AuthForgotPassword(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+
+
+class AuthResetPassword(BaseModel):
+    token: str = Field(min_length=16, max_length=64)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class AuthMessageResponse(BaseModel):
+    message: str

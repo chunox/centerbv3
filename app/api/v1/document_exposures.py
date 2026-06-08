@@ -13,7 +13,7 @@ from app.schemas.document_exposures import (
     DocumentExposureUpdate,
 )
 from app.schemas.projects import MemberRol
-from app.services.access import list_exposures_for_viewer
+from app.services.access import assert_member_of_project, list_exposures_for_viewer
 from app.services.document_exposures import (
     create_document_exposure,
     delete_document_exposure,
@@ -37,6 +37,8 @@ def list_project_document_exposures(
     db: Session = Depends(get_db),
 ):
     get_project_or_404(project_id, db)
+    if viewer_user_id is not None:
+        assert_member_of_project(db, project_id, viewer_user_id)
     exposures = list_exposures_for_viewer(
         db,
         project_id,

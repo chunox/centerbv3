@@ -236,7 +236,10 @@ def test_patch_y_delete_user(db_session: Session, api_client: TestClient):
     assert response.status_code == 200
     assert response.json()["nombre"] == "Actualizado"
 
-    response = api_client.delete(f"/api/v1/users/{user_id}")
+    response = api_client.delete(
+        f"/api/v1/users/{user_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
     assert response.status_code == 204
 
 

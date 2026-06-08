@@ -290,4 +290,12 @@ def list_exposures_for_viewer(
     exposures = list(db.scalars(stmt.order_by(DocumentExposure.created_at.desc())))
     if viewer_rol != "cliente":
         return exposures
-    return exposures
+    # Cliente: solo filas de exposición explícita (sin documentos internos no expuestos)
+    filtered: list[DocumentExposure] = []
+    for exp in exposures:
+        if exp.document_id is not None:
+            doc = db.get(Document, exp.document_id)
+            if doc and doc.visibilidad == "interno":
+                continue
+        filtered.append(exp)
+    return filtered

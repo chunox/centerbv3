@@ -67,7 +67,14 @@ def patch_user(
 
 
 @router.delete("/{user_id}", status_code=204)
-def remove_user(user_id: UUID, db: Session = Depends(get_db)):
+def remove_user(
+    user_id: UUID,
+    auth: AuthContext = Depends(get_current_auth),
+    db: Session = Depends(get_db),
+):
+    if auth.user.id != user_id:
+        raise HTTPException(status_code=403, detail="Solo podés eliminar tu propia cuenta")
+
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")

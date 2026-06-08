@@ -1,6 +1,6 @@
 """
 Smoke QA contra API en vivo (http://127.0.0.1:8000).
-Valida pre-requisitos P0, bloques B1–B4, datos F1–F9 y post-roadmap F10.1–F10.7.
+Valida pre-requisitos P0, bloques B1–B4, datos F1–F9, post-roadmap F10.1–F10.7 y F11.
 Ejecutar: .venv\\Scripts\\python.exe scripts/qa_live_smoke.py
 """
 
@@ -80,11 +80,11 @@ def ensure_demo_users() -> dict[str, str]:
     return by_email
 
 
-def login(email: str) -> dict:
+def login(email: str, password: str = DEMO_PASSWORD) -> dict:
     _, auth = http(
         "POST",
         "/auth/login",
-        body={"email": email, "password": DEMO_PASSWORD},
+        body={"email": email, "password": password},
         expect_status=200,
     )
     return auth
@@ -815,6 +815,61 @@ def run() -> int:
             "F10.7-actor-jwt",
         ):
             record(fid, False, "sin org/token/portal")
+
+    # F11 — password reset (jun 2026)
+    reset_email = f"smoke-reset-{date.today().strftime('%Y%m%d')}@center.demo"
+    try:
+        _, forgot = http(
+            "POST",
+            "/auth/forgot-password",
+            body={"email": "nobody-smoke@center.demo"},
+            expect_status=200,
+        )
+        record("F11.1", bool(forgot.get("message")), "forgot-password genérico OK")
+    except Exception as e:
+        record("F11.1", False, str(e))
+
+    try:
+        status, all_users = http("GET", "/users")
+        reset_user = next((u for u in all_users if u["email"] == reset_email), None)
+        if reset_user is None:
+            _, reset_user = http(
+                "POST",
+                "/users",
+                body={
+                    "email": reset_email,
+                    "nombre": "Smoke Reset",
+                    "password": DEMO_PASSWORD,
+                },
+                expect_status=201,
+            )
+        http("POST", "/auth/forgot-password", body={"email": reset_email}, expect_status=200)
+        import sqlite3
+        from pathlib import Path
+
+        db_path = Path(__file__).resolve().parent.parent / "data" / "v3.db"
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT token FROM password_reset_tokens
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (reset_user["id"],),
+            ).fetchone()
+        reset_token = row[0] if row else ""
+        new_pass = "ResetSmoke99"
+        _, reset_res = http(
+            "POST",
+            "/auth/reset-password",
+            body={"token": reset_token, "password": new_pass},
+            expect_status=200,
+        )
+        login(reset_email, password=new_pass)
+        record("F11.2", bool(reset_res.get("message")), "reset + login OK")
+    except Exception as e:
+        record("F11.2", False, str(e))
 
     # F6 invalid dates
     if portal and token:
