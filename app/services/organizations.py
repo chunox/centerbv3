@@ -166,6 +166,33 @@ def create_organization_invite(
     return invite
 
 
+def list_organization_invites(
+    db: Session,
+    organization_id: uuid.UUID,
+) -> list[OrganizationInvite]:
+    now = datetime.utcnow()
+    stmt = (
+        select(OrganizationInvite)
+        .where(
+            OrganizationInvite.organization_id == organization_id,
+            OrganizationInvite.expires_at >= now,
+        )
+        .order_by(OrganizationInvite.created_at.desc())
+    )
+    return list(db.scalars(stmt))
+
+
+def revoke_organization_invite(
+    db: Session,
+    organization_id: uuid.UUID,
+    invite_id: uuid.UUID,
+) -> None:
+    invite = db.get(OrganizationInvite, invite_id)
+    if not invite or invite.organization_id != organization_id:
+        raise HTTPException(status_code=404, detail="Invitación no encontrada")
+    db.delete(invite)
+
+
 def join_organization_with_token(
     db: Session, user: User, token: str
 ) -> OrganizationMember:

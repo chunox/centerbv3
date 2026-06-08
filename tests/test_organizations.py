@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models.entities import OrganizationMember, Project, ProjectMember, User
+from app.models.entities import OrganizationInvite, OrganizationMember, Project, ProjectMember, User
 from app.security import hash_password
 from app.services.organizations import list_guest_projects, list_org_projects
 from tests.org_helpers import create_organization, create_project_for_org, create_user
@@ -153,6 +153,57 @@ def test_create_project_requiere_org_admin(api_client: TestClient, db_session: S
         },
     )
     assert resp.status_code == 403
+
+
+def test_list_and_revoke_org_invites(api_client: TestClient, db_session: Session):
+    reg = api_client.post(
+        "/api/v1/auth/register",
+        json={
+            "nombre": "Admin",
+            "email": "admin-inv@test.com",
+            "password": "demo12345",
+        },
+    )
+    assert reg.status_code == 201
+    token = reg.json()["access_token"]
+
+    org_resp = api_client.post(
+        "/api/v1/organizations",
+        json={"nombre": "Invite Org"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert org_resp.status_code == 201
+    org_id = org_resp.json()["id"]
+
+    create_resp = api_client.post(
+        f"/api/v1/organizations/{org_id}/invites",
+        json={"email": "invitee@test.com", "rol": "member"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert create_resp.status_code == 201
+    invite_id = create_resp.json()["id"]
+
+    list_resp = api_client.get(
+        f"/api/v1/organizations/{org_id}/invites",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert list_resp.status_code == 200
+    assert len(list_resp.json()) == 1
+    assert list_resp.json()[0]["email"] == "invitee@test.com"
+
+    delete_resp = api_client.delete(
+        f"/api/v1/organizations/{org_id}/invites/{invite_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert delete_resp.status_code == 204
+    assert db_session.get(OrganizationInvite, UUID(invite_id)) is None
+
+    list_after = api_client.get(
+        f"/api/v1/organizations/{org_id}/invites",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert list_after.status_code == 200
+    assert list_after.json() == []
 
 
 def test_list_projects_guest_api(api_client: TestClient, db_session: Session):

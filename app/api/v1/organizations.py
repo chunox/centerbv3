@@ -28,9 +28,11 @@ from app.services.organizations import (
     create_organization,
     create_organization_invite,
     join_organization_with_token,
+    list_organization_invites,
     list_user_organizations,
     require_org_admin,
     require_org_member,
+    revoke_organization_invite,
     update_organization,
 )
 
@@ -166,6 +168,36 @@ def remove_organization_member(
     if member.rol == "owner":
         raise HTTPException(status_code=400, detail="No se puede quitar al owner")
     db.delete(member)
+    db.commit()
+
+
+@router.get(
+    "/{organization_id}/invites",
+    response_model=list[OrganizationInviteRead],
+)
+def list_invites(
+    organization_id: UUID,
+    auth: AuthContext = Depends(get_current_auth),
+    db: Session = Depends(get_db),
+):
+    get_organization_or_404(organization_id, db)
+    require_org_admin(db, organization_id, auth.user.id)
+    return list_organization_invites(db, organization_id)
+
+
+@router.delete(
+    "/{organization_id}/invites/{invite_id}",
+    status_code=204,
+)
+def delete_invite(
+    organization_id: UUID,
+    invite_id: UUID,
+    auth: AuthContext = Depends(get_current_auth),
+    db: Session = Depends(get_db),
+):
+    get_organization_or_404(organization_id, db)
+    require_org_admin(db, organization_id, auth.user.id)
+    revoke_organization_invite(db, organization_id, invite_id)
     db.commit()
 
 
