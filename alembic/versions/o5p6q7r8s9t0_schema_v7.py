@@ -26,6 +26,10 @@ _TASK_TRANSITIONS_V7 = [
     ("ready_for_test", "in_progress", "dev"),
     ("ready_for_test", "completed", "dev"),
     ("completed", "in_progress", "dev"),
+    ("backlog", "cancel", "dev"),
+    ("to_do", "cancel", "dev"),
+    ("in_progress", "cancel", "dev"),
+    ("ready_for_test", "cancel", "dev"),
 ]
 
 

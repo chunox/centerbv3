@@ -42,9 +42,7 @@ QueryAction = Literal[
 BLOCKING_CON_CLIENTE: frozenset[str] = frozenset(
     {"pendiente_aprobacion_pm", "esperando_cliente", "respuesta_cliente"}
 )
-BLOCKING_INTERNO: frozenset[str] = frozenset(
-    {"pendiente_aprobacion_pm", "esperando_pm"}
-)
+BLOCKING_INTERNO: frozenset[str] = frozenset({"esperando_pm"})
 
 ACTIVE_TARGET_CON_CLIENTE = "esperando_cliente"
 ACTIVE_TARGET_INTERNO = "esperando_pm"
@@ -182,6 +180,22 @@ def _notify_query_respondida(
     )
 
 
+def _notify_query_rechazada(
+    db: Session,
+    project: Project,
+    query: FeatureQuery,
+) -> None:
+    """Autor de la consulta cuando el PM rechaza (§4.13)."""
+    create_notification(
+        db,
+        user_id=query.created_by,
+        project_id=project.id,
+        tipo="query_rechazada",
+        entidad_tipo="feature_query",
+        entidad_id=query.id,
+    )
+
+
 def apply_query_action(
     db: Session,
     query: FeatureQuery,
@@ -208,13 +222,22 @@ def apply_query_action(
                 status_code=409,
                 detail="Solo consultas en borrador pueden solicitarse para envío",
             )
-        query.estado = "pendiente_aprobacion_pm"
-        _notify_pm(
-            db,
-            project,
-            tipo="query_pendiente_aprobacion",
-            query_id=query.id,
-        )
+        if project.tipo == "interno":
+            query.estado = "esperando_pm"
+            _notify_pm(
+                db,
+                project,
+                tipo="query_creada",
+                query_id=query.id,
+            )
+        else:
+            query.estado = "pendiente_aprobacion_pm"
+            _notify_pm(
+                db,
+                project,
+                tipo="query_pendiente_aprobacion",
+                query_id=query.id,
+            )
 
     elif action == "aprobar_envio":
         assert_member_has_role(db, project.id, actor_user_id, "pm")
@@ -304,6 +327,7 @@ def apply_query_action(
                 detail="No se puede rechazar una consulta en este estado",
             )
         query.estado = "rechazada"
+        _notify_query_rechazada(db, project, query)
 
     else:
         raise HTTPException(status_code=400, detail="Acción no reconocida")

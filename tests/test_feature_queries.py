@@ -5,11 +5,19 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.models.entities import Feature, FeatureQuery, Milestone, Project, ProjectMember, User
+from app.models.entities import (
+    Feature,
+    FeatureQuery,
+    Milestone,
+    Notification,
+    Project,
+    ProjectMember,
+    User,
+)
 from app.services.feature_queries import apply_query_action, sync_feature_bloqueada
 from tests.org_helpers import create_organization
 
@@ -220,6 +228,127 @@ def test_cumulative_blocking_two_queries(db_session: Session):
     q2.estado = "cerrada"
     db_session.flush()
     sync_feature_bloqueada(db_session, feature, project, actor_user_id=pm_id)
+    assert feature.bloqueada is False
+
+
+def test_reject_notifies_query_author(db_session: Session):
+    project, feature, pm_id, dev_id, _ = _seed_con_cliente(db_session)
+    query = FeatureQuery(
+        id=uuid4(),
+        feature_id=feature.id,
+        titulo="Consulta dev",
+        descripcion="Detalle",
+        estado="esperando_cliente",
+        created_by=dev_id,
+    )
+    db_session.add(query)
+    db_session.commit()
+
+    apply_query_action(
+        db_session,
+        query,
+        feature,
+        project,
+        action="rechazar",
+        actor_user_id=pm_id,
+        actor_rol="pm",
+    )
+    db_session.flush()
+    assert query.estado == "rechazada"
+
+    notif = db_session.scalar(
+        select(Notification).where(
+            Notification.user_id == dev_id,
+            Notification.tipo == "query_rechazada",
+            Notification.entidad_id == query.id,
+        )
+    )
+    assert notif is not None
+
+
+def test_interno_dev_solicitar_skips_pm_approval(db_session: Session):
+    pm_id = uuid4()
+    dev_id = uuid4()
+    db_session.add_all(
+        [
+            User(id=pm_id, nombre="PM", email="pm3@test.com", password_hash="x"),
+            User(id=dev_id, nombre="Dev", email="dev3@test.com", password_hash="x"),
+        ]
+    )
+    org = create_organization(db_session, owner_id=pm_id)
+    project = Project(
+        organization_id=org.id,
+        id=uuid4(),
+        nombre="Interno Dev",
+        tipo="interno",
+        estado="activo",
+        fecha_inicio=date(2026, 1, 1),
+        fecha_fin=date(2026, 12, 31),
+        created_by=pm_id,
+    )
+    db_session.add(project)
+    db_session.add_all(
+        [
+            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
+            ProjectMember(project_id=project.id, user_id=dev_id, rol="dev"),
+        ]
+    )
+    milestone = Milestone(
+        id=uuid4(),
+        project_id=project.id,
+        nombre="H1",
+        tipo="entrega",
+        orden=1,
+        fecha_inicio=date(2026, 1, 1),
+        fecha_fin=date(2026, 6, 30),
+        created_by=pm_id,
+    )
+    db_session.add(milestone)
+    feature = Feature(
+        id=uuid4(),
+        milestone_id=milestone.id,
+        project_id=project.id,
+        nombre="API",
+        tipo="desarrollo",
+        fecha_inicio=date(2026, 1, 1),
+        fecha_fin=date(2026, 3, 31),
+        created_by=pm_id,
+    )
+    db_session.add(feature)
+    query = FeatureQuery(
+        id=uuid4(),
+        feature_id=feature.id,
+        titulo="¿Formato export?",
+        descripcion="Confirmar con stakeholder externo",
+        estado="borrador",
+        created_by=dev_id,
+    )
+    db_session.add(query)
+    db_session.commit()
+
+    apply_query_action(
+        db_session,
+        query,
+        feature,
+        project,
+        action="solicitar_envio",
+        actor_user_id=dev_id,
+        actor_rol="dev",
+    )
+    db_session.flush()
+    assert query.estado == "esperando_pm"
+    assert feature.bloqueada is True
+
+    apply_query_action(
+        db_session,
+        query,
+        feature,
+        project,
+        action="cerrar",
+        actor_user_id=pm_id,
+        actor_rol="pm",
+    )
+    assert query.estado == "cerrada"
     assert feature.bloqueada is False
 
 

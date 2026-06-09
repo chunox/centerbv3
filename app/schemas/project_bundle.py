@@ -20,6 +20,7 @@ class BundleFeatureQueryRead(FeatureQueryRead):
 from app.schemas.features import FeatureRead
 from app.schemas.milestones import MilestoneRead
 from app.schemas.projects import ProjectRead
+from app.schemas.task_dependencies import TaskDependencyRead
 from app.schemas.tasks import TaskRead
 
 
@@ -47,5 +48,8 @@ class ProjectBundleRead(BaseModel):
     queries: list[BundleFeatureQueryRead]
     audit_logs: list[AuditLogRead] = Field(serialization_alias="auditLogs")
     inbox_action_count: int = Field(serialization_alias="inboxActionCount")
+    task_dependencies: list[TaskDependencyRead] = Field(
+        serialization_alias="taskDependencies", default_factory=list
+    )
 
     model_config = {"populate_by_name": True}

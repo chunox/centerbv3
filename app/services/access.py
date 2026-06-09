@@ -23,6 +23,7 @@ from app.models.entities import (
     Project,
     ProjectMember,
     Task,
+    TaskAssignee,
 )
 
 MemberRol = Literal["pm", "dev", "qa", "cliente"]
@@ -276,7 +277,9 @@ def filter_audit_logs_for_viewer(
     if viewer_user_id and viewer_rol == "dev":
         assigned_task_ids = set(
             db.scalars(
-                select(Task.id).where(Task.asignado_a == viewer_user_id)
+                select(TaskAssignee.task_id).where(
+                    TaskAssignee.user_id == viewer_user_id
+                )
             )
         )
     if viewer_user_id and viewer_rol == "cliente":

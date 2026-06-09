@@ -56,8 +56,8 @@ class User(Base):
         back_populates="creator"
     )
     features_created: Mapped[list[Feature]] = relationship(back_populates="creator")
-    tasks_assigned: Mapped[list[Task]] = relationship(
-        back_populates="assignee", foreign_keys="Task.asignado_a"
+    task_assignments: Mapped[list["TaskAssignee"]] = relationship(
+        back_populates="user"
     )
     tasks_created: Mapped[list[Task]] = relationship(
         back_populates="creator", foreign_keys="Task.created_by"
@@ -454,11 +454,13 @@ class Task(Base):
     titulo: Mapped[str] = mapped_column(String(255), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="backlog")
-    asignado_a: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True
-    )
     created_by: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    parent_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -467,11 +469,66 @@ class Task(Base):
 
     feature: Mapped[Feature] = relationship(back_populates="tasks")
     project: Mapped[Project] = relationship(back_populates="tasks")
-    assignee: Mapped[User | None] = relationship(
-        back_populates="tasks_assigned", foreign_keys=[asignado_a]
+    task_assignees: Mapped[list["TaskAssignee"]] = relationship(
+        back_populates="task",
+        cascade="all, delete-orphan",
     )
     creator: Mapped[User] = relationship(
         back_populates="tasks_created", foreign_keys=[created_by]
+    )
+
+    @property
+    def asignado_ids(self) -> list[uuid.UUID]:
+        return sorted(ta.user_id for ta in self.task_assignees)
+
+
+class TaskAssignee(Base):
+    __tablename__ = "task_assignees"
+
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id"),
+        primary_key=True,
+    )
+
+    task: Mapped[Task] = relationship(back_populates="task_assignees")
+    user: Mapped[User] = relationship(back_populates="task_assignments")
+
+
+class TaskDependency(Base):
+    __tablename__ = "task_dependencies"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id"), nullable=False
+    )
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    depends_on_task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    successor: Mapped[Task] = relationship(
+        foreign_keys=[task_id],
+    )
+    predecessor: Mapped[Task] = relationship(
+        foreign_keys=[depends_on_task_id],
     )
 
 

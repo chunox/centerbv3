@@ -26,6 +26,8 @@ AuditAccion = Literal[
     "cancelada",
     "migrada",
     "feature_generada",
+    "dependency_added",
+    "dependency_removed",
 ]
 
 

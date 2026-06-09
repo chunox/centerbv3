@@ -267,7 +267,7 @@ def create_task(
     titulo: str,
     estado: str,
     created_by: str,
-    asignado_a: str | None = None,
+    asignado_ids: list[str] | None = None,
     descripcion: str = "",
 ) -> dict:
     body: dict = {
@@ -275,8 +275,8 @@ def create_task(
         "estado": estado,
         "created_by": created_by,
     }
-    if asignado_a:
-        body["asignado_a"] = asignado_a
+    if asignado_ids:
+        body["asignado_ids"] = asignado_ids
     if descripcion:
         body["descripcion"] = descripcion
     return post(
@@ -344,7 +344,7 @@ def seed_tasks_for_feature(
             titulo=titulo,
             estado=TASK_STATES[i % len(TASK_STATES)],
             created_by=dev,
-            asignado_a=dev if i % 4 != 3 else None,
+            asignado_ids=[dev] if i % 4 != 3 else None,
             descripcion=f"Tarea demo {i + 1} para {feature_nombre}.",
         )
         created += 1

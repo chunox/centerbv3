@@ -1,32 +1,51 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.api.v1.deps import get_feature_or_404, get_project_or_404
 from app.database import get_db
-from app.models.entities import Task, User
-from app.schemas.tasks import TaskCreate, TaskMove, TaskRead, TaskUpdate
+from app.models.entities import Task, TaskDependency, User
+from app.schemas.task_dependencies import (
+    TaskDependencyCreate,
+    TaskDependencyDelete,
+    TaskDependencyRead,
+)
+from app.schemas.tasks import TaskCreate, TaskMove, TaskRead, TaskSubtaskCreate, TaskUpdate
 from app.services.access import (
     assert_member_has_role,
     assert_not_pm_for_task_ops,
     assert_project_active,
 )
 from app.services.features import sync_feature_from_tasks
-from app.services.tasks import move_task, update_task
+from app.services.task_dependencies import create_dependency, delete_dependency
+from app.services.tasks import create_subtask, move_task, sync_task_assignees, update_task
 
 router = APIRouter(tags=["tasks"])
+
+
+def _reload_task(db: Session, task_id: UUID) -> Task:
+    task = db.scalar(
+        select(Task)
+        .where(Task.id == task_id)
+        .options(selectinload(Task.task_assignees))
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    return task
 
 
 def _validate_users(payload: TaskCreate, db: Session) -> None:
     creator = db.get(User, payload.created_by)
     if not creator:
         raise HTTPException(status_code=404, detail="Usuario creador no encontrado")
-    if payload.asignado_a is not None:
-        assignee = db.get(User, payload.asignado_a)
-        if not assignee:
-            raise HTTPException(status_code=404, detail="Usuario asignado no encontrado")
+    for user_id in payload.asignado_ids:
+        if not db.get(User, user_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Usuario asignado no encontrado: {user_id}",
+            )
 
 
 @router.get(
@@ -45,6 +64,7 @@ def list_tasks(
     stmt = (
         select(Task)
         .where(Task.feature_id == feature_id)
+        .options(selectinload(Task.task_assignees))
         .order_by(Task.created_at.asc())
         .offset(offset)
         .limit(limit)
@@ -71,19 +91,57 @@ def create_task(
     assert_not_pm_for_task_ops(db, project.id, payload.created_by)
     assert_member_has_role(db, project.id, payload.created_by, "dev")
 
+    data = payload.model_dump(exclude={"asignado_ids"})
     task = Task(
         feature_id=feature_id,
         project_id=feature.project_id,
-        **payload.model_dump(),
+        **data,
     )
     db.add(task)
     db.flush()
+
+    if payload.asignado_ids:
+        sync_task_assignees(
+            db,
+            task,
+            project,
+            actor_user_id=payload.created_by,
+            user_ids=payload.asignado_ids,
+        )
+
     sync_feature_from_tasks(
         db, feature, project, actor_user_id=payload.created_by
     )
     db.commit()
-    db.refresh(task)
-    return task
+    return _reload_task(db, task.id)
+
+
+@router.post(
+    "/{project_id}/milestones/{milestone_id}/features/{feature_id}/tasks/{task_id}/subtasks",
+    response_model=TaskRead,
+    status_code=201,
+)
+def create_task_subtask(
+    project_id: UUID,
+    milestone_id: UUID,
+    feature_id: UUID,
+    task_id: UUID,
+    payload: TaskSubtaskCreate,
+    db: Session = Depends(get_db),
+):
+    feature = get_feature_or_404(project_id, milestone_id, feature_id, db)
+    project = get_project_or_404(project_id, db)
+    parent = db.get(Task, task_id)
+    if not parent or parent.feature_id != feature_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+
+    actor = db.get(User, payload.actor_user_id)
+    if not actor:
+        raise HTTPException(status_code=404, detail="Usuario actor no encontrado")
+
+    child = create_subtask(db, parent, feature, project, payload)
+    db.commit()
+    return _reload_task(db, child.id)
 
 
 @router.patch(
@@ -110,8 +168,7 @@ def patch_task(
 
     update_task(db, task, feature, project, payload)
     db.commit()
-    db.refresh(task)
-    return task
+    return _reload_task(db, task.id)
 
 
 @router.get(
@@ -126,8 +183,8 @@ def get_task(
     db: Session = Depends(get_db),
 ):
     get_feature_or_404(project_id, milestone_id, feature_id, db)
-    task = db.get(Task, task_id)
-    if not task or task.feature_id != feature_id:
+    task = _reload_task(db, task_id)
+    if task.feature_id != feature_id:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
     return task
 
@@ -146,7 +203,11 @@ def move_task_state(
 ):
     feature = get_feature_or_404(project_id, milestone_id, feature_id, db)
     project = get_project_or_404(project_id, db)
-    task = db.get(Task, task_id)
+    task = db.scalar(
+        select(Task)
+        .where(Task.id == task_id)
+        .options(selectinload(Task.task_assignees))
+    )
     if not task or task.feature_id != feature_id:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
 
@@ -163,5 +224,76 @@ def move_task_state(
         actor_user_id=payload.actor_user_id,
     )
     db.commit()
-    db.refresh(task)
-    return task
+    return _reload_task(db, task.id)
+
+
+@router.post(
+    "/{project_id}/milestones/{milestone_id}/features/{feature_id}/tasks/{task_id}/dependencies",
+    response_model=TaskDependencyRead,
+    status_code=201,
+)
+def add_task_dependency(
+    project_id: UUID,
+    milestone_id: UUID,
+    feature_id: UUID,
+    task_id: UUID,
+    payload: TaskDependencyCreate,
+    db: Session = Depends(get_db),
+):
+    feature = get_feature_or_404(project_id, milestone_id, feature_id, db)
+    project = get_project_or_404(project_id, db)
+    successor = db.get(Task, task_id)
+    if not successor or successor.feature_id != feature_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+
+    predecessor = db.get(Task, payload.depends_on_task_id)
+    if not predecessor or predecessor.project_id != project.id:
+        raise HTTPException(
+            status_code=404, detail="Tarea predecesora no encontrada"
+        )
+
+    actor = db.get(User, payload.actor_user_id)
+    if not actor:
+        raise HTTPException(status_code=404, detail="Usuario actor no encontrado")
+
+    dep = create_dependency(
+        db,
+        project,
+        successor,
+        predecessor,
+        actor_user_id=payload.actor_user_id,
+    )
+    db.commit()
+    db.refresh(dep)
+    return dep
+
+
+@router.delete(
+    "/{project_id}/milestones/{milestone_id}/features/{feature_id}/tasks/{task_id}/dependencies/{dep_id}",
+    status_code=204,
+)
+def remove_task_dependency(
+    project_id: UUID,
+    milestone_id: UUID,
+    feature_id: UUID,
+    task_id: UUID,
+    dep_id: UUID,
+    payload: TaskDependencyDelete = Body(),
+    db: Session = Depends(get_db),
+):
+    get_feature_or_404(project_id, milestone_id, feature_id, db)
+    project = get_project_or_404(project_id, db)
+    task = db.get(Task, task_id)
+    if not task or task.feature_id != feature_id:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+
+    dep = db.get(TaskDependency, dep_id)
+    if not dep or dep.task_id != task_id:
+        raise HTTPException(status_code=404, detail="Dependencia no encontrada")
+
+    actor = db.get(User, payload.actor_user_id)
+    if not actor:
+        raise HTTPException(status_code=404, detail="Usuario actor no encontrado")
+
+    delete_dependency(db, project, dep, actor_user_id=payload.actor_user_id)
+    db.commit()

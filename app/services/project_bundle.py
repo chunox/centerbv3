@@ -14,6 +14,7 @@ from app.models.entities import (
     Milestone,
     Project,
     Task,
+    TaskDependency,
 )
 from app.services.audit_display import audit_logs_to_read
 from app.schemas.feature_queries import FeatureQueryRead
@@ -25,6 +26,7 @@ from app.schemas.project_bundle import (
     ProjectBundleRead,
 )
 from app.schemas.features import FeatureRead
+from app.schemas.task_dependencies import TaskDependencyRead
 from app.schemas.milestones import MilestoneRead
 from app.schemas.projects import ProjectRead
 from app.schemas.tasks import TaskRead
@@ -53,6 +55,11 @@ def build_project_bundle(
         db.scalars(select(Feature).where(Feature.project_id == project.id))
     )
     tasks = list(db.scalars(select(Task).where(Task.project_id == project.id)))
+    task_dependencies = list(
+        db.scalars(
+            select(TaskDependency).where(TaskDependency.project_id == project.id)
+        )
+    )
     feature_ids = [f.id for f in features]
     reports = (
         list(
@@ -146,4 +153,7 @@ def build_project_bundle(
         queries=enriched_queries,
         audit_logs=audit_logs_to_read(db, audit_logs),
         inbox_action_count=inbox_action_count,
+        task_dependencies=[
+            TaskDependencyRead.model_validate(d) for d in task_dependencies
+        ],
     )

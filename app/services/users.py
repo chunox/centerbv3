@@ -15,6 +15,7 @@ from app.models.entities import (
     Project,
     ProjectMember,
     Task,
+    TaskAssignee,
     User,
 )
 from app.schemas.users import UserUpdate
@@ -46,7 +47,7 @@ def delete_user(db: Session, user: User) -> None:
         blockers.append("miembro de proyectos")
     if db.scalar(select(exists().where(Project.created_by == user.id))):
         blockers.append("creador de proyectos")
-    if db.scalar(select(exists().where(Task.asignado_a == user.id))):
+    if db.scalar(select(exists().where(TaskAssignee.user_id == user.id))):
         blockers.append("tareas asignadas")
     if db.scalar(select(exists().where(Task.created_by == user.id))):
         blockers.append("tareas creadas")

@@ -135,12 +135,12 @@ def test_patch_task_asignacion_y_notificacion(db_session: Session, api_client: T
         json={
             "actor_user_id": str(dev_id),
             "titulo": "Tarea renombrada",
-            "asignado_a": str(other_dev),
+            "asignado_ids": [str(other_dev)],
         },
     )
     assert response.status_code == 200
     assert response.json()["titulo"] == "Tarea renombrada"
-    assert response.json()["asignado_a"] == str(other_dev)
+    assert response.json()["asignado_ids"] == [str(other_dev)]
 
     notif = db_session.scalar(
         select(Notification).where(
