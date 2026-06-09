@@ -14,6 +14,7 @@ from app.models.entities import (
     Document,
     Feature,
     FeatureReport,
+    HubEntry,
     Task,
     User,
 )
@@ -22,6 +23,7 @@ from app.schemas.attachments import AttachmentEntidadTipo, AttachmentUpdate
 from app.services.access import (
     assert_attachment_author_or_pm,
     assert_member_of_project,
+    assert_pm_or_dev_member,
     assert_project_active,
     get_project_id_for_attachment_entity,
 )
@@ -38,7 +40,20 @@ _ENTITY_GETTERS: dict[AttachmentEntidadTipo, type] = {
     "tarea": Task,
     "feature": Feature,
     "feature_report": FeatureReport,
+    "hub_entry": HubEntry,
+    "project": Project,
 }
+
+
+def _assert_hub_attachment_mutation(
+    db: Session,
+    *,
+    entidad_tipo: AttachmentEntidadTipo,
+    project: Project,
+    actor_user_id: uuid.UUID,
+) -> None:
+    if entidad_tipo in ("hub_entry", "project"):
+        assert_pm_or_dev_member(db, project.id, actor_user_id)
 
 
 def ensure_attachment_entidad_exists(
@@ -92,6 +107,9 @@ def _assert_attachment_mutation_allowed(
     )
     assert_project_active(project)
     assert_member_of_project(db, project.id, actor_user_id)
+    _assert_hub_attachment_mutation(
+        db, entidad_tipo=entidad_tipo, project=project, actor_user_id=actor_user_id
+    )
     return project
 
 

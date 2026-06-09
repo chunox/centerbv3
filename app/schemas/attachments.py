@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 AttachmentEntidadTipo = Literal[
-    "comment", "document", "tarea", "feature", "feature_report"
+    "comment", "document", "tarea", "feature", "feature_report", "hub_entry", "project"
 ]
 
 

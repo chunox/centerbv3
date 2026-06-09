@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.feature_reports import ReportTipo
 from app.schemas.milestones import MilestoneEstado
 from app.schemas.projects import ProjectEstado, ProjectTipo
 
@@ -77,6 +78,7 @@ class PmAttentionItemRead(BaseModel):
     project_nombre: str = Field(serialization_alias="projectNombre")
     title: str
     subtitle: str | None = None
+    report_tipo: ReportTipo | None = Field(default=None, serialization_alias="reportTipo")
     created_at: datetime = Field(serialization_alias="createdAt")
 
     model_config = ConfigDict(populate_by_name=True)

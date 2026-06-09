@@ -15,16 +15,20 @@ class DocumentExposureCreate(BaseModel):
     feature_id: UUID | None = None
     document_id: UUID | None = None
     attachment_id: UUID | None = None
+    hub_entry_id: UUID | None = None
     titulo_visible: str | None = Field(default=None, max_length=255)
     expuesto_por: UUID
 
     @model_validator(mode="after")
     def validar_target_y_ambito(self) -> DocumentExposureCreate:
-        has_doc = self.document_id is not None
-        has_att = self.attachment_id is not None
-        if has_doc == has_att:
+        targets = [
+            self.document_id is not None,
+            self.attachment_id is not None,
+            self.hub_entry_id is not None,
+        ]
+        if sum(targets) != 1:
             raise ValueError(
-                "Debe indicar exactamente uno de document_id o attachment_id"
+                "Debe indicar exactamente uno de document_id, attachment_id o hub_entry_id"
             )
         if self.ambito == "proyecto" and (
             self.milestone_id is not None or self.feature_id is not None
@@ -52,6 +56,7 @@ class DocumentExposureRead(BaseModel):
     feature_id: UUID | None
     document_id: UUID | None
     attachment_id: UUID | None
+    hub_entry_id: UUID | None
     titulo_visible: str | None
     expuesto_por: UUID
     created_at: datetime

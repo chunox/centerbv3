@@ -19,6 +19,7 @@ from app.models.entities import (
     Feature,
     FeatureQuery,
     FeatureReport,
+    HubEntry,
     Milestone,
     Task,
     User,
@@ -57,6 +58,11 @@ def _validate_entidad_in_project(
         row = db.get(Document, entidad_id)
         if not row or row.project_id != project_id:
             raise HTTPException(status_code=404, detail="Documento no encontrado en el proyecto")
+        return
+    if entidad_tipo == "hub_entry":
+        row = db.get(HubEntry, entidad_id)
+        if not row or row.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Publicación no encontrada en el proyecto")
         return
     if entidad_tipo == "feature_query":
         row = db.get(FeatureQuery, entidad_id)

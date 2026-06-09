@@ -72,6 +72,9 @@ class User(Base):
     documents_created: Mapped[list[Document]] = relationship(
         back_populates="creator"
     )
+    hub_entries_authored: Mapped[list[HubEntry]] = relationship(
+        back_populates="author"
+    )
     document_exposures_created: Mapped[list[DocumentExposure]] = relationship(
         back_populates="exposer"
     )
@@ -239,6 +242,9 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     document_exposures: Mapped[list[DocumentExposure]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    hub_entries: Mapped[list[HubEntry]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
 
@@ -518,12 +524,47 @@ class Document(Base):
     )
 
 
+class HubEntry(Base):
+    __tablename__ = "hub_entries"
+    __table_args__ = (
+        CheckConstraint("tipo IN ('update', 'note')", name="chk_hub_entry_tipo"),
+        CheckConstraint(
+            "visibilidad IN ('publico', 'interno')", name="chk_hub_entry_visibilidad"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    tipo: Mapped[str] = mapped_column(String(10), nullable=False)
+    titulo: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    contenido: Mapped[str] = mapped_column(Text, nullable=False)
+    visibilidad: Mapped[str] = mapped_column(String(10), nullable=False, default="publico")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="hub_entries")
+    author: Mapped[User] = relationship(back_populates="hub_entries_authored")
+    exposures: Mapped[list[DocumentExposure]] = relationship(back_populates="hub_entry")
+
+
 class DocumentExposure(Base):
     __tablename__ = "document_exposures"
     __table_args__ = (
         CheckConstraint(
-            "(document_id IS NOT NULL AND attachment_id IS NULL) "
-            "OR (document_id IS NULL AND attachment_id IS NOT NULL)",
+            "(document_id IS NOT NULL AND attachment_id IS NULL AND hub_entry_id IS NULL) "
+            "OR (document_id IS NULL AND attachment_id IS NOT NULL AND hub_entry_id IS NULL) "
+            "OR (document_id IS NULL AND attachment_id IS NULL AND hub_entry_id IS NOT NULL)",
             name="chk_exposure_target",
         ),
         CheckConstraint(
@@ -564,6 +605,11 @@ class DocumentExposure(Base):
         ForeignKey("attachments.id", ondelete="CASCADE"),
         nullable=True,
     )
+    hub_entry_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("hub_entries.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     titulo_visible: Mapped[str | None] = mapped_column(String(255), nullable=True)
     expuesto_por: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
@@ -577,6 +623,7 @@ class DocumentExposure(Base):
     attachment: Mapped[Attachment | None] = relationship(
         back_populates="exposures"
     )
+    hub_entry: Mapped[HubEntry | None] = relationship(back_populates="exposures")
     exposer: Mapped[User] = relationship(back_populates="document_exposures_created")
 
 

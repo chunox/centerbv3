@@ -23,6 +23,7 @@ from app.api.v1.auth_deps import (
 from app.api.v1.deps import get_project_or_404
 from app.api.v1 import audit_logs as audit_logs_routes
 from app.api.v1 import document_exposures as document_exposures_routes
+from app.api.v1 import hub_entries as hub_entries_routes
 from app.api.v1 import documents as documents_routes
 from app.api.v1 import feature_queries as feature_queries_routes
 from app.api.v1 import feature_reports as feature_reports_routes
@@ -61,6 +62,7 @@ from app.services.projects import apply_project_estado_action, update_project
 router = APIRouter(prefix="/projects", tags=["projects"])
 router.include_router(milestones_routes.router)
 router.include_router(documents_routes.router)
+router.include_router(hub_entries_routes.router)
 router.include_router(document_exposures_routes.router)
 router.include_router(audit_logs_routes.router)
 router.include_router(feature_queries_routes.inbox_router)

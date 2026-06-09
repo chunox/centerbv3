@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.entities import DocumentExposure, Project
+from app.models.entities import DocumentExposure, HubEntry, Project
 from app.schemas.document_exposures import (
     DocumentExposureCreate,
     DocumentExposureUpdate,
@@ -45,6 +45,11 @@ def create_document_exposure(
 ) -> DocumentExposure:
     assert_project_active(project)
     assert_member_has_role(db, project.id, payload.expuesto_por, "pm")
+
+    if payload.hub_entry_id is not None:
+        entry = db.get(HubEntry, payload.hub_entry_id)
+        if not entry or entry.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Publicación no encontrada en el proyecto")
 
     exposure = DocumentExposure(project_id=project.id, **payload.model_dump())
     db.add(exposure)

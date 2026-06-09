@@ -18,6 +18,7 @@ from app.models.entities import (
     Feature,
     FeatureQuery,
     FeatureReport,
+    HubEntry,
     Milestone,
     Project,
     ProjectMember,
@@ -41,6 +42,7 @@ ROLE_AUDIT_ENTIDADES: dict[MemberRol, frozenset[str]] = {
             "feature_query",
             "feature_report",
             "document",
+            "hub_entry",
             "comment",
         }
     ),
@@ -100,6 +102,27 @@ def assert_member_has_role(
         raise HTTPException(
             status_code=403,
             detail=f"El usuario no tiene rol '{rol}' en este proyecto",
+        )
+
+
+def assert_pm_or_dev_member(
+    db: Session,
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    is_allowed = db.scalar(
+        select(
+            exists().where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == user_id,
+                ProjectMember.rol.in_(("pm", "dev")),
+            )
+        )
+    )
+    if not is_allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="Solo PM o Dev pueden realizar esta acción en el centro",
         )
 
 
@@ -187,6 +210,16 @@ def get_project_id_for_attachment_entity(
         if not row:
             raise HTTPException(status_code=404, detail="Documento no encontrado")
         return row.project_id
+    if entidad_tipo == "hub_entry":
+        row = db.get(HubEntry, entidad_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Entrada no encontrada")
+        return row.project_id
+    if entidad_tipo == "project":
+        row = db.get(Project, entidad_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+        return row.id
     return get_project_id_for_comment_entity(db, entidad_tipo, entidad_id)
 
 
@@ -209,6 +242,18 @@ def document_visible_to_role(
     if viewer_rol is None:
         return True
     if viewer_rol == "cliente" and document.visibilidad == "interno":
+        return False
+    return True
+
+
+def hub_entry_visible_to_role(
+    entry: HubEntry,
+    *,
+    viewer_rol: MemberRol | None,
+) -> bool:
+    if viewer_rol is None:
+        return True
+    if viewer_rol == "cliente" and entry.visibilidad == "interno":
         return False
     return True
 

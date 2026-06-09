@@ -34,7 +34,6 @@ from app.services.project_bundle import _PENDING_QUERY_STATES
 
 AT_RISK_DAYS = 14
 STALLED_DAYS = 14
-ATTENTION_LIMIT = 12
 ACTIVITY_LIMIT = 10
 CRITICAL_MILESTONES_LIMIT = 8
 
@@ -187,14 +186,16 @@ def _build_attention_items(
         )
     ).all()
     for report, feature in report_rows:
+        tipo_label = "Bug" if report.tipo == "bug" else "Mejora"
         items.append(
             PmAttentionItemRead(
                 kind="report",
                 id=report.id,
                 project_id=feature.project_id,
                 project_nombre=project_names[feature.project_id],
-                title=f"Reporte {report.tipo}",
+                title=tipo_label,
                 subtitle=feature.nombre,
+                report_tipo=report.tipo,
                 created_at=report.created_at,
             )
         )
@@ -214,7 +215,7 @@ def _build_attention_items(
                 id=query.id,
                 project_id=feature.project_id,
                 project_nombre=project_names[feature.project_id],
-                title=f"Consulta: {query.titulo}",
+                title=query.titulo,
                 subtitle=feature.nombre,
                 created_at=query.created_at,
             )
@@ -242,7 +243,7 @@ def _build_attention_items(
         )
 
     items.sort(key=lambda item: item.created_at, reverse=True)
-    return items[:ATTENTION_LIMIT]
+    return items
 
 
 def _build_recent_activity(

@@ -37,6 +37,7 @@ _ENTIDAD_LABELS = {
     "feature_report": "Reporte",
     "document": "Documento",
     "project": "Proyecto",
+    "hub_entry": "Publicación",
     "comment": "Comentario",
 }
 

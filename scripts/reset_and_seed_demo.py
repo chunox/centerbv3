@@ -1,5 +1,5 @@
 """
-Reinicia data/v3.db y carga datos demo variados (paridad con seedDemo.ts v9).
+Reinicia data/v3.db y carga 2 proyectos demo muy poblados (con_cliente + interno).
 
 Uso (con API en :8000):
   .venv\\Scripts\\python.exe scripts/reset_and_seed_demo.py
@@ -30,7 +30,7 @@ DB_PATH = DATA_DIR / "v3.db"
 UPLOADS_DIR = DATA_DIR / "uploads"
 BASE = "http://127.0.0.1:8000/api/v1"
 DEMO_PASSWORD = "demo12345"
-SEED_VERSION = "v9-rich"
+SEED_VERSION = "v10-dual-mega"
 
 DEMO_USERS = [
     ("pm@center.demo", "Ana PM"),
@@ -42,10 +42,11 @@ DEMO_USERS = [
 
 DEMO_PROJECTS = [
     "Portal Cliente Demo",
-    "Sprint Interno",
-    "App Móvil Retail",
-    "Migración Legacy",
+    "Plataforma Interna Center",
 ]
+
+TASK_STATES = ["backlog", "to_do", "in_progress", "ready_for_test", "completed"]
+FEATURE_PRIORITIES = ["critica", "alta", "media", "baja"]
 
 
 def http(
@@ -63,7 +64,7 @@ def http(
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=60) as res:
+        with urllib.request.urlopen(req, timeout=120) as res:
             status = res.status
             raw = res.read().decode()
             parsed = json.loads(raw) if raw else None
@@ -191,44 +192,190 @@ def add_member(project_id: str, pm_id: str, user_id: str, rol: str) -> None:
         pass
 
 
-def seed_rich_demo() -> None:
-    wait_for_api()
-    today = date.today()
-    users = {email: ensure_user(email, nombre) for email, nombre in DEMO_USERS}
+def post(token: str, path: str, body: dict, *, expect: int = 201) -> dict:
+    _, data = http("POST", path, body=body, token=token, expect_status=expect)
+    return data
+
+
+def create_project(token: str, org_id: str, pm_id: str, **kwargs) -> dict:
+    kwargs.setdefault("created_by", pm_id)
+    kwargs.setdefault("organization_id", org_id)
+    return post(token, "/projects", kwargs)
+
+
+def create_milestone(
+    token: str,
+    project_id: str,
+    pm_id: str,
+    *,
+    nombre: str,
+    orden: int,
+    fecha_inicio: str,
+    fecha_fin: str,
+    descripcion: str = "",
+) -> dict:
+    return post(
+        token,
+        f"/projects/{project_id}/milestones",
+        {
+            "nombre": nombre,
+            "descripcion": descripcion,
+            "tipo": "entrega",
+            "orden": orden,
+            "fecha_inicio": fecha_inicio,
+            "fecha_fin": fecha_fin,
+            "created_by": pm_id,
+        },
+    )
+
+
+def create_feature(
+    token: str,
+    project_id: str,
+    milestone_id: str,
+    pm_id: str,
+    *,
+    nombre: str,
+    estado: str,
+    prioridad: str,
+    fecha_inicio: str,
+    fecha_fin: str,
+    descripcion: str = "",
+) -> dict:
+    return post(
+        token,
+        f"/projects/{project_id}/milestones/{milestone_id}/features",
+        {
+            "nombre": nombre,
+            "descripcion": descripcion,
+            "tipo": "desarrollo",
+            "prioridad": prioridad,
+            "estado": estado,
+            "fecha_inicio": fecha_inicio,
+            "fecha_fin": fecha_fin,
+            "created_by": pm_id,
+        },
+    )
+
+
+def create_task(
+    token: str,
+    project_id: str,
+    milestone_id: str,
+    feature_id: str,
+    *,
+    titulo: str,
+    estado: str,
+    created_by: str,
+    asignado_a: str | None = None,
+    descripcion: str = "",
+) -> dict:
+    body: dict = {
+        "titulo": titulo,
+        "estado": estado,
+        "created_by": created_by,
+    }
+    if asignado_a:
+        body["asignado_a"] = asignado_a
+    if descripcion:
+        body["descripcion"] = descripcion
+    return post(
+        token,
+        f"/projects/{project_id}/milestones/{milestone_id}/features/{feature_id}/tasks",
+        body,
+    )
+
+
+def create_comment(
+    token: str,
+    *,
+    entidad_tipo: str,
+    entidad_id: str,
+    user_id: str,
+    contenido: str,
+    estado_momento: str,
+) -> None:
+    post(
+        token,
+        "/comments",
+        {
+            "entidad_tipo": entidad_tipo,
+            "entidad_id": entidad_id,
+            "user_id": user_id,
+            "contenido": contenido,
+            "estado_momento": estado_momento,
+        },
+    )
+
+
+def seed_tasks_for_feature(
+    token: str,
+    project_id: str,
+    milestone_id: str,
+    feature_id: str,
+    feature_nombre: str,
+    dev_ids: list[str],
+    *,
+    count: int = 10,
+) -> int:
+    prefixes = [
+        "Implementar",
+        "Refinar",
+        "Tests",
+        "Revisar",
+        "Documentar",
+        "Spike",
+        "Fix",
+        "Integrar",
+        "Validar",
+        "Optimizar",
+        "Migrar",
+        "Diseñar",
+    ]
+    created = 0
+    for i in range(count):
+        dev = dev_ids[i % len(dev_ids)]
+        titulo = f"{prefixes[i % len(prefixes)]} {feature_nombre} #{i + 1}"
+        create_task(
+            token,
+            project_id,
+            milestone_id,
+            feature_id,
+            titulo=titulo,
+            estado=TASK_STATES[i % len(TASK_STATES)],
+            created_by=dev,
+            asignado_a=dev if i % 4 != 3 else None,
+            descripcion=f"Tarea demo {i + 1} para {feature_nombre}.",
+        )
+        created += 1
+    return created
+
+
+def seed_portal_cliente(
+    token: str,
+    org_id: str,
+    today: date,
+    users: dict[str, dict],
+) -> dict:
     pm = users["pm@center.demo"]
     dev = users["dev@center.demo"]
     dev2 = users["dev2@center.demo"]
     qa = users["qa@center.demo"]
     cliente = users["cliente@center.demo"]
+    dev_ids = [dev["id"], dev2["id"]]
 
-    auth = login(pm["email"])
-    token = auth["access_token"]
-    org_id = auth.get("organization_id")
-    if not org_id:
-        _, org = http(
-            "POST",
-            "/organizations",
-            body={"nombre": "Center Demo", "slug": "center-demo"},
-            token=token,
-            expect_status=201,
-        )
-        org_id = org["id"]
-        auth = login(pm["email"])
-        token = auth["access_token"]
-
-    def create_project(**kwargs) -> dict:
-        _, project = http("POST", "/projects", body=kwargs, token=token, expect_status=201)
-        return project
-
-    # ── 1. Portal Cliente Demo ─────────────────────────────────────────────
     portal = create_project(
-        organization_id=org_id,
+        token,
+        org_id,
+        pm["id"],
         nombre="Portal Cliente Demo",
-        descripcion="Cliente externo: inbox, reportes, consultas, hub y validación.",
+        descripcion=(
+            "Proyecto con cliente externo: inbox denso, reportes, consultas, "
+            "hub, validación UAT y Kanban con muchas tareas."
+        ),
         tipo="con_cliente",
-        fecha_inicio=add_days(today, -30),
-        fecha_fin=add_days(today, 90),
-        created_by=pm["id"],
+        fecha_inicio=add_days(today, -45),
+        fecha_fin=add_days(today, 120),
     )
     for uid, rol in [
         (pm["id"], "pm"),
@@ -239,571 +386,475 @@ def seed_rich_demo() -> None:
     ]:
         add_member(portal["id"], pm["id"], uid, rol)
 
-    _, mvp = http(
-        "POST",
-        f"/projects/{portal['id']}/milestones",
-        body={
-            "nombre": "Entrega 1 — MVP",
-            "descripcion": "Auth, dashboard y OAuth.",
-            "tipo": "entrega",
-            "orden": 1,
-            "fecha_inicio": add_days(today, -30),
-            "fecha_fin": add_days(today, 15),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, ent2 = http(
-        "POST",
-        f"/projects/{portal['id']}/milestones",
-        body={
-            "nombre": "Entrega 2 — Integraciones",
-            "descripcion": "Exportaciones y conectores.",
-            "tipo": "entrega",
-            "orden": 2,
-            "fecha_inicio": add_days(today, 16),
-            "fecha_fin": add_days(today, 90),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, cancelled_ms = http(
-        "POST",
-        f"/projects/{portal['id']}/milestones",
-        body={
-            "nombre": "Spike descartado",
-            "descripcion": "Hito cancelado para probar alcance avanzado.",
-            "tipo": "entrega",
-            "orden": 3,
-            "fecha_inicio": add_days(today, -10),
-            "fecha_fin": add_days(today, 5),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
+    milestones_spec = [
+        ("Entrega 1 — MVP", 1, -45, 20, "Auth, dashboard, OAuth y notificaciones."),
+        ("Entrega 2 — Integraciones", 2, 21, 60, "Exportaciones, webhooks y conectores."),
+        ("Entrega 3 — Analytics", 3, 61, 100, "Dashboards, métricas y alertas."),
+        ("Entrega 4 — Mobile web", 4, 101, 120, "PWA, push y offline básico."),
+        ("Spike descartado", 5, -10, 5, "Hito cancelado para probar alcance."),
+    ]
+    milestones: list[dict] = []
+    for nombre, orden, start, end, desc in milestones_spec:
+        ms = create_milestone(
+            token,
+            portal["id"],
+            pm["id"],
+            nombre=nombre,
+            orden=orden,
+            fecha_inicio=add_days(today, start),
+            fecha_fin=add_days(today, end),
+            descripcion=desc,
+        )
+        milestones.append(ms)
+
     http(
         "POST",
-        f"/projects/{portal['id']}/milestones/{cancelled_ms['id']}/actions",
+        f"/projects/{portal['id']}/milestones/{milestones[4]['id']}/actions",
         body={"action": "cancelar", "actor_user_id": pm["id"], "actor_rol": "pm"},
         token=token,
         expect_status=200,
     )
 
-    _, auth_feat = http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{mvp['id']}/features",
-        body={
-            "nombre": "Autenticación y roles",
-            "descripcion": "Login, JWT y permisos por proyecto.",
-            "tipo": "desarrollo",
-            "prioridad": "alta",
-            "estado": "en_progreso",
-            "fecha_inicio": add_days(today, -25),
-            "fecha_fin": add_days(today, 10),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, dashboard = http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{mvp['id']}/features",
-        body={
-            "nombre": "Dashboard PM",
-            "descripcion": "Liberada — esperando validación cliente.",
-            "tipo": "desarrollo",
-            "prioridad": "media",
-            "estado": "esperando_validacion_cliente",
-            "fecha_inicio": add_days(today, -20),
-            "fecha_fin": add_days(today, 5),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, oauth = http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{mvp['id']}/features",
-        body={
-            "nombre": "Login OAuth",
-            "descripcion": "Completada — origen de reportes post-entrega.",
-            "tipo": "desarrollo",
-            "prioridad": "alta",
-            "estado": "completado",
-            "fecha_inicio": add_days(today, -28),
-            "fecha_fin": add_days(today, -5),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, notifs = http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{mvp['id']}/features",
-        body={
-            "nombre": "Notificaciones in-app",
-            "descripcion": "Campana y deep links.",
-            "tipo": "desarrollo",
-            "prioridad": "media",
-            "estado": "esperando_liberacion_pm",
-            "fecha_inicio": add_days(today, -15),
-            "fecha_fin": add_days(today, 20),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, export_feat = http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{ent2['id']}/features",
-        body={
-            "nombre": "Export CSV actividad",
-            "descripcion": "Feature en hito 2 para migrar entre hitos.",
-            "tipo": "desarrollo",
-            "prioridad": "baja",
-            "estado": "pendiente",
-            "fecha_inicio": add_days(today, 20),
-            "fecha_fin": add_days(today, 60),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
+    features_spec: list[tuple[int, str, str, str, int, int]] = [
+        # (milestone_idx, nombre, estado, prioridad, start_offset, end_offset)
+        (0, "Autenticación y roles", "en_progreso", "alta", -40, 15),
+        (0, "Dashboard PM", "esperando_validacion_cliente", "media", -35, 10),
+        (0, "Login OAuth", "completado", "alta", -42, -5),
+        (0, "Notificaciones in-app", "esperando_liberacion_pm", "media", -30, 18),
+        (0, "Onboarding wizard", "uat", "media", -25, 12),
+        (0, "Permisos granulares", "en_progreso", "critica", -38, 8),
+        (1, "Export CSV actividad", "pendiente", "baja", 25, 55),
+        (1, "Webhooks salientes", "en_progreso", "alta", 22, 50),
+        (1, "Conector Salesforce", "pendiente", "media", 30, 58),
+        (1, "API pública v1", "uat", "alta", 24, 45),
+        (1, "Sync nocturno ERP", "en_progreso", "media", 26, 52),
+        (2, "Dashboard métricas uso", "pendiente", "media", 65, 95),
+        (2, "Alertas por email", "pendiente", "baja", 70, 98),
+        (2, "Embudo conversión", "pendiente", "alta", 68, 90),
+        (3, "PWA shell", "pendiente", "media", 105, 118),
+        (3, "Push notifications", "pendiente", "alta", 108, 119),
+        (4, "POC GraphQL", "cancelado", "baja", -8, 2),
+    ]
 
-    # Tareas Kanban variadas
-    for titulo, estado, asignado in [
-        ("Spike permisos", "in_progress", dev["id"]),
-        ("Selector de rol UI", "to_do", dev2["id"]),
-        ("Tests E2E auth", "ready_for_test", dev["id"]),
-        ("Doc OpenAPI", "backlog", None),
-    ]:
-        http(
-            "POST",
-            f"/projects/{portal['id']}/milestones/{mvp['id']}/features/{auth_feat['id']}/tasks",
-            body={
-                "titulo": titulo,
-                "estado": estado,
-                "asignado_a": asignado,
-                "created_by": dev["id"],
-            },
-            token=token,
-            expect_status=201,
+    features: list[dict] = []
+    task_total = 0
+    active_feature_indices = [0, 1, 3, 4, 5, 7, 8, 9, 10]
+
+    for ms_idx, nombre, estado, prioridad, start, end in features_spec:
+        feat = create_feature(
+            token,
+            portal["id"],
+            milestones[ms_idx]["id"],
+            pm["id"],
+            nombre=nombre,
+            estado=estado,
+            prioridad=prioridad,
+            fecha_inicio=add_days(today, start),
+            fecha_fin=add_days(today, end),
+            descripcion=f"Feature demo «{nombre}» en hito {ms_idx + 1}.",
+        )
+        features.append(feat)
+        idx = len(features) - 1
+        if estado not in ("completado", "cancelado") and idx in active_feature_indices:
+            n_tasks = 12 if prioridad in ("critica", "alta") else 8
+            task_total += seed_tasks_for_feature(
+                token,
+                portal["id"],
+                milestones[ms_idx]["id"],
+                feat["id"],
+                nombre,
+                dev_ids,
+                count=n_tasks,
+            )
+
+    auth_feat = features[0]
+    oauth = features[2]
+    webhooks = features[8]
+
+    queries_spec = [
+        (0, "¿Usamos SSO corporativo?", "Cliente pregunta por IdP.", dev["id"], "activar"),
+        (0, "¿MFA obligatorio?", "Dev solicita envío al cliente.", dev2["id"], "solicitar_envio"),
+        (0, "Política de sesiones", "Duración refresh token.", dev["id"], "activar"),
+        (5, "Matriz permisos v2", "PM debe validar roles.", dev2["id"], "activar"),
+        (7, "Rate limit webhooks", "¿Cuántos eventos/min?", dev["id"], "solicitar_envio"),
+        (8, "Sandbox Salesforce", "Credenciales de prueba.", dev2["id"], "activar"),
+        (9, "Versionado API pública", "Semver o fecha.", dev["id"], "activar"),
+        (10, "Ventana sync ERP", "Horario batch nocturno.", dev2["id"], "solicitar_envio"),
+    ]
+    for feat_idx, titulo, desc, author, action in queries_spec:
+        feat = features[feat_idx]
+        ms_id = milestones[features_spec[feat_idx][0]]["id"]
+        q = post(
+            token,
+            f"/projects/{portal['id']}/milestones/{ms_id}/features/{feat['id']}/queries",
+            {"titulo": titulo, "descripcion": desc, "created_by": author},
+        )
+        actor = dev["id"] if action == "solicitar_envio" else pm["id"]
+        rol = "dev" if action == "solicitar_envio" else "pm"
+        post(
+            token,
+            f"/projects/{portal['id']}/milestones/{ms_id}/features/{feat['id']}/queries/{q['id']}/actions",
+            {"action": action, "actor_user_id": actor, "actor_rol": rol},
+            expect=200,
         )
 
-    # Consultas inbox
-    _, q_active = http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{mvp['id']}/features/{auth_feat['id']}/queries",
-        body={
-            "titulo": "¿Usamos SSO corporativo?",
-            "descripcion": "Cliente pregunta por IdP.",
-            "created_by": dev["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{mvp['id']}/features/{auth_feat['id']}/queries/{q_active['id']}/actions",
-        body={"action": "activar", "actor_user_id": pm["id"], "actor_rol": "pm"},
-        token=token,
-        expect_status=200,
-    )
-    _, q_pending = http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{mvp['id']}/features/{auth_feat['id']}/queries",
-        body={
-            "titulo": "¿MFA obligatorio?",
-            "descripcion": "Dev solicita envío al cliente.",
-            "created_by": dev2["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{mvp['id']}/features/{auth_feat['id']}/queries/{q_pending['id']}/actions",
-        body={"action": "solicitar_envio", "actor_user_id": dev2["id"], "actor_rol": "dev"},
-        token=token,
-        expect_status=200,
-    )
+    reports_spec = [
+        (2, "bug", "Sesión OAuth no persiste al recargar."),
+        (2, "mejora", "Recordar último proveedor OAuth usado."),
+        (2, "bug", "Redirect loop en logout Google."),
+        (2, "mejora", "Botón «Continuar con Microsoft» más visible."),
+        (2, "bug", "Error 500 al vincular cuenta existente."),
+        (2, "mejora", "Tooltip explicando scopes OAuth."),
+    ]
+    for feat_idx, tipo, desc in reports_spec:
+        feat = features[feat_idx]
+        ms_id = milestones[features_spec[feat_idx][0]]["id"]
+        post(
+            token,
+            f"/projects/{portal['id']}/milestones/{ms_id}/features/{feat['id']}/reports",
+            {"tipo": tipo, "descripcion": desc, "reported_by": cliente["id"]},
+        )
 
-    # Reportes cliente
-    http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{mvp['id']}/features/{oauth['id']}/reports",
-        body={
-            "tipo": "bug",
-            "descripcion": "Sesión OAuth no persiste al recargar.",
-            "reported_by": cliente["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{mvp['id']}/features/{oauth['id']}/reports",
-        body={
-            "tipo": "mejora",
-            "descripcion": "Recordar último proveedor OAuth usado.",
-            "reported_by": cliente["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-
-    # Hub documento + exposiciones
-    _, doc = http(
-        "POST",
+    doc = post(
+        token,
         f"/projects/{portal['id']}/document",
-        body={
-            "titulo": "Especificación funcional MVP",
-            "contenido": "Alcance: auth, dashboard, OAuth y notificaciones.",
+        {
+            "titulo": "Especificación funcional Portal Cliente",
+            "contenido": (
+                "Alcance MVP: auth, dashboard, OAuth, notificaciones.\n\n"
+                "Integraciones: webhooks, Salesforce, API pública.\n\n"
+                "Analytics y mobile web en entregas posteriores."
+            ),
             "visibilidad": "publico",
             "created_by": pm["id"],
         },
-        token=token,
-        expect_status=201,
     )
-    http(
-        "POST",
+    post(
+        token,
         f"/projects/{portal['id']}/document-exposures",
-        body={
+        {
             "ambito": "proyecto",
             "document_id": doc["id"],
-            "titulo_visible": "Especificación MVP (cliente)",
+            "titulo_visible": "Especificación completa (cliente)",
             "expuesto_por": pm["id"],
         },
-        token=token,
-        expect_status=201,
     )
-    http(
-        "POST",
+    post(
+        token,
         f"/projects/{portal['id']}/document-exposures",
-        body={
+        {
             "ambito": "milestone",
-            "milestone_id": mvp["id"],
+            "milestone_id": milestones[0]["id"],
             "document_id": doc["id"],
-            "titulo_visible": "Alcance Entrega 1",
+            "titulo_visible": "Alcance Entrega 1 — MVP",
             "expuesto_por": pm["id"],
         },
-        token=token,
-        expect_status=201,
+    )
+    post(
+        token,
+        f"/projects/{portal['id']}/document-exposures",
+        {
+            "ambito": "feature",
+            "milestone_id": milestones[1]["id"],
+            "feature_id": webhooks["id"],
+            "document_id": doc["id"],
+            "titulo_visible": "Webhooks — anexo técnico",
+            "expuesto_por": pm["id"],
+        },
     )
 
-    # Comentarios → timeline
-    http(
-        "POST",
-        "/comments",
-        body={
-            "entidad_tipo": "feature",
-            "entidad_id": auth_feat["id"],
-            "user_id": dev["id"],
-            "contenido": "Avance en spike de permisos — falta validar con PM.",
-            "estado_momento": "en_progreso",
-        },
-        token=token,
-        expect_status=201,
-    )
-    http(
-        "POST",
-        "/comments",
-        body={
-            "entidad_tipo": "feature",
-            "entidad_id": dashboard["id"],
-            "user_id": pm["id"],
-            "contenido": "Liberado al cliente para validación UAT funcional.",
-            "estado_momento": "esperando_validacion_cliente",
-        },
-        token=token,
-        expect_status=201,
-    )
-
-    # ── 2. Sprint Interno ──────────────────────────────────────────────────
-    interno = create_project(
-        organization_id=org_id,
-        nombre="Sprint Interno",
-        descripcion="Solo equipo: UAT, consultas internas y Kanban denso.",
-        tipo="interno",
-        fecha_inicio=add_days(today, -14),
-        fecha_fin=add_days(today, 75),
-        created_by=pm["id"],
-    )
-    for uid, rol in [(pm["id"], "pm"), (dev["id"], "dev"), (dev2["id"], "dev"), (qa["id"], "qa")]:
-        add_member(interno["id"], pm["id"], uid, rol)
-
-    _, sprint1 = http(
-        "POST",
-        f"/projects/{interno['id']}/milestones",
-        body={
-            "nombre": "Sprint 1",
-            "descripcion": "API + refactor tareas.",
-            "tipo": "entrega",
-            "orden": 1,
-            "fecha_inicio": add_days(today, -14),
-            "fecha_fin": add_days(today, 30),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, sprint2 = http(
-        "POST",
-        f"/projects/{interno['id']}/milestones",
-        body={
-            "nombre": "Sprint 2",
-            "descripcion": "Performance y bundle BFF.",
-            "tipo": "entrega",
-            "orden": 2,
-            "fecha_inicio": add_days(today, 31),
-            "fecha_fin": add_days(today, 75),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-
-    _, api_feat = http(
-        "POST",
-        f"/projects/{interno['id']}/milestones/{sprint1['id']}/features",
-        body={
-            "nombre": "API integración",
-            "tipo": "desarrollo",
-            "prioridad": "alta",
-            "estado": "en_progreso",
-            "fecha_inicio": add_days(today, -14),
-            "fecha_fin": add_days(today, 20),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, refactor = http(
-        "POST",
-        f"/projects/{interno['id']}/milestones/{sprint1['id']}/features",
-        body={
-            "nombre": "Refactor módulo tareas",
-            "tipo": "desarrollo",
-            "prioridad": "media",
-            "estado": "uat",
-            "fecha_inicio": add_days(today, -10),
-            "fecha_fin": add_days(today, 25),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, perf = http(
-        "POST",
-        f"/projects/{interno['id']}/milestones/{sprint2['id']}/features",
-        body={
-            "nombre": "Lazy-load vistas",
-            "tipo": "desarrollo",
-            "prioridad": "media",
-            "estado": "pendiente",
-            "fecha_inicio": add_days(today, 35),
-            "fecha_fin": add_days(today, 70),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-
-    for titulo, estado in [
-        ("Cliente API centralizado", "in_progress"),
-        ("Tipos en contexto React", "ready_for_test"),
-        ("Paginación inbox", "to_do"),
-    ]:
-        http(
-            "POST",
-            f"/projects/{interno['id']}/milestones/{sprint1['id']}/features/{api_feat['id']}/tasks",
-            body={"titulo": titulo, "estado": estado, "asignado_a": dev["id"], "created_by": dev["id"]},
-            token=token,
-            expect_status=201,
+    hub_updates = [
+        ("OAuth Google listo en staging.", dev["id"], "publico", None),
+        ("Dashboard PM liberado al cliente.", pm["id"], "publico", None),
+        ("Inicio sprint integraciones.", pm["id"], "publico", None),
+        ("Webhooks: primer conector en QA.", dev2["id"], "publico", None),
+        ("Retraso menor en Salesforce sandbox.", pm["id"], "publico", None),
+        ("Cliente confirmó alcance analytics.", pm["id"], "publico", None),
+        ("Deploy hotfix auth middleware.", dev["id"], "interno", None),
+        ("Revisión seguridad pendiente.", dev2["id"], "interno", None),
+    ]
+    hub_notes = [
+        ("Decisiones MVP", "Notificaciones push fuera del MVP.", pm["id"], "publico"),
+        ("Acuerdo SLA", "Respuesta consultas < 48h hábiles.", pm["id"], "publico"),
+        ("Deuda técnica", "Refactor permisos post-entrega 2.", dev["id"], "interno"),
+    ]
+    for contenido, author, vis, _ in hub_updates:
+        post(
+            token,
+            f"/projects/{portal['id']}/hub-entries",
+            {
+                "author_id": author,
+                "tipo": "update",
+                "contenido": contenido,
+                "visibilidad": vis,
+            },
+        )
+    for titulo, contenido, author, vis in hub_notes:
+        post(
+            token,
+            f"/projects/{portal['id']}/hub-entries",
+            {
+                "author_id": author,
+                "tipo": "note",
+                "titulo": titulo,
+                "contenido": contenido,
+                "visibilidad": vis,
+            },
         )
 
-    http(
-        "POST",
-        f"/projects/{interno['id']}/milestones/{sprint1['id']}/features/{refactor['id']}/tasks",
-        body={
-            "titulo": "Validar PATCH asignado_a",
-            "estado": "ready_for_test",
-            "asignado_a": dev["id"],
-            "created_by": dev["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    http(
-        "POST",
-        "/comments",
-        body={
-            "entidad_tipo": "feature",
-            "entidad_id": refactor["id"],
-            "user_id": dev["id"],
-            "contenido": "Handoff UAT: refactor listo para QA.",
-            "estado_momento": "uat",
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, q_int = http(
-        "POST",
-        f"/projects/{interno['id']}/milestones/{sprint1['id']}/features/{api_feat['id']}/queries",
-        body={
-            "titulo": "URL API producción",
-            "descripcion": "PM debe confirmar endpoint.",
-            "created_by": dev2["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    http(
-        "POST",
-        f"/projects/{interno['id']}/milestones/{sprint1['id']}/features/{api_feat['id']}/queries/{q_int['id']}/actions",
-        body={"action": "activar", "actor_user_id": pm["id"], "actor_rol": "pm"},
-        token=token,
-        expect_status=200,
-    )
+    for i, feat in enumerate(features[:12]):
+        create_comment(
+            token,
+            entidad_tipo="feature",
+            entidad_id=feat["id"],
+            user_id=dev_ids[i % 2],
+            contenido=f"Comentario demo #{i + 1} en {feat['nombre'][:40]}.",
+            estado_momento=features_spec[i][2],
+        )
 
-    http(
-        "POST",
-        f"/projects/{interno['id']}/document",
-        body={
-            "titulo": "Notas técnicas sprint 1",
-            "contenido": "Solo equipo: contratos API internos.",
-            "visibilidad": "interno",
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
+    return {
+        "project": portal,
+        "milestones": len(milestones),
+        "features": len(features),
+        "tasks": task_total,
+        "queries": len(queries_spec),
+        "reports": len(reports_spec),
+    }
 
-    # ── 3. App Móvil Retail ────────────────────────────────────────────────
-    mobile = create_project(
-        organization_id=org_id,
-        nombre="App Móvil Retail",
-        descripcion="Segundo proyecto con cliente: catálogo, carrito y pagos.",
-        tipo="con_cliente",
-        fecha_inicio=add_days(today, -7),
-        fecha_fin=add_days(today, 120),
-        created_by=pm["id"],
+
+def seed_plataforma_interna(
+    token: str,
+    org_id: str,
+    today: date,
+    users: dict[str, dict],
+) -> dict:
+    pm = users["pm@center.demo"]
+    dev = users["dev@center.demo"]
+    dev2 = users["dev2@center.demo"]
+    qa = users["qa@center.demo"]
+    dev_ids = [dev["id"], dev2["id"]]
+
+    interno = create_project(
+        token,
+        org_id,
+        pm["id"],
+        nombre="Plataforma Interna Center",
+        descripcion=(
+            "Proyecto interno: múltiples sprints, UAT denso, consultas PM, "
+            "hub interno y Kanban con decenas de tareas."
+        ),
+        tipo="interno",
+        fecha_inicio=add_days(today, -30),
+        fecha_fin=add_days(today, 90),
     )
     for uid, rol in [
         (pm["id"], "pm"),
+        (dev["id"], "dev"),
         (dev2["id"], "dev"),
         (qa["id"], "qa"),
-        (cliente["id"], "cliente"),
     ]:
-        add_member(mobile["id"], pm["id"], uid, rol)
+        add_member(interno["id"], pm["id"], uid, rol)
 
-    _, ms_mobile = http(
-        "POST",
-        f"/projects/{mobile['id']}/milestones",
-        body={
-            "nombre": "Release 0.9 Beta",
-            "tipo": "entrega",
-            "orden": 1,
-            "fecha_inicio": add_days(today, -7),
-            "fecha_fin": add_days(today, 45),
+    milestones_spec = [
+        ("Sprint 1 — Fundaciones", 1, -30, 0, "API, auth interna y layout."),
+        ("Sprint 2 — Colaboración", 2, 1, 30, "Inbox, comentarios y hub."),
+        ("Sprint 3 — PM tools", 3, 31, 55, "Portfolio, timeline y alcance."),
+        ("Sprint 4 — Dev workspace", 4, 56, 75, "Kanban, entregas y queries."),
+        ("Sprint 5 — Hardening", 5, 76, 90, "Performance, tests E2E y docs."),
+    ]
+    milestones: list[dict] = []
+    for nombre, orden, start, end, desc in milestones_spec:
+        ms = create_milestone(
+            token,
+            interno["id"],
+            pm["id"],
+            nombre=nombre,
+            orden=orden,
+            fecha_inicio=add_days(today, start),
+            fecha_fin=add_days(today, end),
+            descripcion=desc,
+        )
+        milestones.append(ms)
+
+    features_spec: list[tuple[int, str, str, str, int, int]] = [
+        (0, "API integración central", "en_progreso", "alta", -28, 5),
+        (0, "Auth tokens internos", "en_progreso", "critica", -25, 8),
+        (0, "Layout shell v3", "uat", "media", -22, 10),
+        (0, "Migración SQLite → PG", "pendiente", "alta", -20, 15),
+        (1, "Inbox unificado PM", "en_progreso", "alta", -5, 25),
+        (1, "Hilos de comentarios", "uat", "media", -3, 28),
+        (1, "Hub documentación", "en_progreso", "media", 0, 30),
+        (1, "Notificaciones in-app", "pendiente", "baja", 5, 32),
+        (2, "Portfolio salud", "en_progreso", "alta", 32, 50),
+        (2, "Timeline Gantt", "uat", "media", 35, 52),
+        (2, "Alcance editorial", "en_progreso", "media", 38, 54),
+        (2, "Features globales", "pendiente", "baja", 40, 55),
+        (3, "Kanban swimlanes", "en_progreso", "alta", 58, 72),
+        (3, "Mis entregas dev", "uat", "media", 60, 74),
+        (3, "Consultas bloqueantes", "en_progreso", "critica", 62, 70),
+        (3, "Task detail modal", "pendiente", "media", 65, 73),
+        (4, "Bundle splitting", "pendiente", "media", 78, 88),
+        (4, "Tests E2E Playwright", "pendiente", "alta", 80, 89),
+        (4, "Observabilidad logs", "pendiente", "baja", 82, 90),
+    ]
+
+    features: list[dict] = []
+    task_total = 0
+    for ms_idx, nombre, estado, prioridad, start, end in features_spec:
+        feat = create_feature(
+            token,
+            interno["id"],
+            milestones[ms_idx]["id"],
+            pm["id"],
+            nombre=nombre,
+            estado=estado,
+            prioridad=prioridad,
+            fecha_inicio=add_days(today, start),
+            fecha_fin=add_days(today, end),
+            descripcion=f"Feature interna «{nombre}».",
+        )
+        features.append(feat)
+        if estado not in ("cancelado",):
+            n_tasks = 14 if prioridad in ("critica", "alta") else 9
+            task_total += seed_tasks_for_feature(
+                token,
+                interno["id"],
+                milestones[ms_idx]["id"],
+                feat["id"],
+                nombre,
+                dev_ids,
+                count=n_tasks,
+            )
+
+    queries_spec = [
+        (0, "URL API producción", "PM debe confirmar endpoint.", dev2["id"]),
+        (1, "Política refresh tokens", "Duración y rotación.", dev["id"]),
+        (4, "Prioridad inbox vs email", "¿Unificar bandejas?", dev2["id"]),
+        (6, "Visibilidad docs internos", "Reglas hub vs document.", dev["id"]),
+        (8, "Métricas portfolio", "Definición 'at risk'.", dev2["id"]),
+        (12, "Drag entre columnas", "Reglas QA en Kanban.", dev["id"]),
+        (14, "Estados consulta interna", "Flujo cierre PM.", dev2["id"]),
+    ]
+    for feat_idx, titulo, desc, author in queries_spec:
+        feat = features[feat_idx]
+        ms_id = milestones[features_spec[feat_idx][0]]["id"]
+        q = post(
+            token,
+            f"/projects/{interno['id']}/milestones/{ms_id}/features/{feat['id']}/queries",
+            {"titulo": titulo, "descripcion": desc, "created_by": author},
+        )
+        post(
+            token,
+            f"/projects/{interno['id']}/milestones/{ms_id}/features/{feat['id']}/queries/{q['id']}/actions",
+            {"action": "activar", "actor_user_id": pm["id"], "actor_rol": "pm"},
+            expect=200,
+        )
+
+    post(
+        token,
+        f"/projects/{interno['id']}/document",
+        {
+            "titulo": "Wiki técnica Plataforma Interna",
+            "contenido": (
+                "Contratos API, ADRs, runbooks y checklists de release.\n\n"
+                "Solo visible para el equipo (visibilidad interno)."
+            ),
+            "visibilidad": "interno",
             "created_by": pm["id"],
         },
-        token=token,
-        expect_status=201,
-    )
-    _, catalogo = http(
-        "POST",
-        f"/projects/{mobile['id']}/milestones/{ms_mobile['id']}/features",
-        body={
-            "nombre": "Catálogo productos",
-            "tipo": "desarrollo",
-            "prioridad": "alta",
-            "estado": "uat",
-            "fecha_inicio": add_days(today, -5),
-            "fecha_fin": add_days(today, 30),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, pagos = http(
-        "POST",
-        f"/projects/{mobile['id']}/milestones/{ms_mobile['id']}/features",
-        body={
-            "nombre": "Checkout y pagos",
-            "tipo": "desarrollo",
-            "prioridad": "critica",
-            "estado": "pendiente",
-            "fecha_inicio": add_days(today, 10),
-            "fecha_fin": add_days(today, 50),
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    http(
-        "POST",
-        f"/projects/{mobile['id']}/milestones/{ms_mobile['id']}/features/{catalogo['id']}/tasks",
-        body={
-            "titulo": "Listado con infinite scroll",
-            "estado": "ready_for_test",
-            "asignado_a": dev2["id"],
-            "created_by": dev2["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    _, doc_mobile = http(
-        "POST",
-        f"/projects/{mobile['id']}/document",
-        body={
-            "titulo": "Guía de estilo móvil",
-            "contenido": "Tipografía, colores y componentes.",
-            "visibilidad": "publico",
-            "created_by": pm["id"],
-        },
-        token=token,
-        expect_status=201,
-    )
-    http(
-        "POST",
-        f"/projects/{mobile['id']}/document-exposures",
-        body={
-            "ambito": "feature",
-            "milestone_id": ms_mobile["id"],
-            "feature_id": catalogo["id"],
-            "document_id": doc_mobile["id"],
-            "titulo_visible": "Guía UI — Catálogo",
-            "expuesto_por": pm["id"],
-        },
-        token=token,
-        expect_status=201,
     )
 
-    # ── 4. Migración Legacy (cerrado) ──────────────────────────────────────
-    legacy = create_project(
-        organization_id=org_id,
-        nombre="Migración Legacy",
-        descripcion="Proyecto cerrado para probar lectura-only en settings.",
-        tipo="interno",
-        fecha_inicio=add_days(today, -180),
-        fecha_fin=add_days(today, -30),
-        created_by=pm["id"],
-    )
-    add_member(legacy["id"], pm["id"], pm["id"], "pm")
-    add_member(legacy["id"], pm["id"], dev["id"], "dev")
-    http(
-        "POST",
-        f"/projects/{legacy['id']}/actions",
-        body={"action": "cerrar", "actor_user_id": pm["id"], "actor_rol": "pm"},
-        token=token,
-        expect_status=200,
-    )
+    for contenido, author in [
+        ("API central: primer endpoint estable.", dev["id"]),
+        ("Layout v3 en rama main.", dev2["id"]),
+        ("Inbox PM: filtros por tab.", dev["id"]),
+        ("Timeline: hitos solapados OK.", pm["id"]),
+        ("Kanban: scroll fix en dev.", dev2["id"]),
+        ("QA: suite UAT ampliada.", dev["id"]),
+        ("Refactor acceso documentos.", dev["id"]),
+        ("Seed demo v10 desplegado.", pm["id"]),
+    ]:
+        post(
+            token,
+            f"/projects/{interno['id']}/hub-entries",
+            {
+                "author_id": author,
+                "tipo": "update",
+                "contenido": contenido,
+                "visibilidad": "interno",
+            },
+        )
+
+    for titulo, contenido, author in [
+        ("Convención commits", "Conventional commits + scope.", pm["id"]),
+        ("Deuda Q3", "Migración PG y cache Redis.", dev["id"]),
+        ("QA focus", "UAT gates por feature.", pm["id"]),
+    ]:
+        post(
+            token,
+            f"/projects/{interno['id']}/hub-entries",
+            {
+                "author_id": author,
+                "tipo": "note",
+                "titulo": titulo,
+                "contenido": contenido,
+                "visibilidad": "interno",
+            },
+        )
+
+    for i, feat in enumerate(features):
+        create_comment(
+            token,
+            entidad_tipo="feature",
+            entidad_id=feat["id"],
+            user_id=dev_ids[i % 2],
+            contenido=f"Seguimiento interno #{i + 1}: {feat['nombre'][:35]}.",
+            estado_momento=features_spec[i][2],
+        )
+
+    return {
+        "project": interno,
+        "milestones": len(milestones),
+        "features": len(features),
+        "tasks": task_total,
+        "queries": len(queries_spec),
+    }
+
+
+def seed_rich_demo() -> None:
+    wait_for_api()
+    today = date.today()
+    users = {email: ensure_user(email, nombre) for email, nombre in DEMO_USERS}
+    pm = users["pm@center.demo"]
+
+    auth = login(pm["email"])
+    token = auth["access_token"]
+    org_id = auth.get("organization_id")
+    if not org_id:
+        org = post(
+            token,
+            "/organizations",
+            {"nombre": "Center Demo", "slug": "center-demo"},
+        )
+        org_id = org["id"]
+        auth = login(pm["email"])
+        token = auth["access_token"]
+
+    portal_stats = seed_portal_cliente(token, org_id, today, users)
+    interno_stats = seed_plataforma_interna(token, org_id, today, users)
 
     print(f"[seed] {SEED_VERSION} OK — {len(DEMO_USERS)} usuarios, {len(DEMO_PROJECTS)} proyectos")
+    print(f"  • {portal_stats['project']['nombre']} (con_cliente):")
+    print(
+        f"      {portal_stats['milestones']} hitos, {portal_stats['features']} features, "
+        f"{portal_stats['tasks']} tareas, {portal_stats['queries']} consultas, "
+        f"{portal_stats['reports']} reportes"
+    )
+    print(f"  • {interno_stats['project']['nombre']} (interno):")
+    print(
+        f"      {interno_stats['milestones']} hitos, {interno_stats['features']} features, "
+        f"{interno_stats['tasks']} tareas, {interno_stats['queries']} consultas"
+    )
     print("  Cuentas: " + ", ".join(e for e, _ in DEMO_USERS))
     print(f"  Password: {DEMO_PASSWORD}")
 
