@@ -18,10 +18,9 @@ from app.models.entities import (
     Project,
     ProjectMember,
     Task,
-    TaskStateTransition,
     User,
 )
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 @pytest.fixture
@@ -34,20 +33,6 @@ def db_session():
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     session = SessionLocal()
-    for desde, hasta in (
-        ("backlog", "to_do"),
-        ("to_do", "in_progress"),
-        ("in_progress", "ready_for_test"),
-        ("ready_for_test", "completed"),
-    ):
-        session.add(
-            TaskStateTransition(
-                estado_desde=desde,
-                estado_hasta=hasta,
-                rol_permitido="dev",
-            )
-        )
-    session.commit()
     try:
         yield session
     finally:
@@ -90,14 +75,10 @@ def _seed_three_devs(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(project_id=project.id, user_id=dev_a, rol="dev"),
-            ProjectMember(project_id=project.id, user_id=dev_b, rol="dev"),
-            ProjectMember(project_id=project.id, user_id=dev_c, rol="dev"),
-        ]
-    )
+    add_member_with_slug(session, project, pm_id, 'pm')
+    add_member_with_slug(session, project, dev_a, 'dev')
+    add_member_with_slug(session, project, dev_b, 'dev')
+    add_member_with_slug(session, project, dev_c, 'dev')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,

@@ -1,11 +1,12 @@
 """Agregación liviana del portfolio PM (todos los proyectos donde el usuario es PM)."""
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import (
@@ -16,6 +17,7 @@ from app.models.entities import (
     Milestone,
     Project,
     ProjectMember,
+    ProjectRole,
 )
 from app.schemas.pm_portfolio import (
     PmAttentionItemRead,
@@ -31,16 +33,20 @@ from app.schemas.pm_portfolio import (
 from app.services.audit_display import audit_log_to_read
 from app.services.organizations import get_org_member
 from app.services.project_bundle import _PENDING_QUERY_STATES
+from app.services.workflow.categories import (
+    batch_load_workflows,
+    is_terminal_state,
+    state_category,
+    state_keys_in_categories,
+    state_meta,
+)
 
 AT_RISK_DAYS = 14
 STALLED_DAYS = 14
 ACTIVITY_LIMIT = 10
 CRITICAL_MILESTONES_LIMIT = 8
 
-_ACTIVE_MILESTONE_STATES = frozenset({"en_progreso", "en_progreso_con_bug"})
-_CRITICAL_MILESTONE_STATES = frozenset(
-    {"pendiente", "en_progreso", "en_progreso_con_bug"}
-)
+_PM_PENDING_QUERY_CATEGORIES = frozenset({"inbox_pm", "draft", "active"})
 
 
 def _empty_totals() -> PmPortfolioTotalsRead:
@@ -135,23 +141,159 @@ def _is_stalled(
     return (today - ref_date).days > STALLED_DAYS
 
 
+def _is_feature_cancelled(wf: dict, estado: str) -> bool:
+    if estado == "cancelado":
+        return True
+    return is_terminal_state(wf, estado) and estado == "cancelado"
+
+
+def _feature_bucket(wf: dict, estado: str, bloqueada: bool) -> str | None:
+    if _is_feature_cancelled(wf, estado):
+        return None
+    cat = state_category(wf, estado)
+    if cat == "terminal":
+        return "completed"
+    if cat == "active":
+        return "in_progress"
+    if cat == "pending":
+        return "pending"
+    if cat == "uat":
+        return "uat"
+    if cat == "inbox_client":
+        return "awaiting_client"
+    if cat == "inbox_pm":
+        return "release"
+    if bloqueada:
+        return "blocked_marker"
+    # Fallbacks por key legacy
+    if estado == "completado":
+        return "completed"
+    if estado == "en_progreso":
+        return "in_progress"
+    if estado == "pendiente":
+        return "pending"
+    if estado == "uat":
+        return "uat"
+    if estado == "esperando_validacion_cliente":
+        return "awaiting_client"
+    if estado == "esperando_liberacion_pm":
+        return "release"
+    return "other"
+
+
+def _is_pm_pending_report(wf: dict, estado: str) -> bool:
+    cat = state_category(wf, estado)
+    if cat:
+        return cat == "inbox_pm"
+    return estado == "pendiente"
+
+
+def _is_pm_pending_query(wf: dict, estado: str) -> bool:
+    if is_terminal_state(wf, estado):
+        return False
+    cat = state_category(wf, estado)
+    if cat:
+        return cat in _PM_PENDING_QUERY_CATEGORIES
+    return estado in _PENDING_QUERY_STATES
+
+
+def _aggregate_feature_stats(
+    features: list[Feature],
+    workflows: dict,
+) -> dict[UUID, dict[str, int]]:
+    stats: dict[UUID, dict[str, int]] = defaultdict(
+        lambda: {
+            "features_total": 0,
+            "features_completed": 0,
+            "features_in_progress": 0,
+            "features_blocked": 0,
+            "release_count": 0,
+            "features_pending": 0,
+            "features_uat": 0,
+            "features_awaiting_client": 0,
+        }
+    )
+    for feature in features:
+        wf = workflows.get((feature.project_id, "feature"), {})
+        bucket = _feature_bucket(wf, feature.estado, feature.bloqueada)
+        if bucket is None:
+            continue
+        row = stats[feature.project_id]
+        row["features_total"] += 1
+        if feature.bloqueada:
+            row["features_blocked"] += 1
+        if bucket == "completed":
+            row["features_completed"] += 1
+        elif bucket == "in_progress":
+            row["features_in_progress"] += 1
+        elif bucket == "pending":
+            row["features_pending"] += 1
+        elif bucket == "uat":
+            row["features_uat"] += 1
+        elif bucket == "awaiting_client":
+            row["features_awaiting_client"] += 1
+        elif bucket == "release":
+            row["release_count"] += 1
+    return stats
+
+
+def _count_reports_by_project(
+    db: Session,
+    project_ids: list[UUID],
+    workflows: dict,
+) -> dict[UUID, int]:
+    rows = db.execute(
+        select(FeatureReport, Feature)
+        .join(Feature, FeatureReport.feature_id == Feature.id)
+        .where(Feature.project_id.in_(project_ids))
+    ).all()
+    counts: dict[UUID, int] = defaultdict(int)
+    for report, feature in rows:
+        wf = workflows.get((feature.project_id, "report"), {})
+        if _is_pm_pending_report(wf, report.estado):
+            counts[feature.project_id] += 1
+    return counts
+
+
+def _count_queries_by_project(
+    db: Session,
+    project_ids: list[UUID],
+    workflows: dict,
+) -> dict[UUID, int]:
+    rows = db.execute(
+        select(FeatureQuery, Feature)
+        .join(Feature, FeatureQuery.feature_id == Feature.id)
+        .where(Feature.project_id.in_(project_ids))
+    ).all()
+    counts: dict[UUID, int] = defaultdict(int)
+    for query, feature in rows:
+        wf = workflows.get((feature.project_id, "query"), {})
+        if _is_pm_pending_query(wf, query.estado):
+            counts[feature.project_id] += 1
+    return counts
+
+
 def _active_milestone_by_project(
     db: Session,
     project_ids: list[UUID],
+    workflows: dict,
 ) -> dict[UUID, str]:
     milestones = list(
         db.scalars(
             select(Milestone)
-            .where(
-                Milestone.project_id.in_(project_ids),
-                Milestone.estado.in_(_ACTIVE_MILESTONE_STATES),
-            )
+            .where(Milestone.project_id.in_(project_ids))
             .order_by(Milestone.project_id, Milestone.orden)
         )
     )
     result: dict[UUID, str] = {}
     for milestone in milestones:
-        if milestone.project_id not in result:
+        if milestone.project_id in result:
+            continue
+        wf = workflows.get((milestone.project_id, "milestone"), {})
+        active_keys = state_keys_in_categories(wf, {"active"})
+        if not active_keys:
+            active_keys = frozenset({"en_progreso", "en_progreso_con_bug"})
+        if milestone.estado in active_keys:
             result[milestone.project_id] = milestone.nombre
     return result
 
@@ -173,6 +315,7 @@ def _build_attention_items(
     db: Session,
     projects: list[Project],
     project_ids: list[UUID],
+    workflows: dict,
 ) -> list[PmAttentionItemRead]:
     project_names = {p.id: p.nombre for p in projects}
     items: list[PmAttentionItemRead] = []
@@ -180,12 +323,12 @@ def _build_attention_items(
     report_rows = db.execute(
         select(FeatureReport, Feature)
         .join(Feature, FeatureReport.feature_id == Feature.id)
-        .where(
-            Feature.project_id.in_(project_ids),
-            FeatureReport.estado == "pendiente",
-        )
+        .where(Feature.project_id.in_(project_ids))
     ).all()
     for report, feature in report_rows:
+        wf = workflows.get((feature.project_id, "report"), {})
+        if not _is_pm_pending_report(wf, report.estado):
+            continue
         tipo_label = "Bug" if report.tipo == "bug" else "Mejora"
         items.append(
             PmAttentionItemRead(
@@ -203,12 +346,12 @@ def _build_attention_items(
     query_rows = db.execute(
         select(FeatureQuery, Feature)
         .join(Feature, FeatureQuery.feature_id == Feature.id)
-        .where(
-            Feature.project_id.in_(project_ids),
-            FeatureQuery.estado.in_(_PENDING_QUERY_STATES),
-        )
+        .where(Feature.project_id.in_(project_ids))
     ).all()
     for query, feature in query_rows:
+        wf = workflows.get((feature.project_id, "query"), {})
+        if not _is_pm_pending_query(wf, query.estado):
+            continue
         items.append(
             PmAttentionItemRead(
                 kind="query",
@@ -221,15 +364,13 @@ def _build_attention_items(
             )
         )
 
-    release_features = list(
-        db.scalars(
-            select(Feature).where(
-                Feature.project_id.in_(project_ids),
-                Feature.estado == "esperando_liberacion_pm",
-            )
-        )
+    all_features = list(
+        db.scalars(select(Feature).where(Feature.project_id.in_(project_ids)))
     )
-    for feature in release_features:
+    for feature in all_features:
+        wf = workflows.get((feature.project_id, "feature"), {})
+        if _feature_bucket(wf, feature.estado, feature.bloqueada) != "release":
+            continue
         items.append(
             PmAttentionItemRead(
                 kind="release",
@@ -286,6 +427,7 @@ def _build_critical_milestones(
     db: Session,
     projects: list[Project],
     project_ids: list[UUID],
+    workflows: dict,
     today: date,
 ) -> list[PmCriticalMilestoneRead]:
     project_names = {p.id: p.nombre for p in projects}
@@ -299,25 +441,37 @@ def _build_critical_milestones(
             select(Milestone)
             .where(
                 Milestone.project_id.in_(active_project_ids),
-                Milestone.estado.in_(_CRITICAL_MILESTONE_STATES),
                 Milestone.fecha_fin <= cutoff,
             )
             .order_by(Milestone.fecha_fin, Milestone.orden)
-            .limit(CRITICAL_MILESTONES_LIMIT)
         )
     )
-    return [
-        PmCriticalMilestoneRead(
-            milestone_id=m.id,
-            project_id=m.project_id,
-            project_nombre=project_names[m.project_id],
-            nombre=m.nombre,
-            estado=m.estado,
-            fecha_fin=m.fecha_fin,
-            days_remaining=max(0, (m.fecha_fin - today).days),
+
+    critical: list[PmCriticalMilestoneRead] = []
+    for m in milestones:
+        wf = workflows.get((m.project_id, "milestone"), {})
+        critical_keys = state_keys_in_categories(wf, {"pending", "active"})
+        if not critical_keys:
+            critical_keys = frozenset({"pendiente", "en_progreso", "en_progreso_con_bug"})
+        if m.estado not in critical_keys:
+            continue
+        meta = state_meta(wf, m.estado)
+        critical.append(
+            PmCriticalMilestoneRead(
+                milestone_id=m.id,
+                project_id=m.project_id,
+                project_nombre=project_names[m.project_id],
+                nombre=m.nombre,
+                estado=m.estado,
+                estado_label=meta["label"],
+                estado_badge=meta["badge"],
+                fecha_fin=m.fecha_fin,
+                days_remaining=max(0, (m.fecha_fin - today).days),
+            )
         )
-        for m in milestones
-    ]
+        if len(critical) >= CRITICAL_MILESTONES_LIMIT:
+            break
+    return critical
 
 
 def build_pm_portfolio(
@@ -332,10 +486,11 @@ def build_pm_portfolio(
         db.scalars(
             select(Project)
             .join(ProjectMember, ProjectMember.project_id == Project.id)
+            .join(ProjectRole, ProjectRole.id == ProjectMember.role_id)
             .where(
                 Project.organization_id == organization_id,
                 ProjectMember.user_id == user_id,
-                ProjectMember.rol == "pm",
+                ProjectRole.slug == "pm",
             )
             .order_by(Project.created_at.desc())
         )
@@ -353,6 +508,7 @@ def build_pm_portfolio(
 
     project_ids = [p.id for p in projects]
     today = date.today()
+    workflows = batch_load_workflows(db, projects)
 
     milestone_counts = dict(
         db.execute(
@@ -362,77 +518,26 @@ def build_pm_portfolio(
         ).all()
     )
 
-    feature_rows = db.execute(
-        select(
-            Feature.project_id,
-            func.count()
-            .filter(Feature.estado != "cancelado")
-            .label("features_total"),
-            func.count()
-            .filter(Feature.estado == "completado")
-            .label("features_completed"),
-            func.count()
-            .filter(Feature.estado == "en_progreso")
-            .label("features_in_progress"),
-            func.count()
-            .filter(and_(Feature.bloqueada.is_(True), Feature.estado != "cancelado"))
-            .label("features_blocked"),
-            func.count()
-            .filter(Feature.estado == "esperando_liberacion_pm")
-            .label("release_count"),
-            func.count()
-            .filter(Feature.estado == "pendiente")
-            .label("features_pending"),
-            func.count()
-            .filter(Feature.estado == "uat")
-            .label("features_uat"),
-            func.count()
-            .filter(Feature.estado == "esperando_validacion_cliente")
-            .label("features_awaiting_client"),
-        )
-        .where(Feature.project_id.in_(project_ids))
-        .group_by(Feature.project_id)
-    ).all()
-    feature_stats = {row.project_id: row for row in feature_rows}
-
-    report_counts = dict(
-        db.execute(
-            select(Feature.project_id, func.count())
-            .join(FeatureReport, FeatureReport.feature_id == Feature.id)
-            .where(
-                Feature.project_id.in_(project_ids),
-                FeatureReport.estado == "pendiente",
-            )
-            .group_by(Feature.project_id)
-        ).all()
+    all_features = list(
+        db.scalars(select(Feature).where(Feature.project_id.in_(project_ids)))
     )
-
-    query_counts = dict(
-        db.execute(
-            select(Feature.project_id, func.count())
-            .join(FeatureQuery, FeatureQuery.feature_id == Feature.id)
-            .where(
-                Feature.project_id.in_(project_ids),
-                FeatureQuery.estado.in_(_PENDING_QUERY_STATES),
-            )
-            .group_by(Feature.project_id)
-        ).all()
-    )
-
-    active_milestones = _active_milestone_by_project(db, project_ids)
+    feature_stats = _aggregate_feature_stats(all_features, workflows)
+    report_counts = _count_reports_by_project(db, project_ids, workflows)
+    query_counts = _count_queries_by_project(db, project_ids, workflows)
+    active_milestones = _active_milestone_by_project(db, project_ids, workflows)
     last_activity_map = _last_activity_by_project(db, project_ids)
 
     summaries: list[PmProjectSummaryRead] = []
     for project in projects:
-        stats = feature_stats.get(project.id)
-        features_total = int(stats.features_total) if stats else 0
-        features_completed = int(stats.features_completed) if stats else 0
-        features_in_progress = int(stats.features_in_progress) if stats else 0
-        features_blocked = int(stats.features_blocked) if stats else 0
-        features_pending = int(stats.features_pending) if stats else 0
-        features_uat = int(stats.features_uat) if stats else 0
-        features_awaiting_client = int(stats.features_awaiting_client) if stats else 0
-        release_count = int(stats.release_count) if stats else 0
+        stats = feature_stats.get(project.id, {})
+        features_total = stats.get("features_total", 0)
+        features_completed = stats.get("features_completed", 0)
+        features_in_progress = stats.get("features_in_progress", 0)
+        features_blocked = stats.get("features_blocked", 0)
+        features_pending = stats.get("features_pending", 0)
+        features_uat = stats.get("features_uat", 0)
+        features_awaiting_client = stats.get("features_awaiting_client", 0)
+        release_count = stats.get("release_count", 0)
         pending_reports = report_counts.get(project.id, 0)
         pending_queries = query_counts.get(project.id, 0)
         inbox_action_count = pending_reports + pending_queries + release_count
@@ -529,7 +634,9 @@ def build_pm_portfolio(
             features_pending_total=features_pending_total,
             inbox_breakdown=global_breakdown,
         ),
-        attention_items=_build_attention_items(db, projects, project_ids),
+        attention_items=_build_attention_items(db, projects, project_ids, workflows),
         recent_activity=_build_recent_activity(db, projects, project_ids),
-        critical_milestones=_build_critical_milestones(db, projects, project_ids, today),
+        critical_milestones=_build_critical_milestones(
+            db, projects, project_ids, workflows, today
+        ),
     )

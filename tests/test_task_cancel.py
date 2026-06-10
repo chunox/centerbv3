@@ -5,10 +5,10 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models.entities import Base, TaskStateTransition
-from app.services.features import ensure_default_task, load_active_tasks
+from app.models.entities import Base
+from app.services.features import load_active_tasks
 from app.services.tasks import move_task
-from tests.test_features_workflow import _seed_project, _seed_task_transitions
+from tests.test_features_workflow import _seed_project
 
 
 @pytest.fixture
@@ -17,16 +17,6 @@ def db_session():
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     session = SessionLocal()
-    _seed_task_transitions(session)
-    for desde in ("backlog", "to_do", "in_progress", "ready_for_test"):
-        session.add(
-            TaskStateTransition(
-                estado_desde=desde,
-                estado_hasta="cancel",
-                rol_permitido="dev",
-            )
-        )
-    session.commit()
     try:
         yield session
     finally:
@@ -72,4 +62,4 @@ def test_cannot_cancel_completed_task(db_session: Session):
             actor_user_id=dev_id,
         )
     assert exc.value.status_code == 409
-    assert "cancelar" in exc.value.detail.lower()
+    assert "cancel" in exc.value.detail.lower()

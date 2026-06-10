@@ -23,7 +23,7 @@ from app.models.entities import (
 )
 from app.services.comments import create_comment
 from app.schemas.comments import CommentCreate
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 @pytest.fixture
@@ -70,15 +70,9 @@ def _seed_con_cliente(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(
-                project_id=project.id, user_id=cliente_id, rol="cliente"
-            ),
-            ProjectMember(project_id=project.id, user_id=dev_id, rol="dev"),
-        ]
-    )
+    add_member_with_slug(session, project, pm_id, 'pm')
+    add_member_with_slug(session, project, cliente_id, 'cliente')
+    add_member_with_slug(session, project, dev_id, 'dev')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,

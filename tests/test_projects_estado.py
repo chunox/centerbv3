@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database import Base
 from app.models.entities import Project, ProjectMember, User
 from app.services.projects import apply_project_estado_action
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def _seed(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add(ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"))
+    add_member_with_slug(session, project, pm_id, 'pm')
     session.commit()
     return project, pm_id
 

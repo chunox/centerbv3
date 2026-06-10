@@ -21,7 +21,9 @@ from app.schemas.features import (
     FeatureUpdate,
     UatGateRead,
 )
-from app.services.access import assert_member_has_role, assert_project_active
+from app.domain.capabilities import SCOPE_FEATURE_CREATE
+from app.services.access import assert_project_active
+from app.services.workflow.authorize import assert_capability
 from app.services.feature_create import (
     after_feature_created,
     validate_and_prepare_feature_create,
@@ -80,7 +82,7 @@ def create_feature(
     if not creator:
         raise HTTPException(status_code=404, detail="Usuario creador no encontrado")
     assert_project_active(project)
-    assert_member_has_role(db, project.id, payload.created_by, "pm")
+    assert_capability(db, project.id, payload.created_by, SCOPE_FEATURE_CREATE)
 
     validate_and_prepare_feature_create(db, project, milestone, payload)
 
@@ -224,7 +226,7 @@ def perform_feature_action(
         project,
         action=payload.action,
         actor_user_id=payload.actor_user_id,
-        actor_rol=payload.actor_rol,
+        form_data=payload.form_data,
     )
     db.commit()
     db.refresh(feature)

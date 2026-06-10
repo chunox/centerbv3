@@ -20,10 +20,13 @@ QueryAction = Literal[
     "solicitar_envio",
     "aprobar_envio",
     "activar",
+    "activar_cliente",
+    "activar_interno",
     "responder",
     "validar_aceptar",
     "validar_rechazar",
     "cerrar",
+    "cerrar_directo",
     "rechazar",
 ]
 
@@ -52,7 +55,7 @@ class FeatureQueryRead(BaseModel):
 class FeatureQueryAction(BaseModel):
     action: QueryAction
     actor_user_id: UUID
-    actor_rol: MemberRol
+    form_data: dict[str, object] | None = None
 
 
 class FeatureQueryInboxRead(FeatureQueryRead):

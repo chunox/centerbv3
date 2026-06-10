@@ -106,6 +106,8 @@ class PmCriticalMilestoneRead(BaseModel):
     project_nombre: str = Field(serialization_alias="projectNombre")
     nombre: str
     estado: MilestoneEstado
+    estado_label: str = Field(serialization_alias="estadoLabel")
+    estado_badge: str = Field(serialization_alias="estadoBadge")
     fecha_fin: date = Field(serialization_alias="fechaFin")
     days_remaining: int = Field(serialization_alias="daysRemaining")
 

@@ -475,7 +475,7 @@ def run() -> int:
             record("B3.2", created.get("id") is not None, created.get("nombre", ""))
             _, logs = http(
                 "GET",
-                f"/projects/{pid}/audit-logs?viewer_user_id={pm_id}&viewer_rol=pm",
+                f"/projects/{pid}/audit-logs?viewer_user_id={pm_id}",
             )
             record("B3.3", isinstance(logs, list), f"{len(logs)} audit logs")
             _, proj_cliente = http("GET", f"/projects/{pid}")
@@ -626,7 +626,9 @@ def run() -> int:
             record("F10.4-other", False, str(e))
 
         try:
-            _, doc = http("GET", f"/projects/{pid}/document?viewer_rol=pm")
+            _, doc = http(
+                "GET", f"/projects/{pid}/document?viewer_user_id={pm_id}"
+            )
             if doc is None:
                 _, doc = http(
                     "POST",
@@ -642,7 +644,7 @@ def run() -> int:
             doc_id = doc["id"]
             _, exposures_pm = http(
                 "GET",
-                f"/projects/{pid}/document-exposures?viewer_rol=pm",
+                f"/projects/{pid}/document-exposures?viewer_user_id={pm_id}",
             )
             has_proyecto = any(e.get("ambito") == "proyecto" for e in exposures_pm)
             if not has_proyecto:
@@ -664,7 +666,7 @@ def run() -> int:
                 mid = milestones[0]["id"]
                 _, exp_m = http(
                     "GET",
-                    f"/projects/{pid}/document-exposures?viewer_rol=pm&milestone_id={mid}",
+                    f"/projects/{pid}/document-exposures?milestone_id={mid}",
                 )
                 milestone_scope = isinstance(exp_m, list)
                 _, features = http(
@@ -674,7 +676,7 @@ def run() -> int:
                     fid = features[0]["id"]
                     _, exp_f = http(
                         "GET",
-                        f"/projects/{pid}/document-exposures?viewer_rol=pm&feature_id={fid}",
+                        f"/projects/{pid}/document-exposures?feature_id={fid}",
                     )
                     feature_scope = isinstance(exp_f, list)
             record(
@@ -688,7 +690,7 @@ def run() -> int:
         try:
             _, bundle = http(
                 "GET",
-                f"/projects/{pid}/bundle?viewer_user_id={pm_id}&viewer_rol=pm",
+                f"/projects/{pid}/bundle?viewer_user_id={pm_id}",
             )
             has_milestones = "milestones" in bundle
             has_features = (
@@ -753,7 +755,7 @@ def run() -> int:
 
             _, logs = http(
                 "GET",
-                f"/projects/{pid}/audit-logs?viewer_user_id={pm_id}&viewer_rol=pm&limit=5",
+                f"/projects/{pid}/audit-logs?viewer_user_id={pm_id}&limit=5",
             )
             if logs:
                 log_id = logs[0]["id"]
@@ -761,7 +763,7 @@ def run() -> int:
                     http(
                         "GET",
                         f"/projects/{pid}/audit-logs/{log_id}"
-                        f"?viewer_user_id={dev_id}&viewer_rol=dev",
+                        f"?viewer_user_id={dev_id}",
                         expect_status=403,
                     )
                     record("F10.7-audit-one", True, "GET audit/{id} filtrado")
@@ -770,7 +772,7 @@ def run() -> int:
                     _, one = http(
                         "GET",
                         f"/projects/{pid}/audit-logs/{log_id}"
-                        f"?viewer_user_id={pm_id}&viewer_rol=pm",
+                        f"?viewer_user_id={pm_id}",
                     )
                     record(
                         "F10.7-audit-one",

@@ -21,7 +21,7 @@ from app.models.entities import (
     Task,
     User,
 )
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 @pytest.fixture
@@ -79,13 +79,9 @@ def _seed_kanban(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(project_id=project.id, user_id=dev_id, rol="dev"),
-            ProjectMember(project_id=project.id, user_id=other_dev, rol="dev"),
-        ]
-    )
+    add_member_with_slug(session, project, pm_id, 'pm')
+    add_member_with_slug(session, project, dev_id, 'dev')
+    add_member_with_slug(session, project, other_dev, 'dev')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,
@@ -269,7 +265,7 @@ def test_audit_logs_filtrados_por_rol_dev(
 
     response = api_client.get(
         f"/api/v1/projects/{project.id}/audit-logs",
-        params={"viewer_rol": "dev", "viewer_user_id": str(dev_id)},
+        params={"viewer_user_id": str(dev_id)},
     )
     assert response.status_code == 200
     tipos = {row["entidad_tipo"] for row in response.json()}

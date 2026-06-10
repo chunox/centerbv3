@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 from app.models.entities import Feature, Milestone, Project, ProjectMember, Task
 from app.schemas.features import FeatureUpdate
 from app.services.audit import record_audit_log
-from app.services.feature_queries import assert_member_has_role, assert_project_active
+from app.domain.capabilities import SCOPE_FEATURE_EDIT, SCOPE_FEATURE_MIGRATE
+from app.services.feature_queries import assert_project_active
+from app.services.workflow.authorize import assert_capability
 from app.services.notifications import create_notification
 
 FeatureAction = Literal[
@@ -142,6 +144,14 @@ def _set_feature_estado(
     )
 
 
+_ROLE_NOTIFY_CAPABILITY: dict[str, str] = {
+    "pm": "workbench.inbox.pm",
+    "dev": "workbench.inbox.dev",
+    "qa": "workbench.inbox.qa",
+    "cliente": "workbench.inbox.client",
+}
+
+
 def _notify_role(
     db: Session,
     project: Project,
@@ -150,12 +160,12 @@ def _notify_role(
     tipo: str,
     entidad_id: uuid.UUID,
 ) -> None:
-    for user_id in db.scalars(
-        select(ProjectMember.user_id).where(
-            ProjectMember.project_id == project.id,
-            ProjectMember.rol == rol,
-        )
-    ):
+    from app.services.workflow.capabilities import users_with_capability
+
+    cap = _ROLE_NOTIFY_CAPABILITY.get(rol)
+    if cap is None:
+        return
+    for user_id in users_with_capability(db, project.id, cap):
         create_notification(
             db,
             user_id=user_id,
@@ -231,24 +241,23 @@ def cancel_feature_cascade(
     *,
     actor_user_id: uuid.UUID,
 ) -> None:
-    if feature.estado == "cancelado":
-        return
-    _set_feature_estado(
-        db,
-        feature,
-        project,
-        nuevo="cancelado",
-        actor_user_id=actor_user_id,
-        origen="cancelar",
-    )
-    record_audit_log(
-        db,
-        project_id=project.id,
-        user_id=actor_user_id,
-        entidad_tipo="feature",
-        entidad_id=feature.id,
-        accion="cancelada",
-    )
+    if feature.estado != "cancelado":
+        _set_feature_estado(
+            db,
+            feature,
+            project,
+            nuevo="cancelado",
+            actor_user_id=actor_user_id,
+            origen="cancelar",
+        )
+        record_audit_log(
+            db,
+            project_id=project.id,
+            user_id=actor_user_id,
+            entidad_tipo="feature",
+            entidad_id=feature.id,
+            accion="cancelada",
+        )
     for task in db.scalars(select(Task).where(Task.feature_id == feature.id)):
         if task.estado in CANCELLABLE_TASK_STATES:
             prev = task.estado
@@ -278,183 +287,26 @@ def apply_feature_action(
     *,
     action: FeatureAction,
     actor_user_id: uuid.UUID,
-    actor_rol: MemberRol,
+    form_data: dict | None = None,
 ) -> None:
+    from app.services.workflow.engine import apply_entity_transition
+
     assert_project_active(project)
-    assert_member_has_role(db, project.id, actor_user_id, actor_rol)
     if action in BLOCKED_WHEN_BLOQUEADA and feature.bloqueada:
         raise HTTPException(
             status_code=409,
             detail="La feature está bloqueada por consultas activas",
         )
-    tasks = load_active_tasks(db, feature.id)
 
-    if action == "pasar_a_uat":
-        assert_member_has_role(db, project.id, actor_user_id, "dev")
-        gate = uat_gate_status(feature, tasks)
-        if not gate["can_pass_to_uat"]:
-            raise HTTPException(
-                status_code=409,
-                detail={"message": "Gate UAT no cumplido", **gate},
-            )
-        _set_feature_estado(
-            db,
-            feature,
-            project,
-            nuevo="uat",
-            actor_user_id=actor_user_id,
-            origen="pasar_a_uat",
-        )
-        _notify_role(
-            db, project, rol="qa", tipo="estado_changed", entidad_id=feature.id
-        )
-
-    elif action == "cancelar":
-        assert_member_has_role(db, project.id, actor_user_id, "pm")
-        cancel_feature_cascade(db, feature, project, actor_user_id=actor_user_id)
-
-    elif action == "enviar_al_pm":
-        assert_member_has_role(db, project.id, actor_user_id, "qa")
-        if feature.estado != "uat":
-            raise HTTPException(status_code=409, detail="La feature no está en uat")
-        for task in tasks:
-            if task.estado == "ready_for_test":
-                prev = task.estado
-                task.estado = "completed"
-                record_audit_log(
-                    db,
-                    project_id=project.id,
-                    user_id=actor_user_id,
-                    entidad_tipo="tarea",
-                    entidad_id=task.id,
-                    accion="estado_changed",
-                    campo="estado",
-                    valor_anterior=prev,
-                    valor_nuevo="completed (qa_envio_pm)",
-                )
-        _set_feature_estado(
-            db,
-            feature,
-            project,
-            nuevo="esperando_liberacion_pm",
-            actor_user_id=actor_user_id,
-            origen="enviar_al_pm",
-        )
-        _notify_role(
-            db, project, rol="pm", tipo="estado_changed", entidad_id=feature.id
-        )
-
-    elif action == "devolver_rework":
-        assert_member_has_role(db, project.id, actor_user_id, "qa")
-        if feature.estado != "uat":
-            raise HTTPException(status_code=409, detail="La feature no está en uat")
-        for task in tasks:
-            if task.estado == "ready_for_test":
-                prev = task.estado
-                task.estado = "in_progress"
-                record_audit_log(
-                    db,
-                    project_id=project.id,
-                    user_id=actor_user_id,
-                    entidad_tipo="tarea",
-                    entidad_id=task.id,
-                    accion="estado_changed",
-                    campo="estado",
-                    valor_anterior=prev,
-                    valor_nuevo="in_progress (qa_rework)",
-                )
-        _set_feature_estado(
-            db,
-            feature,
-            project,
-            nuevo="en_progreso",
-            actor_user_id=actor_user_id,
-            origen="devolver_rework",
-        )
-        _notify_role(
-            db, project, rol="dev", tipo="estado_changed", entidad_id=feature.id
-        )
-
-    elif action == "liberar_cliente":
-        assert_member_has_role(db, project.id, actor_user_id, "pm")
-        if project.tipo != "con_cliente":
-            raise HTTPException(status_code=400, detail="Solo proyectos con_cliente")
-        if feature.estado != "esperando_liberacion_pm":
-            raise HTTPException(
-                status_code=409, detail="La feature no está en esperando_liberacion_pm"
-            )
-        _set_feature_estado(
-            db,
-            feature,
-            project,
-            nuevo="esperando_validacion_cliente",
-            actor_user_id=actor_user_id,
-            origen="liberar_cliente",
-        )
-        _notify_role(
-            db, project, rol="cliente", tipo="estado_changed", entidad_id=feature.id
-        )
-
-    elif action == "rechazar_liberacion":
-        assert_member_has_role(db, project.id, actor_user_id, "pm")
-        if feature.estado != "esperando_liberacion_pm":
-            raise HTTPException(
-                status_code=409, detail="La feature no está en esperando_liberacion_pm"
-            )
-        _rework_from_pm_cliente(db, feature, project, tasks, actor_user_id=actor_user_id)
-
-    elif action == "confirmar":
-        assert_member_has_role(db, project.id, actor_user_id, "cliente")
-        if project.tipo != "con_cliente":
-            raise HTTPException(status_code=400, detail="Solo proyectos con_cliente")
-        if feature.estado != "esperando_validacion_cliente":
-            raise HTTPException(
-                status_code=409,
-                detail="La feature no está en esperando_validacion_cliente",
-            )
-        _set_feature_estado(
-            db,
-            feature,
-            project,
-            nuevo="completado",
-            actor_user_id=actor_user_id,
-            origen="confirmar",
-        )
-
-    elif action == "no_funciona":
-        assert_member_has_role(db, project.id, actor_user_id, "cliente")
-        if project.tipo != "con_cliente":
-            raise HTTPException(status_code=400, detail="Solo proyectos con_cliente")
-        if feature.estado != "esperando_validacion_cliente":
-            raise HTTPException(
-                status_code=409,
-                detail="La feature no está en esperando_validacion_cliente",
-            )
-        _rework_from_pm_cliente(db, feature, project, tasks, actor_user_id=actor_user_id)
-
-    elif action == "completar":
-        assert_member_has_role(db, project.id, actor_user_id, "pm")
-        if project.tipo != "interno":
-            raise HTTPException(
-                status_code=400,
-                detail="completar aplica solo a proyectos interno",
-            )
-        if feature.estado != "esperando_liberacion_pm":
-            raise HTTPException(
-                status_code=409, detail="La feature no está en esperando_liberacion_pm"
-            )
-        _set_feature_estado(
-            db,
-            feature,
-            project,
-            nuevo="completado",
-            actor_user_id=actor_user_id,
-            origen="completar",
-        )
-
-    else:
-        raise HTTPException(status_code=400, detail="Acción no reconocida")
-
+    apply_entity_transition(
+        db,
+        project,
+        feature,
+        entity_type="feature",
+        action_id=action,
+        actor_user_id=actor_user_id,
+        form_data=form_data,
+    )
     milestone = db.get(Milestone, feature.milestone_id)
     if milestone:
         from app.services.milestones import sync_milestone_state
@@ -505,7 +357,7 @@ def update_feature(
     payload: FeatureUpdate,
 ) -> None:
     assert_project_active(project)
-    assert_member_has_role(db, project.id, payload.actor_user_id, "pm")
+    assert_capability(db, project.id, payload.actor_user_id, SCOPE_FEATURE_EDIT)
 
     changes = payload.model_dump(exclude_unset=True, exclude={"actor_user_id"})
     if not changes:
@@ -555,7 +407,7 @@ def migrate_feature(
     actor_user_id: uuid.UUID,
 ) -> None:
     assert_project_active(project)
-    assert_member_has_role(db, project.id, actor_user_id, "pm")
+    assert_capability(db, project.id, actor_user_id, SCOPE_FEATURE_MIGRATE)
 
     if feature.tipo in ("bug", "mejora"):
         raise HTTPException(

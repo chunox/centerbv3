@@ -14,7 +14,9 @@ from app.schemas.document_exposures import (
     DocumentExposureCreate,
     DocumentExposureUpdate,
 )
-from app.services.access import assert_member_has_role, assert_project_active
+from app.domain.capabilities import HUB_EXPOSURE_MANAGE
+from app.services.access import assert_project_active
+from app.services.workflow.authorize import assert_capability
 from app.services.audit import record_audit_log
 
 DocumentExposureAmbito = Literal["proyecto", "milestone", "feature"]
@@ -44,7 +46,7 @@ def create_document_exposure(
     payload: DocumentExposureCreate,
 ) -> DocumentExposure:
     assert_project_active(project)
-    assert_member_has_role(db, project.id, payload.expuesto_por, "pm")
+    assert_capability(db, project.id, payload.expuesto_por, HUB_EXPOSURE_MANAGE)
 
     if payload.hub_entry_id is not None:
         entry = db.get(HubEntry, payload.hub_entry_id)
@@ -72,7 +74,7 @@ def update_document_exposure(
     payload: DocumentExposureUpdate,
 ) -> None:
     assert_project_active(project)
-    assert_member_has_role(db, project.id, payload.actor_user_id, "pm")
+    assert_capability(db, project.id, payload.actor_user_id, HUB_EXPOSURE_MANAGE)
 
     if payload.titulo_visible is not None:
         anterior = exposure.titulo_visible
@@ -99,7 +101,7 @@ def delete_document_exposure(
     actor_user_id: uuid.UUID,
 ) -> None:
     assert_project_active(project)
-    assert_member_has_role(db, project.id, actor_user_id, "pm")
+    assert_capability(db, project.id, actor_user_id, HUB_EXPOSURE_MANAGE)
     record_audit_log(
         db,
         project_id=project.id,

@@ -14,7 +14,7 @@ from app.main import app
 from app.models.entities import Feature, FeatureReport, Milestone, Project, ProjectMember, User
 from app.services.deletions import delete_project
 from app.services.feature_reports import apply_report_action
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 @pytest.fixture
@@ -54,12 +54,8 @@ def _seed_with_approved_report(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(project_id=project.id, user_id=cliente_id, rol="cliente"),
-        ]
-    )
+    add_member_with_slug(session, project, pm_id, 'pm')
+    add_member_with_slug(session, project, cliente_id, 'cliente')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,

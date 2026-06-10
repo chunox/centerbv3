@@ -13,11 +13,9 @@ from app.schemas.task_dependencies import (
     TaskDependencyRead,
 )
 from app.schemas.tasks import TaskCreate, TaskMove, TaskRead, TaskSubtaskCreate, TaskUpdate
-from app.services.access import (
-    assert_member_has_role,
-    assert_not_pm_for_task_ops,
-    assert_project_active,
-)
+from app.domain.capabilities import KANBAN_TASK_CREATE
+from app.services.access import assert_not_pm_for_task_ops, assert_project_active
+from app.services.workflow.authorize import assert_capability
 from app.services.features import sync_feature_from_tasks
 from app.services.task_dependencies import create_dependency, delete_dependency
 from app.services.tasks import create_subtask, move_task, sync_task_assignees, update_task
@@ -89,7 +87,7 @@ def create_task(
     _validate_users(payload, db)
     assert_project_active(project)
     assert_not_pm_for_task_ops(db, project.id, payload.created_by)
-    assert_member_has_role(db, project.id, payload.created_by, "dev")
+    assert_capability(db, project.id, payload.created_by, KANBAN_TASK_CREATE)
 
     data = payload.model_dump(exclude={"asignado_ids"})
     task = Task(

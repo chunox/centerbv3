@@ -9,7 +9,6 @@ from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.models.entities import Document, User
 from app.schemas.documents import DocumentCreate, DocumentRead, DocumentUpdate
-from app.schemas.projects import MemberRol
 from app.services.documents import (
     create_project_document,
     get_document_for_viewer,
@@ -32,14 +31,16 @@ def _get_project_document_or_404(
 @router.get("/{project_id}/document", response_model=DocumentRead | None)
 def get_project_document(
     project_id: UUID,
-    viewer_rol: MemberRol | None = Query(default=None),
+    viewer_user_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     get_project_or_404(project_id, db)
     document = db.scalar(select(Document).where(Document.project_id == project_id))
     if document is None:
         return None
-    visible = get_document_for_viewer(db, document, viewer_rol=viewer_rol)
+    visible = get_document_for_viewer(
+        db, document, viewer_user_id=viewer_user_id
+    )
     if visible is None:
         raise HTTPException(
             status_code=403,
@@ -100,11 +101,13 @@ def update_project_document_endpoint(
 def get_document(
     project_id: UUID,
     document_id: UUID,
-    viewer_rol: MemberRol | None = Query(default=None),
+    viewer_user_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     document = _get_project_document_or_404(project_id, document_id, db)
-    visible = get_document_for_viewer(db, document, viewer_rol=viewer_rol)
+    visible = get_document_for_viewer(
+        db, document, viewer_user_id=viewer_user_id
+    )
     if visible is None:
         raise HTTPException(
             status_code=403,

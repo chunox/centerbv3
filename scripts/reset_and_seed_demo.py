@@ -31,6 +31,7 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 BASE = "http://127.0.0.1:8000/api/v1"
 DEMO_PASSWORD = "demo12345"
 SEED_VERSION = "v10-dual-mega"
+# Procedimiento de wipe y smoke post-reset: docs/SMOKE_RESET_ROLES.md
 
 DEMO_USERS = [
     ("pm@center.demo", "Ana PM"),
@@ -410,7 +411,7 @@ def seed_portal_cliente(
     http(
         "POST",
         f"/projects/{portal['id']}/milestones/{milestones[4]['id']}/actions",
-        body={"action": "cancelar", "actor_user_id": pm["id"], "actor_rol": "pm"},
+        body={"action": "cancelar", "actor_user_id": pm["id"]},
         token=token,
         expect_status=200,
     )
@@ -490,11 +491,10 @@ def seed_portal_cliente(
             {"titulo": titulo, "descripcion": desc, "created_by": author},
         )
         actor = dev["id"] if action == "solicitar_envio" else pm["id"]
-        rol = "dev" if action == "solicitar_envio" else "pm"
         post(
             token,
             f"/projects/{portal['id']}/milestones/{ms_id}/features/{feat['id']}/queries/{q['id']}/actions",
-            {"action": action, "actor_user_id": actor, "actor_rol": rol},
+            {"action": action, "actor_user_id": actor},
             expect=200,
         )
 
@@ -746,7 +746,7 @@ def seed_plataforma_interna(
         post(
             token,
             f"/projects/{interno['id']}/milestones/{ms_id}/features/{feat['id']}/queries/{q['id']}/actions",
-            {"action": "activar", "actor_user_id": pm["id"], "actor_rol": "pm"},
+            {"action": "activar", "actor_user_id": pm["id"]},
             expect=200,
         )
 

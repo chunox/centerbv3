@@ -20,10 +20,10 @@ def validate_and_prepare_feature_create(
     payload: FeatureCreate,
 ) -> None:
     if payload.tipo in ("bug", "mejora"):
-        if project.tipo == "con_cliente":
+        if project.tipo in ("con_cliente", "freestyle"):
             raise HTTPException(
                 status_code=403,
-                detail="En con_cliente, bug/mejora solo se crean al aprobar un reporte",
+                detail="En proyectos con cliente, bug/mejora solo se crean al aprobar un reporte",
             )
         if payload.origen_feature_id is None:
             raise HTTPException(

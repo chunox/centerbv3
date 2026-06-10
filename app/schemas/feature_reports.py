@@ -21,6 +21,7 @@ class FeatureReportAction(BaseModel):
     actor_user_id: UUID
     duracion_estimada: int | None = Field(default=None, ge=1)
     nombre_feature: str | None = Field(default=None, max_length=150)
+    form_data: dict[str, object] | None = None
 
 
 class FeatureReportRead(BaseModel):

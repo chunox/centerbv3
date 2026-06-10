@@ -9,11 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import Document, Project
 from app.schemas.documents import DocumentCreate, DocumentUpdate
-from app.services.access import (
-    assert_member_has_role,
-    assert_project_active,
-    document_visible_to_role,
-)
+from app.domain.capabilities import HUB_DOCUMENT_EDIT
+from app.services.access import assert_project_active, document_visible_for_user
+from app.services.workflow.authorize import assert_capability
 from app.services.audit import record_audit_log
 
 
@@ -21,9 +19,13 @@ def get_document_for_viewer(
     db: Session,
     document: Document,
     *,
-    viewer_rol: str | None,
+    viewer_user_id: uuid.UUID | None = None,
 ) -> Document | None:
-    if document_visible_to_role(document, viewer_rol=viewer_rol):  # type: ignore[arg-type]
+    if document_visible_for_user(
+        db,
+        document,
+        viewer_user_id=viewer_user_id,
+    ):
         return document
     return None
 
@@ -34,7 +36,7 @@ def create_project_document(
     payload: DocumentCreate,
 ) -> Document:
     assert_project_active(project)
-    assert_member_has_role(db, project.id, payload.created_by, "pm")
+    assert_capability(db, project.id, payload.created_by, HUB_DOCUMENT_EDIT)
 
     document = Document(project_id=project.id, **payload.model_dump())
     db.add(document)
@@ -57,7 +59,7 @@ def update_project_document(
     payload: DocumentUpdate,
 ) -> None:
     assert_project_active(project)
-    assert_member_has_role(db, project.id, payload.actor_user_id, "pm")
+    assert_capability(db, project.id, payload.actor_user_id, HUB_DOCUMENT_EDIT)
 
     changes = payload.model_dump(exclude_unset=True, exclude={"actor_user_id"})
     if not changes:

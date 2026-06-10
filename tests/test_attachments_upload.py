@@ -13,7 +13,7 @@ from app.config import settings
 from app.database import Base, get_db
 from app.main import app
 from app.models.entities import Feature, Milestone, Project, ProjectMember, User
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 def _session():
@@ -44,7 +44,7 @@ def _seed(session: Session):
     )
     session.add(project)
     session.add(
-        ProjectMember(project_id=project.id, user_id=pm_id, rol="pm")
+    add_member_with_slug(session, project, pm_id, 'pm')
     )
     milestone = Milestone(
         id=uuid4(),

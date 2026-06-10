@@ -12,7 +12,6 @@ from app.schemas.document_exposures import (
     DocumentExposureRead,
     DocumentExposureUpdate,
 )
-from app.schemas.projects import MemberRol
 from app.services.access import assert_member_of_project, list_exposures_for_viewer
 from app.services.document_exposures import (
     create_document_exposure,
@@ -33,7 +32,6 @@ def list_project_document_exposures(
     milestone_id: UUID | None = Query(default=None),
     feature_id: UUID | None = Query(default=None),
     viewer_user_id: UUID | None = Query(default=None),
-    viewer_rol: MemberRol | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     get_project_or_404(project_id, db)
@@ -42,7 +40,7 @@ def list_project_document_exposures(
     exposures = list_exposures_for_viewer(
         db,
         project_id,
-        viewer_rol=viewer_rol,
+        viewer_user_id=viewer_user_id,
         milestone_id=milestone_id,
         feature_id=feature_id,
     )

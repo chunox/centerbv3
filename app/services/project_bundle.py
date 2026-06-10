@@ -30,7 +30,7 @@ from app.schemas.task_dependencies import TaskDependencyRead
 from app.schemas.milestones import MilestoneRead
 from app.schemas.projects import ProjectRead
 from app.schemas.tasks import TaskRead
-from app.services.access import filter_audit_logs_for_viewer
+from app.services.access import resolve_audit_logs_for_user
 
 _PENDING_QUERY_STATES = frozenset(
     {"borrador", "pendiente_aprobacion_pm", "esperando_pm", "respuesta_cliente"}
@@ -42,7 +42,6 @@ def build_project_bundle(
     project: Project,
     *,
     viewer_user_id: UUID | None = None,
-    viewer_rol: str | None = None,
 ) -> ProjectBundleRead:
     milestones = list(
         db.scalars(
@@ -129,11 +128,11 @@ def build_project_bundle(
         .order_by(AuditLog.created_at.desc())
         .limit(500)
     )
-    audit_logs = filter_audit_logs_for_viewer(
+    audit_logs = resolve_audit_logs_for_user(
         db,
         list(db.scalars(audit_stmt)),
+        project_id=project.id,
         viewer_user_id=viewer_user_id,
-        viewer_rol=viewer_rol,
     )
 
     release_count = sum(

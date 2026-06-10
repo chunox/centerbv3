@@ -19,7 +19,7 @@ from app.models.entities import (
     User,
 )
 from app.services.feature_queries import apply_query_action, sync_feature_bloqueada
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 @pytest.fixture
@@ -72,15 +72,9 @@ def _seed_con_cliente(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(project_id=project.id, user_id=dev_id, rol="dev"),
-            ProjectMember(
-                project_id=project.id, user_id=cliente_id, rol="cliente"
-            ),
-        ]
-    )
+    add_member_with_slug(session, project, pm_id, 'pm')
+    add_member_with_slug(session, project, dev_id, 'dev')
+    add_member_with_slug(session, project, cliente_id, 'cliente')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,
@@ -127,7 +121,6 @@ def test_dev_query_flow_blocks_until_closed(db_session: Session):
         project,
         action="solicitar_envio",
         actor_user_id=dev_id,
-        actor_rol="dev",
     )
     db_session.flush()
     assert query.estado == "pendiente_aprobacion_pm"
@@ -142,7 +135,6 @@ def test_dev_query_flow_blocks_until_closed(db_session: Session):
         project,
         action="aprobar_envio",
         actor_user_id=pm_id,
-        actor_rol="pm",
     )
     db_session.flush()
     assert query.estado == "esperando_cliente"
@@ -155,7 +147,6 @@ def test_dev_query_flow_blocks_until_closed(db_session: Session):
         project,
         action="responder",
         actor_user_id=cliente_id,
-        actor_rol="cliente",
     )
     assert query.estado == "respuesta_cliente"
 
@@ -166,7 +157,6 @@ def test_dev_query_flow_blocks_until_closed(db_session: Session):
         project,
         action="validar_rechazar",
         actor_user_id=pm_id,
-        actor_rol="pm",
     )
     assert query.estado == "esperando_cliente"
 
@@ -177,7 +167,6 @@ def test_dev_query_flow_blocks_until_closed(db_session: Session):
         project,
         action="responder",
         actor_user_id=cliente_id,
-        actor_rol="cliente",
     )
     apply_query_action(
         db_session,
@@ -186,7 +175,6 @@ def test_dev_query_flow_blocks_until_closed(db_session: Session):
         project,
         action="validar_aceptar",
         actor_user_id=pm_id,
-        actor_rol="pm",
     )
     assert query.estado == "cerrada"
     assert (
@@ -251,7 +239,6 @@ def test_reject_notifies_query_author(db_session: Session):
         project,
         action="rechazar",
         actor_user_id=pm_id,
-        actor_rol="pm",
     )
     db_session.flush()
     assert query.estado == "rechazada"
@@ -287,12 +274,8 @@ def test_interno_dev_solicitar_skips_pm_approval(db_session: Session):
         created_by=pm_id,
     )
     db_session.add(project)
-    db_session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(project_id=project.id, user_id=dev_id, rol="dev"),
-        ]
-    )
+    add_member_with_slug(db_session, project, pm_id, 'pm')
+    add_member_with_slug(db_session, project, dev_id, 'dev')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,
@@ -333,7 +316,6 @@ def test_interno_dev_solicitar_skips_pm_approval(db_session: Session):
         project,
         action="solicitar_envio",
         actor_user_id=dev_id,
-        actor_rol="dev",
     )
     db_session.flush()
     assert query.estado == "esperando_pm"
@@ -346,7 +328,6 @@ def test_interno_dev_solicitar_skips_pm_approval(db_session: Session):
         project,
         action="cerrar",
         actor_user_id=pm_id,
-        actor_rol="pm",
     )
     assert query.estado == "cerrada"
     assert feature.bloqueada is False
@@ -369,9 +350,7 @@ def test_interno_pm_self_block(db_session: Session):
         created_by=pm_id,
     )
     db_session.add(project)
-    db_session.add(
-        ProjectMember(project_id=project.id, user_id=pm_id, rol="pm")
-    )
+    add_member_with_slug(db_session, project, pm_id, 'pm')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,
@@ -412,7 +391,6 @@ def test_interno_pm_self_block(db_session: Session):
         project,
         action="activar",
         actor_user_id=pm_id,
-        actor_rol="pm",
     )
     assert query.estado == "esperando_pm"
     assert feature.bloqueada is True
@@ -424,7 +402,6 @@ def test_interno_pm_self_block(db_session: Session):
         project,
         action="cerrar",
         actor_user_id=pm_id,
-        actor_rol="pm",
     )
     assert query.estado == "cerrada"
     assert feature.bloqueada is False

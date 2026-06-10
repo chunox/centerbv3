@@ -6,10 +6,9 @@ import uuid
 from typing import Literal
 
 from fastapi import HTTPException
-from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
-from app.models.entities import Feature, Project, Task, TaskAssignee, TaskStateTransition, User
+from app.models.entities import Feature, Project, Task, TaskAssignee, User
 from app.services.audit import record_audit_log
 from app.schemas.tasks import TaskSubtaskCreate, TaskUpdate
 from app.services.access import (
@@ -17,7 +16,7 @@ from app.services.access import (
     assert_not_pm_for_task_ops,
     assert_project_active,
 )
-from app.services.features import CANCELLABLE_TASK_STATES, sync_feature_from_tasks
+from app.services.features import sync_feature_from_tasks
 from app.services.notifications import create_notification
 from app.services.task_dependencies import (
     assert_move_allowed_by_dependencies,
@@ -32,25 +31,6 @@ TaskEstado = Literal[
     "completed",
     "cancel",
 ]
-
-
-def assert_task_transition_allowed(
-    db: Session, estado_desde: str, estado_hasta: str
-) -> None:
-    allowed = db.scalar(
-        select(
-            exists().where(
-                TaskStateTransition.estado_desde == estado_desde,
-                TaskStateTransition.estado_hasta == estado_hasta,
-                TaskStateTransition.rol_permitido == "dev",
-            )
-        )
-    )
-    if not allowed:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Transición no permitida: {estado_desde} → {estado_hasta}",
-        )
 
 
 def _validate_assignee_ids(db: Session, user_ids: list[uuid.UUID]) -> None:
@@ -121,9 +101,12 @@ def move_task(
     nuevo_estado: TaskEstado,
     actor_user_id: uuid.UUID,
 ) -> None:
+    from app.domain.capabilities import KANBAN_TASK_MOVE
+    from app.services.workflow.authorize import assert_capability
+    from app.services.workflow.engine import apply_entity_transition
+
     assert_project_active(project)
     assert_not_pm_for_task_ops(db, project.id, actor_user_id)
-    assert_member_has_role(db, project.id, actor_user_id, "dev")
 
     if feature.bloqueada and nuevo_estado != "cancel":
         raise HTTPException(
@@ -134,28 +117,32 @@ def move_task(
         return
     if task.estado == "cancel":
         raise HTTPException(status_code=409, detail="La tarea está cancelada")
-    if nuevo_estado == "cancel" and task.estado not in CANCELLABLE_TASK_STATES:
-        raise HTTPException(
-            status_code=409,
-            detail="No se puede cancelar una tarea en este estado",
+    assert_move_allowed_by_dependencies(db, task.id, nuevo_estado)
+
+    if nuevo_estado == "cancel":
+        from app.domain.capabilities import KANBAN_TASK_CANCEL
+
+        assert_capability(db, project.id, actor_user_id, KANBAN_TASK_CANCEL)
+        apply_entity_transition(
+            db,
+            project,
+            task,
+            entity_type="task",
+            action_id="cancel",
+            actor_user_id=actor_user_id,
+        )
+    else:
+        assert_capability(db, project.id, actor_user_id, KANBAN_TASK_MOVE)
+        apply_entity_transition(
+            db,
+            project,
+            task,
+            entity_type="task",
+            action_id="move",
+            actor_user_id=actor_user_id,
+            target_state=nuevo_estado,
         )
 
-    assert_move_allowed_by_dependencies(db, task.id, nuevo_estado)
-    assert_task_transition_allowed(db, task.estado, nuevo_estado)
-    anterior = task.estado
-    task.estado = nuevo_estado
-
-    record_audit_log(
-        db,
-        project_id=project.id,
-        user_id=actor_user_id,
-        entidad_tipo="tarea",
-        entidad_id=task.id,
-        accion="estado_changed",
-        campo="estado",
-        valor_anterior=anterior,
-        valor_nuevo=nuevo_estado,
-    )
     sync_feature_from_tasks(
         db, feature, project, actor_user_id=actor_user_id
     )
@@ -179,7 +166,10 @@ def update_task(
 ) -> None:
     assert_project_active(project)
     assert_not_pm_for_task_ops(db, project.id, payload.actor_user_id)
-    assert_member_has_role(db, project.id, payload.actor_user_id, "dev")
+    from app.domain.capabilities import KANBAN_TASK_EDIT
+    from app.services.workflow.authorize import assert_capability
+
+    assert_capability(db, project.id, payload.actor_user_id, KANBAN_TASK_EDIT)
 
     if task.estado == "cancel":
         raise HTTPException(status_code=409, detail="La tarea está cancelada")
@@ -223,7 +213,10 @@ def create_subtask(
 ) -> Task:
     assert_project_active(project)
     assert_not_pm_for_task_ops(db, project.id, payload.actor_user_id)
-    assert_member_has_role(db, project.id, payload.actor_user_id, "dev")
+    from app.domain.capabilities import KANBAN_TASK_CREATE
+    from app.services.workflow.authorize import assert_capability
+
+    assert_capability(db, project.id, payload.actor_user_id, KANBAN_TASK_CREATE)
 
     if parent.estado == "cancel":
         raise HTTPException(status_code=409, detail="La tarea padre está cancelada")

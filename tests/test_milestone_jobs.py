@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database import Base
 from app.models.entities import Feature, Milestone, Project, ProjectMember, User
 from app.services.milestones import sync_all_milestone_states
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 def test_bug_fuera_de_plazo_marca_cerrado_con_bug():
@@ -33,7 +33,7 @@ def test_bug_fuera_de_plazo_marca_cerrado_con_bug():
         created_by=pm_id,
     )
     session.add(project)
-    session.add(ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"))
+    add_member_with_slug(session, project, pm_id, 'pm')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,

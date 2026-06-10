@@ -42,13 +42,11 @@ def _notify_thread_participants(
     if entidad_tipo not in ("feature_query", "feature_report"):
         return
 
+    from app.domain.capabilities import WORKBENCH_INBOX_CLIENT, WORKBENCH_INBOX_PM
+    from app.services.workflow.capabilities import users_with_capability
+
     recipients: set[uuid.UUID] = set(
-        db.scalars(
-            select(ProjectMember.user_id).where(
-                ProjectMember.project_id == project.id,
-                ProjectMember.rol == "pm",
-            )
-        )
+        users_with_capability(db, project.id, WORKBENCH_INBOX_PM)
     )
 
     if entidad_tipo == "feature_report":
@@ -60,16 +58,11 @@ def _notify_thread_participants(
         if query:
             recipients.add(query.created_by)
             if (
-                project.tipo == "con_cliente"
+                project.tipo in ("con_cliente", "freestyle")
                 and query.estado in CLIENTE_QUERY_STATES
             ):
                 recipients.update(
-                    db.scalars(
-                        select(ProjectMember.user_id).where(
-                            ProjectMember.project_id == project.id,
-                            ProjectMember.rol == "cliente",
-                        )
-                    )
+                    users_with_capability(db, project.id, WORKBENCH_INBOX_CLIENT)
                 )
 
     recipients.discard(author_id)

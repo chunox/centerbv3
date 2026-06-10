@@ -15,7 +15,6 @@ from app.models.entities import (
     Project,
     ProjectMember,
     Task,
-    TaskStateTransition,
     User,
 )
 from app.services.features import (
@@ -25,27 +24,7 @@ from app.services.features import (
     uat_gate_status,
 )
 from app.services.tasks import move_task
-from tests.org_helpers import create_organization
-
-
-def _seed_task_transitions(session: Session) -> None:
-    pairs = [
-        ("backlog", "to_do"),
-        ("to_do", "in_progress"),
-        ("in_progress", "ready_for_test"),
-        ("ready_for_test", "in_progress"),
-        ("ready_for_test", "completed"),
-        ("completed", "in_progress"),
-    ]
-    for desde, hasta in pairs:
-        session.add(
-            TaskStateTransition(
-                estado_desde=desde,
-                estado_hasta=hasta,
-                rol_permitido="dev",
-            )
-        )
-    session.commit()
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 @pytest.fixture
@@ -54,7 +33,6 @@ def db_session():
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     session = SessionLocal()
-    _seed_task_transitions(session)
     try:
         yield session
     finally:
@@ -84,13 +62,9 @@ def _seed_project(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(project_id=project.id, user_id=dev_id, rol="dev"),
-            ProjectMember(project_id=project.id, user_id=qa_id, rol="qa"),
-        ]
-    )
+    add_member_with_slug(session, project, pm_id, 'pm')
+    add_member_with_slug(session, project, dev_id, 'dev')
+    add_member_with_slug(session, project, qa_id, 'qa')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,
@@ -156,7 +130,6 @@ def test_uat_gate_and_pasar_a_uat(db_session: Session):
         project,
         action="pasar_a_uat",
         actor_user_id=dev_id,
-        actor_rol="dev",
     )
     assert feature.estado == "uat"
 
@@ -166,7 +139,6 @@ def test_uat_gate_and_pasar_a_uat(db_session: Session):
         project,
         action="enviar_al_pm",
         actor_user_id=qa_id,
-        actor_rol="qa",
     )
     assert feature.estado == "esperando_liberacion_pm"
     assert task.estado == "completed"
@@ -177,7 +149,6 @@ def test_uat_gate_and_pasar_a_uat(db_session: Session):
         project,
         action="completar",
         actor_user_id=pm_id,
-        actor_rol="pm",
     )
     assert feature.estado == "completado"
 
@@ -201,7 +172,6 @@ def test_pasar_a_uat_blocked_when_not_all_ready(db_session: Session):
             project,
             action="pasar_a_uat",
             actor_user_id=dev_id,
-            actor_rol="dev",
         )
     assert exc.value.status_code == 409
 
@@ -224,7 +194,6 @@ def test_cancel_feature_cascades_tasks(db_session: Session):
         project,
         action="cancelar",
         actor_user_id=pm_id,
-        actor_rol="pm",
     )
     assert feature.estado == "cancelado"
     assert task.estado == "cancel"
@@ -248,7 +217,6 @@ def test_sync_drops_uat_when_task_moves_back(db_session: Session):
         project,
         action="pasar_a_uat",
         actor_user_id=dev_id,
-        actor_rol="dev",
     )
     move_task(
         db_session,

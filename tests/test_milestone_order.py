@@ -17,7 +17,7 @@ from app.services.milestones import (
     reorder_milestone,
     update_milestone,
 )
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 @pytest.fixture
@@ -47,7 +47,7 @@ def _seed_project(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add(ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"))
+    add_member_with_slug(session, project, pm_id, 'pm')
     session.commit()
     return project, pm_id
 

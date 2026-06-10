@@ -54,9 +54,12 @@ from app.services.project_bundle import build_project_bundle
 from app.services.deletions import delete_project
 from app.services.project_members import (
     add_project_member,
+    member_to_read,
     remove_project_member,
     update_project_member_role,
 )
+from app.domain.project_templates import get_template, resolve_project_tipo
+from app.services.project_roles import seed_project_from_template
 from app.services.projects import apply_project_estado_action, update_project
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -145,14 +148,25 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Organización no encontrada")
     require_org_admin(db, payload.organization_id, payload.created_by)
 
-    project = Project(**payload.model_dump())
+    template_slug = payload.template_slug or "t1_cliente_clasico"
+    tpl = get_template(template_slug)
+    tipo = resolve_project_tipo(template_slug, payload.tipo)
+    fields = payload.model_dump(exclude={"template_slug", "tipo"})
+    project = Project(**fields, template_slug=template_slug, tipo=tipo)
     db.add(project)
     db.flush()
+    roles = seed_project_from_template(db, project, template_slug)
+    creator_role = roles.get(tpl.creator_role)
+    if not creator_role:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Template sin rol creador: {tpl.creator_role}",
+        )
     db.add(
         ProjectMember(
             project_id=project.id,
             user_id=payload.created_by,
-            rol="pm",
+            role_id=creator_role.id,
         )
     )
     db.commit()
@@ -176,7 +190,6 @@ def get_project(
 def get_project_bundle(
     project_id: UUID,
     viewer_user_id: UUID | None = Query(default=None),
-    viewer_rol: MemberRol | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
@@ -184,7 +197,6 @@ def get_project_bundle(
         db,
         project,
         viewer_user_id=viewer_user_id,
-        viewer_rol=viewer_rol,
     )
 
 
@@ -245,12 +257,15 @@ def perform_project_action(
 @router.get("/{project_id}/members", response_model=list[ProjectMemberRead])
 def list_project_members(project_id: UUID, db: Session = Depends(get_db)):
     get_project_or_404(project_id, db)
+    from sqlalchemy.orm import joinedload
+
     stmt = (
         select(ProjectMember)
+        .options(joinedload(ProjectMember.role))
         .where(ProjectMember.project_id == project_id)
         .order_by(ProjectMember.joined_at.desc())
     )
-    return list(db.scalars(stmt))
+    return [member_to_read(m) for m in db.scalars(stmt)]
 
 
 @router.post(
@@ -281,7 +296,7 @@ def add_project_member_endpoint(
             detail="Ese usuario ya tiene ese rol en el proyecto",
         )
     db.refresh(member)
-    return member
+    return member_to_read(member)
 
 
 @router.patch(
@@ -306,7 +321,7 @@ def patch_project_member(
     update_project_member_role(db, project, member, payload)
     db.commit()
     db.refresh(member)
-    return member
+    return member_to_read(member)
 
 
 @router.delete(

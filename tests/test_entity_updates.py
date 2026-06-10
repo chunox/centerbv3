@@ -16,7 +16,7 @@ from app.schemas.projects import ProjectUpdate
 from app.services.features import update_feature
 from app.services.milestones import update_milestone
 from app.services.projects import apply_project_estado_action, update_project
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 @pytest.fixture
@@ -49,7 +49,7 @@ def _seed_project(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add(ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"))
+    add_member_with_slug(session, project, pm_id, 'pm')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,
@@ -132,18 +132,18 @@ def test_update_project_fechas_invalidas(db_session: Session):
     assert exc.value.status_code == 422
 
 
-def test_update_milestone_manual_estado(db_session: Session):
+def test_update_milestone_manual_estado_blocked_by_workflow(db_session: Session):
     project, milestone, _, pm_id = _seed_project(db_session)
 
-    update_milestone(
-        db_session,
-        milestone,
-        project,
-        MilestoneUpdate(actor_user_id=pm_id, estado="en_progreso"),
-    )
-    db_session.commit()
-
-    assert milestone.estado == "en_progreso"
+    with pytest.raises(HTTPException) as exc:
+        update_milestone(
+            db_session,
+            milestone,
+            project,
+            MilestoneUpdate(actor_user_id=pm_id, estado="en_progreso"),
+        )
+    assert exc.value.status_code == 422
+    assert "workflow" in str(exc.value.detail).lower()
 
 
 def test_update_milestone_cancelado_falla(db_session: Session):

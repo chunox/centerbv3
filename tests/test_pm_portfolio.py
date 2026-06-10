@@ -23,7 +23,7 @@ from app.models.entities import (
 )
 from app.services.auth_tokens import create_access_token
 from app.services.project_bundle import build_project_bundle
-from tests.org_helpers import create_organization, create_project_for_org, create_user
+from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org, create_user
 
 
 @pytest.fixture
@@ -197,9 +197,7 @@ def test_pm_portfolio_no_pm_role_returns_empty(
     db_session.add(
         OrganizationMember(organization_id=org.id, user_id=dev.id, rol="member")
     )
-    db_session.add(
-        ProjectMember(project_id=project.id, user_id=dev.id, rol="dev")
-    )
+    add_member_with_slug(db_session, project, dev.id, 'dev')
     db_session.commit()
 
     res = api_client.get(

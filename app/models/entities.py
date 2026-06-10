@@ -210,6 +210,9 @@ class Project(Base):
     nombre: Mapped[str] = mapped_column(String(150), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
     tipo: Mapped[str] = mapped_column(String(20), nullable=False, default="con_cliente")
+    template_slug: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="t1_cliente_clasico"
+    )
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="activo")
     fecha_inicio: Mapped[date] = mapped_column(Date, nullable=False)
     fecha_fin: Mapped[date] = mapped_column(Date, nullable=False)
@@ -247,13 +250,112 @@ class Project(Base):
     hub_entries: Mapped[list[HubEntry]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    roles: Mapped[list["ProjectRole"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    workflow_definitions: Mapped[list["ProjectWorkflowDefinition"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    workbench_definition: Mapped["ProjectWorkbenchDefinition | None"] = relationship(
+        back_populates="project", uselist=False, cascade="all, delete-orphan"
+    )
+
+
+class ProjectRole(Base):
+    """Rol configurable por proyecto (sistema o custom)."""
+    __tablename__ = "project_roles"
+    __table_args__ = (
+        UniqueConstraint("project_id", "slug", name="uq_project_role_slug"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    slug: Mapped[str] = mapped_column(String(40), nullable=False)
+    nombre: Mapped[str] = mapped_column(String(80), nullable=False)
+    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    color: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="roles")
+    capabilities: Mapped[list["ProjectRoleCapability"]] = relationship(
+        back_populates="role", cascade="all, delete-orphan"
+    )
+    members: Mapped[list["ProjectMember"]] = relationship(back_populates="role")
+
+
+class ProjectRoleCapability(Base):
+    __tablename__ = "project_role_capabilities"
+    __table_args__ = (
+        UniqueConstraint("role_id", "capability_key", name="uq_role_capability"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    role_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("project_roles.id", ondelete="CASCADE"), nullable=False
+    )
+    capability_key: Mapped[str] = mapped_column(String(80), nullable=False)
+
+    role: Mapped[ProjectRole] = relationship(back_populates="capabilities")
+
+
+class ProjectWorkflowDefinition(Base):
+    """Workflow versionado por tipo de entidad y proyecto."""
+    __tablename__ = "project_workflow_definitions"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "entity_type", "version", name="uq_project_workflow_version"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    entity_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    definition: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="workflow_definitions")
+
+
+class ProjectWorkbenchDefinition(Base):
+    """Workbenches (sidebar) configurables por proyecto."""
+    __tablename__ = "project_workbench_definitions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    definition: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="workbench_definition")
 
 
 class ProjectMember(Base):
     """Acceso por proyecto; un cliente puede ser member sin OrganizationMember (guest)."""
     __tablename__ = "project_members"
     __table_args__ = (
-        UniqueConstraint("project_id", "user_id", "rol", name="uq_project_member"),
+        UniqueConstraint("project_id", "user_id", "role_id", name="uq_project_member"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -265,11 +367,14 @@ class ProjectMember(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    rol: Mapped[str] = mapped_column(String(20), nullable=False)
+    role_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("project_roles.id", ondelete="CASCADE"), nullable=False
+    )
     joined_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     project: Mapped[Project] = relationship(back_populates="members")
     user: Mapped[User] = relationship(back_populates="project_memberships")
+    role: Mapped[ProjectRole] = relationship(back_populates="members")
 
 
 class Milestone(Base):
@@ -773,41 +878,3 @@ class Notification(Base):
     user: Mapped[User] = relationship(back_populates="notifications")
     project: Mapped[Project] = relationship(back_populates="notifications")
 
-
-class FeatureStateTransition(Base):
-    __tablename__ = "feature_state_transitions"
-    __table_args__ = (
-        UniqueConstraint(
-            "tipo_proyecto",
-            "estado_desde",
-            "estado_hasta",
-            "rol_permitido",
-            name="uq_feature_transition",
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    tipo_proyecto: Mapped[str] = mapped_column(String(20), nullable=False)
-    estado_desde: Mapped[str] = mapped_column(String(40), nullable=False)
-    estado_hasta: Mapped[str] = mapped_column(String(40), nullable=False)
-    rol_permitido: Mapped[str] = mapped_column(String(20), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-
-class TaskStateTransition(Base):
-    __tablename__ = "task_state_transitions"
-    __table_args__ = (
-        UniqueConstraint(
-            "estado_desde", "estado_hasta", "rol_permitido", name="uq_task_transition"
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    estado_desde: Mapped[str] = mapped_column(String(20), nullable=False)
-    estado_hasta: Mapped[str] = mapped_column(String(20), nullable=False)
-    rol_permitido: Mapped[str] = mapped_column(String(20), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

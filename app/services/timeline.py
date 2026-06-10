@@ -23,11 +23,8 @@ from app.schemas.timeline import (
     TimelineEventRead,
     TimelinePlanItemRead,
 )
-from app.services.access import (
-    MemberRol,
-    ROLE_AUDIT_ENTIDADES,
-    filter_audit_logs_for_viewer,
-)
+from app.services.access import resolve_audit_logs_for_user
+from app.services.workflow.visibility import comment_visible_for_capabilities
 
 _ENTIDAD_LABELS = {
     "feature": "Feature",
@@ -232,19 +229,19 @@ def _ensure_users(db: Session, users: dict[uuid.UUID, User], *user_ids: uuid.UUI
 
 
 def _comment_visible_to_viewer(
+    db: Session,
+    project_id: uuid.UUID,
     comment: Comment,
     *,
     viewer_user_id: uuid.UUID | None,
-    viewer_rol: MemberRol | None,
 ) -> bool:
-    if viewer_rol is None or viewer_rol == "pm":
-        return True
-    allowed = ROLE_AUDIT_ENTIDADES.get(viewer_rol, frozenset())
-    if comment.entidad_tipo not in allowed:
-        return False
-    if viewer_user_id and comment.user_id == viewer_user_id:
-        return True
-    return comment.entidad_tipo in allowed
+    return comment_visible_for_capabilities(
+        db,
+        project_id,
+        viewer_user_id=viewer_user_id,
+        entidad_tipo=comment.entidad_tipo,
+        comment_user_id=comment.user_id,
+    )
 
 
 def build_project_timeline(
@@ -258,7 +255,6 @@ def build_project_timeline(
     eventos_limit: int = 200,
     eventos_offset: int = 0,
     viewer_user_id: uuid.UUID | None = None,
-    viewer_rol: MemberRol | None = None,
 ) -> ProjectTimelineRead:
     maps = _load_maps(db, project_id)
     users = maps.users
@@ -272,11 +268,11 @@ def build_project_timeline(
                 .order_by(AuditLog.created_at.desc())
             )
         )
-        logs = filter_audit_logs_for_viewer(
+        logs = resolve_audit_logs_for_user(
             db,
             raw_logs,
+            project_id=project_id,
             viewer_user_id=viewer_user_id,
-            viewer_rol=viewer_rol,
         )
         for log in logs:
             ms_id, ms_nom, ft_id, ft_nom = _resolve_context(
@@ -320,9 +316,10 @@ def build_project_timeline(
                 .order_by(Comment.created_at.desc())
             ):
                 if not _comment_visible_to_viewer(
+                    db,
+                    project_id,
                     comment,
                     viewer_user_id=viewer_user_id,
-                    viewer_rol=viewer_rol,
                 ):
                     continue
                 ms_id, ms_nom, ft_id, ft_nom = _resolve_context(

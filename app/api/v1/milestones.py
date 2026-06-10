@@ -16,7 +16,14 @@ from app.schemas.milestones import (
     MilestoneRead,
     MilestoneUpdate,
 )
-from app.services.access import assert_member_has_role, assert_project_active
+from app.domain.capabilities import (
+    SCOPE_MILESTONE_CANCEL,
+    SCOPE_MILESTONE_CREATE,
+    SCOPE_MILESTONE_DELETE,
+    SCOPE_MILESTONE_EDIT,
+)
+from app.services.access import assert_project_active
+from app.services.workflow.authorize import assert_capability
 from app.services.deletions import delete_milestone
 from app.services.milestones import (
     cancel_milestone_cascade,
@@ -48,7 +55,7 @@ def create_milestone(
     creator = db.get(User, payload.created_by)
     if not creator:
         raise HTTPException(status_code=404, detail="Usuario creador no encontrado")
-    assert_member_has_role(db, project_id, payload.created_by, "pm")
+    assert_capability(db, project_id, payload.created_by, SCOPE_MILESTONE_CREATE)
 
     data = payload.model_dump()
     data["orden"] = next_milestone_orden(db, project_id)

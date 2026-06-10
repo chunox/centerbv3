@@ -21,7 +21,7 @@ from app.models.entities import (
 )
 from app.services.audit import record_audit_log
 from app.services.timeline import build_project_timeline
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 def _session():
@@ -51,7 +51,7 @@ def _seed(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add(ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"))
+    add_member_with_slug(session, project, pm_id, 'pm')
     h1 = Milestone(
         id=uuid4(),
         project_id=project.id,

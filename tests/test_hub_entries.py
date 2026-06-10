@@ -13,7 +13,7 @@ from app.database import Base, get_db
 from app.main import app
 from app.models.entities import HubEntry, ProjectMember
 from app.services.auth_tokens import create_access_token
-from tests.org_helpers import create_organization, create_project_for_org, create_user
+from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org, create_user
 
 
 @pytest.fixture
@@ -54,8 +54,8 @@ def _seed_project(session: Session):
     qa = create_user(session, email="qa@hub.test")
     org = create_organization(session, owner_id=pm.id)
     project = create_project_for_org(session, pm.id, org)
-    session.add(ProjectMember(project_id=project.id, user_id=dev.id, rol="dev"))
-    session.add(ProjectMember(project_id=project.id, user_id=qa.id, rol="qa"))
+    add_member_with_slug(session, project, dev.id, 'dev')
+    add_member_with_slug(session, project, qa.id, 'qa')
     session.commit()
     return pm, dev, qa, org, project
 
@@ -133,7 +133,7 @@ def test_interno_hidden_from_list_filter(api_client: TestClient, db_session: Ses
     )
     resp = api_client.get(
         f"/api/v1/projects/{project.id}/hub-entries"
-        f"?viewer_user_id={qa.id}&viewer_rol=qa",
+        f"?viewer_user_id={qa.id}",
         headers=_auth_headers(qa.id, org.id),
     )
     assert resp.status_code == 200
@@ -141,7 +141,7 @@ def test_interno_hidden_from_list_filter(api_client: TestClient, db_session: Ses
 
     resp_dev = api_client.get(
         f"/api/v1/projects/{project.id}/hub-entries"
-        f"?viewer_user_id={dev.id}&viewer_rol=dev&tipo=update",
+        f"?viewer_user_id={dev.id}&tipo=update",
         headers=_auth_headers(dev.id, org.id),
     )
     assert len(resp_dev.json()) == 2
@@ -186,7 +186,9 @@ def test_pm_can_delete_any_entry(api_client: TestClient, db_session: Session):
         headers=_auth_headers(pm.id, org.id),
     )
     assert resp.status_code == 204
-    assert db_session.get(HubEntry, created["id"]) is None
+    from uuid import UUID
+
+    assert db_session.get(HubEntry, UUID(created["id"])) is None
 
 
 def test_closed_project_blocks_create(api_client: TestClient, db_session: Session):

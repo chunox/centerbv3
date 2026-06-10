@@ -73,7 +73,7 @@ class FeatureMigrateRequest(BaseModel):
 class FeatureActionRequest(BaseModel):
     action: FeatureAction
     actor_user_id: UUID
-    actor_rol: MemberRol
+    form_data: dict[str, object] | None = None
 
 
 class UatGateRead(BaseModel):

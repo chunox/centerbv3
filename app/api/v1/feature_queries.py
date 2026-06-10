@@ -13,11 +13,13 @@ from app.schemas.feature_queries import (
     FeatureQueryInboxRead,
     FeatureQueryRead,
 )
+from app.domain.capabilities import QUERY_CREATE
 from app.services.feature_queries import (
     apply_query_action,
     assert_project_active,
     blocking_states_for_project,
 )
+from app.services.workflow.authorize import assert_capability
 
 router = APIRouter(tags=["feature-queries"])
 inbox_router = APIRouter(tags=["feature-queries"])
@@ -32,23 +34,6 @@ def _get_query_or_404(
     return query
 
 
-def _assert_query_creator_role(
-    db: Session, project_id: UUID, user_id: UUID
-) -> None:
-    allowed = db.scalar(
-        select(
-            exists().where(
-                ProjectMember.project_id == project_id,
-                ProjectMember.user_id == user_id,
-                ProjectMember.rol.in_(("pm", "dev", "qa")),
-            )
-        )
-    )
-    if not allowed:
-        raise HTTPException(
-            status_code=403,
-            detail="Solo PM, Dev o QA pueden crear consultas",
-        )
 
 
 @inbox_router.get("/{project_id}/feature-queries", response_model=list[FeatureQueryInboxRead])
@@ -129,7 +114,7 @@ def create_feature_query(
     creator = db.get(User, payload.created_by)
     if not creator:
         raise HTTPException(status_code=404, detail="Usuario creador no encontrado")
-    _assert_query_creator_role(db, project_id, payload.created_by)
+    assert_capability(db, project_id, payload.created_by, QUERY_CREATE)
 
     query = FeatureQuery(
         feature_id=feature_id,
@@ -186,7 +171,7 @@ def perform_query_action(
         project,
         action=payload.action,
         actor_user_id=payload.actor_user_id,
-        actor_rol=payload.actor_rol,
+        form_data=payload.form_data,
     )
     db.commit()
     db.refresh(query)

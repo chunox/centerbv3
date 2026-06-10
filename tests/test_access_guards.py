@@ -19,28 +19,10 @@ from app.models.entities import (
     Project,
     ProjectMember,
     Task,
-    TaskStateTransition,
     User,
 )
 from app.services.features import apply_feature_action, ensure_default_task
-from tests.org_helpers import create_organization
-
-
-def _seed_task_transitions(session: Session) -> None:
-    for desde, hasta in [
-        ("backlog", "to_do"),
-        ("to_do", "in_progress"),
-        ("in_progress", "ready_for_test"),
-        ("ready_for_test", "completed"),
-    ]:
-        session.add(
-            TaskStateTransition(
-                estado_desde=desde,
-                estado_hasta=hasta,
-                rol_permitido="dev",
-            )
-        )
-    session.commit()
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 @pytest.fixture
@@ -53,7 +35,6 @@ def db_session():
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     session = SessionLocal()
-    _seed_task_transitions(session)
     try:
         yield session
     finally:
@@ -94,13 +75,9 @@ def _seed_interno_blocked(session: Session):
         created_by=pm_id,
     )
     session.add(project)
-    session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(project_id=project.id, user_id=dev_id, rol="dev"),
-            ProjectMember(project_id=project.id, user_id=qa_id, rol="qa"),
-        ]
-    )
+    add_member_with_slug(session, project, pm_id, 'pm')
+    add_member_with_slug(session, project, dev_id, 'dev')
+    add_member_with_slug(session, project, qa_id, 'qa')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,
@@ -150,7 +127,6 @@ def test_bloqueada_impide_enviar_al_pm(db_session: Session):
             project,
             action="enviar_al_pm",
             actor_user_id=qa_id,
-            actor_rol="qa",
         )
     assert exc.value.status_code == 409
 
@@ -163,7 +139,6 @@ def test_bloqueada_permite_cancelar(db_session: Session):
         project,
         action="cancelar",
         actor_user_id=pm_id,
-        actor_rol="pm",
     )
     assert feature.estado == "cancelado"
 
@@ -187,9 +162,7 @@ def test_create_milestone_en_proyecto_cerrado_falla(
         created_by=pm_id,
     )
     db_session.add(project)
-    db_session.add(
-        ProjectMember(project_id=project.id, user_id=pm_id, rol="pm")
-    )
+    add_member_with_slug(db_session, project, pm_id, 'pm')
     db_session.commit()
 
     response = api_client.post(
@@ -227,12 +200,8 @@ def test_create_feature_sin_rol_pm_falla(db_session: Session, api_client: TestCl
         created_by=pm_id,
     )
     db_session.add(project)
-    db_session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(project_id=project.id, user_id=dev_id, rol="dev"),
-        ]
-    )
+    add_member_with_slug(db_session, project, pm_id, 'pm')
+    add_member_with_slug(db_session, project, dev_id, 'dev')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,
@@ -285,14 +254,8 @@ def test_reporte_solo_cliente(db_session: Session, api_client: TestClient):
         created_by=pm_id,
     )
     db_session.add(project)
-    db_session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(
-                project_id=project.id, user_id=cliente_id, rol="cliente"
-            ),
-        ]
-    )
+    add_member_with_slug(db_session, project, pm_id, 'pm')
+    add_member_with_slug(db_session, project, cliente_id, 'cliente')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,
@@ -367,13 +330,9 @@ def test_adjunto_patch_solo_autor_o_pm(db_session: Session, api_client: TestClie
         created_by=pm_id,
     )
     db_session.add(project)
-    db_session.add_all(
-        [
-            ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"),
-            ProjectMember(project_id=project.id, user_id=dev_id, rol="dev"),
-            ProjectMember(project_id=project.id, user_id=other_dev, rol="dev"),
-        ]
-    )
+    add_member_with_slug(db_session, project, pm_id, 'pm')
+    add_member_with_slug(db_session, project, dev_id, 'dev')
+    add_member_with_slug(db_session, project, other_dev, 'dev')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,

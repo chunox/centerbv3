@@ -48,7 +48,6 @@ class MilestoneUpdate(BaseModel):
 class MilestoneActionRequest(BaseModel):
     action: Literal["cancelar"] = "cancelar"
     actor_user_id: UUID
-    actor_rol: Literal["pm"] = "pm"
 
 
 class MilestoneRead(BaseModel):

@@ -15,7 +15,7 @@ from app.main import app
 from app.models.entities import OrganizationInvite, OrganizationMember, Project, ProjectMember, User
 from app.security import hash_password
 from app.services.organizations import list_guest_projects, list_org_projects
-from tests.org_helpers import create_organization, create_project_for_org, create_user
+from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org, create_user
 
 
 @pytest.fixture
@@ -78,10 +78,10 @@ def test_guest_project_sin_org_membership(db_session: Session):
         ]
     )
     org = create_organization(db_session, owner_id=pm_id)
-    project = create_project_for_org(db_session, pm_id, org)
-    db_session.add(
-        ProjectMember(project_id=project.id, user_id=cliente_id, rol="cliente")
+    project = create_project_for_org(
+        db_session, pm_id, org, template_slug="t1_cliente_clasico"
     )
+    add_member_with_slug(db_session, project, cliente_id, 'cliente')
     db_session.commit()
 
     guests = list_guest_projects(db_session, cliente_id)
@@ -221,10 +221,10 @@ def test_list_projects_guest_api(api_client: TestClient, db_session: Session):
         ]
     )
     org = create_organization(db_session, owner_id=pm_id)
-    project = create_project_for_org(db_session, pm_id, org)
-    db_session.add(
-        ProjectMember(project_id=project.id, user_id=cliente_id, rol="cliente")
+    project = create_project_for_org(
+        db_session, pm_id, org, template_slug="t1_cliente_clasico"
     )
+    add_member_with_slug(db_session, project, cliente_id, 'cliente')
     db_session.commit()
 
     resp = api_client.get(

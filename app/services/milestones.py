@@ -12,7 +12,15 @@ from sqlalchemy.orm import Session
 from app.models.entities import Feature, Milestone, Project
 from app.schemas.milestones import MilestoneUpdate
 from app.services.audit import record_audit_log
-from app.services.feature_queries import assert_member_has_role, assert_project_active
+from app.domain.capabilities import (
+    SCOPE_MILESTONE_CANCEL,
+    SCOPE_MILESTONE_CREATE,
+    SCOPE_MILESTONE_DELETE,
+    SCOPE_MILESTONE_EDIT,
+    SCOPE_MILESTONE_REORDER,
+)
+from app.services.access import assert_project_active
+from app.services.workflow.authorize import assert_capability
 from app.services.features import CANCELLABLE_TASK_STATES, cancel_feature_cascade
 
 WORK_ACTIVE_FEATURE = frozenset(
@@ -88,26 +96,19 @@ def reorder_milestone(
             )
 
 
-def sync_milestone_state(
-    db: Session,
+def compute_milestone_target_state(
     milestone: Milestone,
-    project: Project,
+    features: list[Feature],
     *,
-    actor_user_id: uuid.UUID,
-) -> bool:
+    project: Project,
+) -> str | None:
     if project.estado != "activo" or milestone.estado == "cancelado":
-        return False
-
-    features = list(
-        db.scalars(select(Feature).where(Feature.milestone_id == milestone.id))
-    )
+        return None
     if not features:
-        return False
+        return None
 
     open_bugs = [
-        f
-        for f in features
-        if f.tipo == "bug" and f.estado not in TERMINAL_FEATURE
+        f for f in features if f.tipo == "bug" and f.estado not in TERMINAL_FEATURE
     ]
     if open_bugs:
         nuevo = (
@@ -123,20 +124,34 @@ def sync_milestone_state(
         nuevo = "pendiente"
 
     if milestone.estado == nuevo:
+        return None
+    return nuevo
+
+
+def sync_milestone_state(
+    db: Session,
+    milestone: Milestone,
+    project: Project,
+    *,
+    actor_user_id: uuid.UUID,
+) -> bool:
+    from app.services.workflow.engine import apply_entity_transition
+
+    features = list(
+        db.scalars(select(Feature).where(Feature.milestone_id == milestone.id))
+    )
+    nuevo = compute_milestone_target_state(milestone, features, project=project)
+    if nuevo is None:
         return False
 
-    anterior = milestone.estado
-    milestone.estado = nuevo
-    record_audit_log(
+    apply_entity_transition(
         db,
-        project_id=project.id,
-        user_id=actor_user_id,
-        entidad_tipo="milestone",
-        entidad_id=milestone.id,
-        accion="estado_changed",
-        campo="estado",
-        valor_anterior=anterior,
-        valor_nuevo=nuevo,
+        project,
+        milestone,
+        entity_type="milestone",
+        action_id="sync",
+        actor_user_id=actor_user_id,
+        target_state=nuevo,
     )
     return True
 
@@ -148,7 +163,7 @@ def update_milestone(
     payload: MilestoneUpdate,
 ) -> None:
     assert_project_active(project)
-    assert_member_has_role(db, project.id, payload.actor_user_id, "pm")
+    assert_capability(db, project.id, payload.actor_user_id, SCOPE_MILESTONE_EDIT)
     if milestone.estado == "cancelado":
         raise HTTPException(
             status_code=409,
@@ -169,6 +184,12 @@ def update_milestone(
 
     fecha_changed = "fecha_inicio" in changes or "fecha_fin" in changes
     new_orden = changes.pop("orden", None)
+
+    if "estado" in changes:
+        raise HTTPException(
+            status_code=422,
+            detail="El estado del hito se deriva del workflow; no se puede editar directamente",
+        )
 
     for field, nuevo in changes.items():
         anterior = getattr(milestone, field)
@@ -210,34 +231,22 @@ def cancel_milestone_cascade(
     *,
     actor_user_id: uuid.UUID,
 ) -> None:
+    from app.services.workflow.engine import apply_entity_transition
+
     assert_project_active(project)
-    assert_member_has_role(db, project.id, actor_user_id, "pm")
+    assert_capability(db, project.id, actor_user_id, SCOPE_MILESTONE_CANCEL)
 
     if milestone.estado == "cancelado":
         return
 
-    anterior = milestone.estado
-    milestone.estado = "cancelado"
-    record_audit_log(
+    apply_entity_transition(
         db,
-        project_id=project.id,
-        user_id=actor_user_id,
-        entidad_tipo="milestone",
-        entidad_id=milestone.id,
-        accion="cancelada",
-        campo="estado",
-        valor_anterior=anterior,
-        valor_nuevo="cancelado",
+        project,
+        milestone,
+        entity_type="milestone",
+        action_id="cancelar",
+        actor_user_id=actor_user_id,
     )
-
-    features = list(
-        db.scalars(select(Feature).where(Feature.milestone_id == milestone.id))
-    )
-    for feature in features:
-        if feature.estado != "cancelado":
-            cancel_feature_cascade(
-                db, feature, project, actor_user_id=actor_user_id
-            )
 
 
 def sync_milestone_states_for_project(

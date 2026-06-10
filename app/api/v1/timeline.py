@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.schemas.timeline import ProjectTimelineRead
-from app.services.access import MemberRol
 from app.services.timeline import build_project_timeline
 
 router = APIRouter(tags=["timeline"])
@@ -23,11 +22,7 @@ def get_project_timeline(
     eventos_offset: int = Query(default=0, ge=0),
     viewer_user_id: UUID | None = Query(
         default=None,
-        description="Filtra eventos por rol del viewer (demo sin JWT)",
-    ),
-    viewer_rol: MemberRol | None = Query(
-        default=None,
-        description="pm | dev | qa | cliente",
+        description="Filtra eventos por capacidades del viewer (demo sin JWT)",
     ),
     db: Session = Depends(get_db),
 ):
@@ -43,5 +38,4 @@ def get_project_timeline(
         eventos_limit=eventos_limit,
         eventos_offset=eventos_offset,
         viewer_user_id=viewer_user_id,
-        viewer_rol=viewer_rol,
     )

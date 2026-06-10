@@ -10,7 +10,7 @@ from app.config import settings
 from app.database import Base
 from app.models.entities import Feature, Milestone, Project, ProjectMember, User
 from app.scheduler import run_scheduled_milestone_sync, shutdown_scheduler, start_scheduler
-from tests.org_helpers import create_organization
+from tests.org_helpers import add_member_with_slug, create_organization
 
 
 def test_run_scheduled_milestone_sync_sin_actor(monkeypatch):
@@ -39,7 +39,7 @@ def test_run_scheduled_milestone_sync_ejecuta_job(monkeypatch):
         created_by=pm_id,
     )
     session.add(project)
-    session.add(ProjectMember(project_id=project.id, user_id=pm_id, rol="pm"))
+    add_member_with_slug(session, project, pm_id, 'pm')
     milestone = Milestone(
         id=uuid4(),
         project_id=project.id,

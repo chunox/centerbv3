@@ -9,11 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.entities import Project, Task, TaskDependency
-from app.services.access import (
-    assert_member_has_role,
-    assert_not_pm_for_task_ops,
-    assert_project_active,
-)
+from app.services.access import assert_not_pm_for_task_ops, assert_project_active
 from app.services.audit import record_audit_log
 
 SATISFIED_PREDECESSOR_STATES = frozenset({"completed", "cancel"})
@@ -98,7 +94,10 @@ def create_dependency(
 ) -> TaskDependency:
     assert_project_active(project)
     assert_not_pm_for_task_ops(db, project.id, actor_user_id)
-    assert_member_has_role(db, project.id, actor_user_id, "dev")
+    from app.domain.capabilities import KANBAN_TASK_EDIT
+    from app.services.workflow.authorize import assert_capability
+
+    assert_capability(db, project.id, actor_user_id, KANBAN_TASK_EDIT)
 
     if successor.id == predecessor.id:
         raise HTTPException(
@@ -157,7 +156,10 @@ def delete_dependency(
 ) -> None:
     assert_project_active(project)
     assert_not_pm_for_task_ops(db, project.id, actor_user_id)
-    assert_member_has_role(db, project.id, actor_user_id, "dev")
+    from app.domain.capabilities import KANBAN_TASK_EDIT
+    from app.services.workflow.authorize import assert_capability
+
+    assert_capability(db, project.id, actor_user_id, KANBAN_TASK_EDIT)
 
     record_audit_log(
         db,

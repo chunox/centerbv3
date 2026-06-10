@@ -13,7 +13,9 @@ from app.schemas.feature_reports import (
     FeatureReportInboxRead,
     FeatureReportRead,
 )
-from app.services.access import assert_member_has_role, assert_project_active
+from app.domain.capabilities import REPORT_CREATE
+from app.services.access import assert_project_active
+from app.services.workflow.authorize import assert_capability
 from app.services.feature_reports import apply_report_action, notify_pms_report_received
 
 router = APIRouter(tags=["feature-reports"])
@@ -66,17 +68,17 @@ def create_feature_report(
     feature = get_feature_or_404(project_id, milestone_id, feature_id, db)
     project = get_project_or_404(project_id, db)
     assert_project_active(project)
-    assert_member_has_role(db, project.id, payload.reported_by, "cliente")
+    assert_capability(db, project.id, payload.reported_by, REPORT_CREATE)
 
     if feature.estado != "completado":
         raise HTTPException(
             status_code=409,
             detail="Solo se puede reportar sobre una feature en estado completado",
         )
-    if project.tipo != "con_cliente":
+    if project.tipo not in ("con_cliente", "freestyle"):
         raise HTTPException(
             status_code=400,
-            detail="Los reportes solo aplican a proyectos tipo con_cliente",
+            detail="Los reportes solo aplican a proyectos con cliente",
         )
 
     reporter = db.get(User, payload.reported_by)
@@ -149,6 +151,7 @@ def perform_report_action(
         actor_user_id=payload.actor_user_id,
         duracion_estimada=payload.duracion_estimada,
         nombre_feature=payload.nombre_feature,
+        form_data=payload.form_data,
     )
     db.commit()
     db.refresh(report)
@@ -228,6 +231,7 @@ def perform_project_report_action(
         actor_user_id=payload.actor_user_id,
         duracion_estimada=payload.duracion_estimada,
         nombre_feature=payload.nombre_feature,
+        form_data=payload.form_data,
     )
     db.commit()
     db.refresh(report)

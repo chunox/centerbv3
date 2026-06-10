@@ -1,7 +1,7 @@
 """
 Registro de auditoría por proyecto.
 
-GET filtra por viewer_rol (pm/dev/qa/cliente) según entidades visibles para cada rol.
+GET filtra por viewer_user_id según capacidades del usuario.
 Usado por la vista Actividad del frontend PM.
 """
 from uuid import UUID
@@ -26,8 +26,7 @@ from app.models.entities import (
 )
 from app.schemas.audit_logs import AuditLogCreate, AuditLogRead
 from app.services.audit_display import audit_log_to_read, audit_logs_to_read
-from app.schemas.projects import MemberRol
-from app.services.access import filter_audit_logs_for_viewer
+from app.services.access import resolve_audit_logs_for_user
 from app.services.audit import AuditEntidadTipo, record_audit_log
 
 router = APIRouter(tags=["audit-logs"])
@@ -96,10 +95,6 @@ def list_audit_logs(
         default=None,
         description="Usuario demo que consulta (sin JWT)",
     ),
-    viewer_rol: MemberRol | None = Query(
-        default=None,
-        description="Rol demo del usuario que consulta",
-    ),
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -114,11 +109,11 @@ def list_audit_logs(
         stmt = stmt.where(AuditLog.user_id == user_id)
     stmt = stmt.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
     logs = list(db.scalars(stmt))
-    visible = filter_audit_logs_for_viewer(
+    visible = resolve_audit_logs_for_user(
         db,
         logs,
+        project_id=project_id,
         viewer_user_id=viewer_user_id,
-        viewer_rol=viewer_rol,
     )
     return audit_logs_to_read(db, visible)
 
@@ -159,18 +154,17 @@ def get_audit_log(
     project_id: UUID,
     log_id: UUID,
     viewer_user_id: UUID | None = Query(default=None),
-    viewer_rol: MemberRol | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     get_project_or_404(project_id, db)
     entry = db.get(AuditLog, log_id)
     if not entry or entry.project_id != project_id:
         raise HTTPException(status_code=404, detail="Registro de auditoría no encontrado")
-    visible = filter_audit_logs_for_viewer(
+    visible = resolve_audit_logs_for_user(
         db,
         [entry],
+        project_id=project_id,
         viewer_user_id=viewer_user_id,
-        viewer_rol=viewer_rol,
     )
     if not visible:
         raise HTTPException(status_code=403, detail="Sin permiso para ver este registro")

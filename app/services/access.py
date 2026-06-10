@@ -1,4 +1,4 @@
-"""Control de acceso sin JWT — actor_user_id / viewer_rol en query/body (demo)."""
+"""Control de acceso — actor_user_id en mutaciones; visibilidad por capacidades."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from app.models.entities import (
     Milestone,
     Project,
     ProjectMember,
+    ProjectRole,
     Task,
-    TaskAssignee,
 )
 
 MemberRol = Literal["pm", "dev", "qa", "cliente"]
@@ -32,25 +32,6 @@ MENTION_UUID_RE = re.compile(
     r"@([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
     re.IGNORECASE,
 )
-
-ROLE_AUDIT_ENTIDADES: dict[MemberRol, frozenset[str]] = {
-    "pm": frozenset(
-        {
-            "project",
-            "milestone",
-            "feature",
-            "tarea",
-            "feature_query",
-            "feature_report",
-            "document",
-            "hub_entry",
-            "comment",
-        }
-    ),
-    "dev": frozenset({"feature", "tarea", "comment"}),
-    "qa": frozenset({"feature", "tarea", "comment"}),
-    "cliente": frozenset({"feature", "feature_query", "feature_report", "comment"}),
-}
 
 
 def assert_project_active(project: Project) -> None:
@@ -66,24 +47,35 @@ def assert_pm_or_org_admin_of_project(
     project: Project,
     user_id: uuid.UUID,
 ) -> None:
-    """PM del proyecto u owner/admin de la org pueden gestionar el proyecto."""
+    """Capacidad de configuración del proyecto u owner/admin de la org."""
+    from app.domain.capabilities import PROJECT_SETTINGS_EDIT
     from app.services.organizations import ORG_ADMIN_ROLES, get_org_member
+    from app.services.workflow.authorize import assert_capability
 
-    is_pm = db.scalar(
-        select(
-            exists().where(
-                ProjectMember.project_id == project.id,
-                ProjectMember.user_id == user_id,
-                ProjectMember.rol == "pm",
-            )
-        )
-    )
-    if is_pm:
-        return
     org_member = get_org_member(db, project.organization_id, user_id)
     if org_member and org_member.rol in ORG_ADMIN_ROLES:
         return
-    assert_member_has_role(db, project.id, user_id, "pm")
+    assert_capability(db, project.id, user_id, PROJECT_SETTINGS_EDIT)
+
+
+def _member_role_exists(
+    db: Session,
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+    role_slugs: tuple[str, ...],
+) -> bool:
+    stmt = select(
+        exists(
+            select(ProjectMember.id)
+            .join(ProjectRole, ProjectRole.id == ProjectMember.role_id)
+            .where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == user_id,
+                ProjectRole.slug.in_(role_slugs),
+            )
+        )
+    )
+    return bool(db.scalar(stmt))
 
 
 def assert_member_has_role(
@@ -92,14 +84,7 @@ def assert_member_has_role(
     user_id: uuid.UUID,
     rol: MemberRol,
 ) -> None:
-    stmt = select(
-        exists().where(
-            ProjectMember.project_id == project_id,
-            ProjectMember.user_id == user_id,
-            ProjectMember.rol == rol,
-        )
-    )
-    if not db.scalar(stmt):
+    if not _member_role_exists(db, project_id, user_id, (rol,)):
         raise HTTPException(
             status_code=403,
             detail=f"El usuario no tiene rol '{rol}' en este proyecto",
@@ -111,19 +96,13 @@ def assert_pm_or_dev_member(
     project_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> None:
-    is_allowed = db.scalar(
-        select(
-            exists().where(
-                ProjectMember.project_id == project_id,
-                ProjectMember.user_id == user_id,
-                ProjectMember.rol.in_(("pm", "dev")),
-            )
-        )
+    is_allowed = _member_role_exists(
+        db, project_id, user_id, ("pm", "dev", "tech_lead", "pm_tecnico")
     )
     if not is_allowed:
         raise HTTPException(
             status_code=403,
-            detail="Solo PM o Dev pueden realizar esta acción en el centro",
+            detail="Solo PM, Dev, Tech Líder o PM Técnico pueden realizar esta acción",
         )
 
 
@@ -151,15 +130,7 @@ def assert_not_pm_for_task_ops(
     user_id: uuid.UUID,
 ) -> None:
     """PM no crea ni mueve tareas (§4.6)."""
-    is_pm = db.scalar(
-        select(
-            exists().where(
-                ProjectMember.project_id == project_id,
-                ProjectMember.user_id == user_id,
-                ProjectMember.rol == "pm",
-            )
-        )
-    )
+    is_pm = _member_role_exists(db, project_id, user_id, ("pm",))
     if is_pm:
         raise HTTPException(
             status_code=403,
@@ -235,105 +206,6 @@ def parse_mention_user_ids(contenido: str) -> list[uuid.UUID]:
     return result
 
 
-def document_visible_to_role(
-    document: Document,
-    *,
-    viewer_rol: MemberRol | None,
-) -> bool:
-    if viewer_rol is None:
-        return True
-    if viewer_rol == "cliente" and document.visibilidad == "interno":
-        return False
-    return True
-
-
-def hub_entry_visible_to_role(
-    entry: HubEntry,
-    *,
-    viewer_rol: MemberRol | None,
-) -> bool:
-    if viewer_rol is None:
-        return True
-    if viewer_rol == "cliente" and entry.visibilidad == "interno":
-        return False
-    return True
-
-
-def filter_audit_logs_for_viewer(
-    db: Session,
-    logs: list[AuditLog],
-    *,
-    viewer_user_id: uuid.UUID | None,
-    viewer_rol: MemberRol | None,
-) -> list[AuditLog]:
-    if viewer_rol is None or viewer_rol == "pm":
-        return logs
-
-    allowed_types = ROLE_AUDIT_ENTIDADES.get(viewer_rol, frozenset())
-    filtered: list[AuditLog] = []
-
-    assigned_task_ids: set[uuid.UUID] | None = None
-    own_report_ids: set[uuid.UUID] | None = None
-    if viewer_user_id and viewer_rol == "dev":
-        assigned_task_ids = set(
-            db.scalars(
-                select(TaskAssignee.task_id).where(
-                    TaskAssignee.user_id == viewer_user_id
-                )
-            )
-        )
-    if viewer_user_id and viewer_rol == "cliente":
-        own_report_ids = set(
-            db.scalars(
-                select(FeatureReport.id).where(
-                    FeatureReport.reported_by == viewer_user_id
-                )
-            )
-        )
-
-    for log in logs:
-        if log.entidad_tipo not in allowed_types:
-            continue
-        if viewer_rol == "dev" and viewer_user_id:
-            if log.user_id == viewer_user_id:
-                filtered.append(log)
-                continue
-            if log.entidad_tipo == "tarea" and assigned_task_ids:
-                if log.entidad_id in assigned_task_ids:
-                    filtered.append(log)
-                continue
-            if log.entidad_tipo in ("feature", "comment"):
-                filtered.append(log)
-            continue
-        if viewer_rol == "qa":
-            if log.entidad_tipo == "feature":
-                feature = db.get(Feature, log.entidad_id)
-                if feature and feature.estado in (
-                    "uat",
-                    "esperando_liberacion_pm",
-                    "esperando_validacion_cliente",
-                    "completado",
-                ):
-                    filtered.append(log)
-                continue
-            filtered.append(log)
-            continue
-        if viewer_rol == "cliente" and viewer_user_id:
-            if log.user_id == viewer_user_id:
-                filtered.append(log)
-                continue
-            if log.entidad_tipo == "feature_report" and own_report_ids:
-                if log.entidad_id in own_report_ids:
-                    filtered.append(log)
-                continue
-            if log.entidad_tipo in ("feature", "feature_query", "comment"):
-                filtered.append(log)
-            continue
-        filtered.append(log)
-
-    return filtered
-
-
 def assert_attachment_author_or_pm(
     db: Session,
     project_id: uuid.UUID,
@@ -341,29 +213,42 @@ def assert_attachment_author_or_pm(
     *,
     uploaded_by: uuid.UUID,
 ) -> None:
-    """PATCH/DELETE adjunto: solo autor o PM (§4.11)."""
+    """PATCH/DELETE adjunto: autor o quien puede gestionar documentos del proyecto."""
+    from app.domain.capabilities import HUB_DOCUMENT_EDIT, PROJECT_SETTINGS_EDIT
+    from app.services.workflow.authorize import assert_any_capability
+
     if actor_user_id == uploaded_by:
         return
-    assert_member_has_role(db, project_id, actor_user_id, "pm")
+    assert_any_capability(
+        db,
+        project_id,
+        actor_user_id,
+        [HUB_DOCUMENT_EDIT, PROJECT_SETTINGS_EDIT],
+        detail="Solo el autor o un gestor del proyecto puede modificar este adjunto",
+    )
 
 
 def list_exposures_for_viewer(
     db: Session,
     project_id: uuid.UUID,
     *,
-    viewer_rol: MemberRol | None,
+    viewer_user_id: uuid.UUID | None,
     milestone_id: uuid.UUID | None = None,
     feature_id: uuid.UUID | None = None,
 ) -> list[DocumentExposure]:
+    from app.domain.capabilities import DOCUMENT_VIEW_INTERNAL
+    from app.services.workflow.capabilities import user_has_capability
+
     stmt = select(DocumentExposure).where(DocumentExposure.project_id == project_id)
     if milestone_id is not None:
         stmt = stmt.where(DocumentExposure.milestone_id == milestone_id)
     if feature_id is not None:
         stmt = stmt.where(DocumentExposure.feature_id == feature_id)
     exposures = list(db.scalars(stmt.order_by(DocumentExposure.created_at.desc())))
-    if viewer_rol != "cliente":
+    if viewer_user_id is None or user_has_capability(
+        db, project_id, viewer_user_id, DOCUMENT_VIEW_INTERNAL
+    ):
         return exposures
-    # Cliente: solo filas de exposición explícita (sin documentos internos no expuestos)
     filtered: list[DocumentExposure] = []
     for exp in exposures:
         if exp.document_id is not None:
@@ -372,3 +257,52 @@ def list_exposures_for_viewer(
                 continue
         filtered.append(exp)
     return filtered
+
+
+def resolve_audit_logs_for_user(
+    db: Session,
+    logs: list[AuditLog],
+    *,
+    project_id: uuid.UUID,
+    viewer_user_id: uuid.UUID | None,
+) -> list[AuditLog]:
+    from app.services.workflow.visibility import filter_audit_logs_for_capabilities
+
+    return filter_audit_logs_for_capabilities(
+        db,
+        logs,
+        project_id=project_id,
+        viewer_user_id=viewer_user_id,
+    )
+
+
+def document_visible_for_user(
+    db: Session,
+    document: Document,
+    *,
+    viewer_user_id: uuid.UUID | None,
+) -> bool:
+    from app.services.workflow.visibility import document_visible_to_capabilities
+
+    return document_visible_to_capabilities(
+        db,
+        document.project_id,
+        viewer_user_id,
+        document.visibilidad,
+    )
+
+
+def hub_entry_visible_for_user(
+    db: Session,
+    entry: HubEntry,
+    *,
+    viewer_user_id: uuid.UUID | None,
+) -> bool:
+    from app.services.workflow.visibility import hub_entry_visible_to_capabilities
+
+    return hub_entry_visible_to_capabilities(
+        db,
+        entry.project_id,
+        viewer_user_id,
+        entry.visibilidad,
+    )

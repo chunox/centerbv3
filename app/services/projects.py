@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from app.models.entities import Project
 from app.schemas.projects import ProjectUpdate
 from app.services.audit import record_audit_log
-from app.services.feature_queries import assert_member_has_role, assert_project_active
+from app.domain.capabilities import PROJECT_LIFECYCLE_MANAGE, PROJECT_SETTINGS_EDIT
+from app.services.feature_queries import assert_project_active
+from app.services.workflow.authorize import assert_capability
 
 ProjectEstadoAction = Literal["cerrar", "reabrir", "cancelar"]
 
@@ -29,7 +31,7 @@ def apply_project_estado_action(
     action: ProjectEstadoAction,
     actor_user_id: uuid.UUID,
 ) -> None:
-    assert_member_has_role(db, project.id, actor_user_id, "pm")
+    assert_capability(db, project.id, actor_user_id, PROJECT_LIFECYCLE_MANAGE)
 
     key = (project.estado, action)
     nuevo = _TRANSITIONS.get(key)
@@ -60,7 +62,7 @@ def update_project(
     payload: ProjectUpdate,
 ) -> None:
     assert_project_active(project)
-    assert_member_has_role(db, project.id, payload.actor_user_id, "pm")
+    assert_capability(db, project.id, payload.actor_user_id, PROJECT_SETTINGS_EDIT)
 
     changes = payload.model_dump(exclude_unset=True, exclude={"actor_user_id"})
     if not changes:

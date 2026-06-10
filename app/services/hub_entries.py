@@ -11,14 +11,13 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import HubEntry, Project, User
 from app.schemas.hub_entries import HubEntryCreate, HubEntryUpdate
-from app.schemas.projects import MemberRol
+from app.domain.capabilities import HUB_PUBLISH
 from app.services.access import (
-    assert_member_has_role,
     assert_member_of_project,
-    assert_pm_or_dev_member,
     assert_project_active,
-    hub_entry_visible_to_role,
+    hub_entry_visible_for_user,
 )
+from app.services.workflow.authorize import assert_capability
 from app.services.audit import record_audit_log
 
 HubEntryTipoFilter = Literal["update", "note"]
@@ -28,7 +27,7 @@ def list_hub_entries(
     db: Session,
     project_id: uuid.UUID,
     *,
-    viewer_rol: MemberRol | None = None,
+    viewer_user_id: uuid.UUID | None = None,
     tipo: HubEntryTipoFilter | None = None,
     limit: int = 50,
     offset: int = 0,
@@ -43,9 +42,13 @@ def list_hub_entries(
     if tipo is not None:
         stmt = stmt.where(HubEntry.tipo == tipo)
     entries = list(db.scalars(stmt))
-    if viewer_rol is None:
+    if viewer_user_id is None:
         return entries
-    return [e for e in entries if hub_entry_visible_to_role(e, viewer_rol=viewer_rol)]
+    return [
+        e
+        for e in entries
+        if hub_entry_visible_for_user(db, e, viewer_user_id=viewer_user_id)
+    ]
 
 
 def get_hub_entry_or_404(
@@ -65,7 +68,7 @@ def create_hub_entry(
     payload: HubEntryCreate,
 ) -> HubEntry:
     assert_project_active(project)
-    assert_pm_or_dev_member(db, project.id, payload.author_id)
+    assert_capability(db, project.id, payload.author_id, HUB_PUBLISH)
 
     author = db.get(User, payload.author_id)
     if not author:
@@ -97,10 +100,7 @@ def _assert_hub_entry_edit_allowed(
     entry: HubEntry,
     actor_user_id: uuid.UUID,
 ) -> None:
-    if entry.author_id == actor_user_id:
-        assert_pm_or_dev_member(db, entry.project_id, actor_user_id)
-        return
-    assert_member_has_role(db, entry.project_id, actor_user_id, "pm")
+    assert_capability(db, entry.project_id, actor_user_id, HUB_PUBLISH)
 
 
 def update_hub_entry(
