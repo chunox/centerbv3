@@ -33,6 +33,8 @@ class WorkbenchRead(BaseModel):
     route: str
     icon: str = "circle"
     section: str = "plan"
+    view_type: str = "custom"
+    entity_type: str | None = None
     required_capabilities: list[str] = Field(default_factory=list)
     queue_filter: dict[str, Any] | None = None
     orden: int = 0
@@ -47,6 +49,22 @@ class WorkflowSummaryRead(BaseModel):
     terminal_states: list[str] = Field(default_factory=list)
 
 
+class RecordTypeRead(BaseModel):
+    key: str
+    label: str
+    storage: str
+    field_schema: list[dict[str, Any]] = Field(default_factory=list)
+    parent_types: list[str] = Field(default_factory=list)
+    orden: int = 0
+
+
+class PackContextRead(BaseModel):
+    slug: str
+    nombre: str
+    descripcion: str = ""
+    views: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ProjectAccessContextRead(BaseModel):
     user_id: UUID
     roles: list[ProjectRoleRead]
@@ -54,6 +72,9 @@ class ProjectAccessContextRead(BaseModel):
     workflows: dict[str, WorkflowSummaryRead]
     workbenches: list[WorkbenchRead]
     capability_catalog: list[CapabilityDefRead] = Field(default_factory=list)
+    pack: PackContextRead | None = None
+    record_types: list[RecordTypeRead] = Field(default_factory=list)
+    pack_slug: str = "software"
 
 
 class ProjectRoleCreate(BaseModel):

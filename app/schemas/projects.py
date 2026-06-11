@@ -22,6 +22,7 @@ class ProjectCreate(BaseModel):
     organization_id: UUID
     nombre: str = Field(min_length=1, max_length=150)
     descripcion: str | None = None
+    pack_slug: str | None = None
     template_slug: ProjectTemplateSlug | None = None
     tipo: ProjectTipo | None = None
     estado: ProjectEstado = "activo"
@@ -71,6 +72,7 @@ class ProjectRead(BaseModel):
     descripcion: str | None
     tipo: ProjectTipo
     template_slug: str
+    pack_slug: str = "software"
     estado: ProjectEstado
     fecha_inicio: date
     fecha_fin: date

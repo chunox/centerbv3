@@ -36,6 +36,7 @@ def seed_project_from_template(
     template_slug: str,
 ) -> dict[str, ProjectRole]:
     """Crea roles del template, workflows y workbenches. Devuelve mapa slug → role."""
+    project.pack_slug = getattr(project, "pack_slug", None) or "software"
     tpl = get_template(template_slug)
     created: dict[str, ProjectRole] = {}
     for orden, slug in enumerate(tpl.roles, start=1):
@@ -70,6 +71,10 @@ def seed_project_from_template(
             definition=json.dumps(DEFAULT_WORKBENCHES, ensure_ascii=False),
         )
     )
+    from app.domain.packs.catalog import pack_software_manifest
+    from app.services.packs import _seed_record_types_from_manifest
+
+    _seed_record_types_from_manifest(db, project, pack_software_manifest())
     return created
 
 

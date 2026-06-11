@@ -30,7 +30,7 @@ DB_PATH = DATA_DIR / "v3.db"
 UPLOADS_DIR = DATA_DIR / "uploads"
 BASE = "http://127.0.0.1:8000/api/v1"
 DEMO_PASSWORD = "demo12345"
-SEED_VERSION = "v10-dual-mega"
+SEED_VERSION = "v11-generic-packs"
 # Procedimiento de wipe y smoke post-reset: docs/SMOKE_RESET_ROLES.md
 
 DEMO_USERS = [
@@ -821,6 +821,265 @@ def seed_plataforma_interna(
     }
 
 
+def create_record(
+    token: str,
+    project_id: str,
+    pm_id: str,
+    *,
+    record_type: str,
+    titulo: str,
+    parent_id: str | None = None,
+    fecha_inicio: str | None = None,
+    fecha_fin: str | None = None,
+    data: dict | None = None,
+) -> dict:
+    body: dict = {
+        "actor_user_id": pm_id,
+        "record_type": record_type,
+        "titulo": titulo,
+    }
+    if parent_id:
+        body["parent_id"] = parent_id
+    if fecha_inicio:
+        body["fecha_inicio"] = fecha_inicio
+    if fecha_fin:
+        body["fecha_fin"] = fecha_fin
+    if data:
+        body["data"] = data
+    return post(token, f"/projects/{project_id}/records", body)
+
+
+def transition_record(
+    token: str,
+    project_id: str,
+    pm_id: str,
+    record_id: str,
+    action_id: str,
+) -> None:
+    try:
+        post(
+            token,
+            f"/projects/{project_id}/records/{record_id}/transition",
+            {"actor_user_id": pm_id, "action_id": action_id},
+            expect=200,
+        )
+    except RuntimeError:
+        pass
+
+
+def seed_generic_pack_projects(
+    token: str,
+    org_id: str,
+    pm_id: str,
+    today: date,
+    users: dict,
+) -> list[dict]:
+    """Proyectos evento, creativo y simple con muchos registros genéricos."""
+    stats: list[dict] = []
+
+    evento = create_project(
+        token,
+        org_id,
+        pm_id,
+        nombre="Conferencia Producto 2026",
+        descripcion="Pack evento — checklist y timeline",
+        pack_slug="evento",
+        tipo="freestyle",
+        fecha_inicio=add_days(today, 0),
+        fecha_fin=add_days(today, 90),
+    )
+    ev_root = create_record(
+        token,
+        evento["id"],
+        pm_id,
+        record_type="evento",
+        titulo="Conferencia anual",
+        fecha_inicio=add_days(today, 0),
+        fecha_fin=add_days(today, 90),
+        data={"lugar": "Centro de Convenciones"},
+    )
+    tareas_evento = [
+        "Contratar venue",
+        "Catering y coffee breaks",
+        "Speakers internacionales",
+        "Streaming en vivo",
+        "Acreditaciones",
+        "Señalética",
+        "Seguros del evento",
+        "Merchandising",
+        "After party",
+        "Encuesta post-evento",
+        "Fotógrafo oficial",
+        "DJ / música",
+        "Registro de asistentes",
+        "Patrocinadores tier 1",
+        "Patrocinadores tier 2",
+        "Prensa y comunicados",
+        "Badge design",
+        "WiFi invitados",
+        "Protocolo COI",
+        "Transporte speakers",
+        "Green room",
+        "Ensayo general",
+        "Checklist seguridad",
+        "Desmontaje",
+        "Informe final",
+    ]
+    for i, titulo in enumerate(tareas_evento):
+        rec = create_record(
+            token,
+            evento["id"],
+            pm_id,
+            record_type="tarea",
+            titulo=titulo,
+            parent_id=ev_root["id"],
+            fecha_fin=add_days(today, 7 + i * 2),
+            data={"proveedor": f"Proveedor {i % 5 + 1}"},
+        )
+        if i % 4 == 1:
+            transition_record(token, evento["id"], pm_id, rec["id"], "iniciar")
+        if i % 7 == 0:
+            transition_record(token, evento["id"], pm_id, rec["id"], "iniciar")
+            transition_record(token, evento["id"], pm_id, rec["id"], "completar")
+    stats.append(
+        {
+            "nombre": evento["nombre"],
+            "pack": "evento",
+            "records": 1 + len(tareas_evento),
+        }
+    )
+
+    creativo = create_project(
+        token,
+        org_id,
+        pm_id,
+        nombre="Campaña Verano Creativo",
+        descripcion="Pack creativo — board e inbox de aprobaciones",
+        pack_slug="creativo",
+        tipo="freestyle",
+        fecha_inicio=add_days(today, -14),
+        fecha_fin=add_days(today, 60),
+    )
+    add_member(creativo["id"], pm_id, users["cliente@center.demo"]["id"], "cliente")
+    campana = create_record(
+        token,
+        creativo["id"],
+        pm_id,
+        record_type="campana",
+        titulo="Campaña verano 2026",
+        fecha_inicio=add_days(today, -14),
+        fecha_fin=add_days(today, 60),
+    )
+    entregables = [
+        "Key visual",
+        "Spot 15s TV",
+        "Spot 30s digital",
+        "Banners display",
+        "Landing promo",
+        "Email nurturing #1",
+        "Email nurturing #2",
+        "Posts redes x12",
+        "Storyboard video",
+        "Guía de estilo",
+        "Packaging mockup",
+        "OOH vía pública",
+        "Presentación cliente",
+        "Versión B key visual",
+        "Ajustes finales",
+    ]
+    for i, titulo in enumerate(entregables):
+        rec = create_record(
+            token,
+            creativo["id"],
+            pm_id,
+            record_type="entregable",
+            titulo=titulo,
+            parent_id=campana["id"],
+            data={"version": i + 1},
+        )
+        if i % 5 == 0:
+            transition_record(token, creativo["id"], pm_id, rec["id"], "enviar_revision")
+        elif i % 5 == 1:
+            transition_record(token, creativo["id"], pm_id, rec["id"], "enviar_revision")
+            transition_record(token, creativo["id"], pm_id, rec["id"], "solicitar_aprobacion")
+        elif i % 5 == 2:
+            transition_record(token, creativo["id"], pm_id, rec["id"], "enviar_revision")
+            transition_record(token, creativo["id"], pm_id, rec["id"], "solicitar_aprobacion")
+            cliente_id = users["cliente@center.demo"]["id"]
+            cliente_auth = login("cliente@center.demo")
+            transition_record(
+                cliente_auth["access_token"],
+                creativo["id"],
+                cliente_id,
+                rec["id"],
+                "aprobar",
+            )
+    stats.append(
+        {
+            "nombre": creativo["nombre"],
+            "pack": "creativo",
+            "records": 1 + len(entregables),
+        }
+    )
+
+    simple = create_project(
+        token,
+        org_id,
+        pm_id,
+        nombre="Consultoría ONG Demo",
+        descripcion="Pack simple — fases, gantt y checklist",
+        pack_slug="simple",
+        tipo="freestyle",
+        fecha_inicio=add_days(today, 0),
+        fecha_fin=add_days(today, 120),
+    )
+    fases = [
+        ("Diagnóstico", 0, 21),
+        ("Plan de acción", 22, 45),
+        ("Implementación", 46, 90),
+        ("Cierre y reporte", 91, 120),
+    ]
+    record_total = 0
+    for orden, (nombre_fase, d0, d1) in enumerate(fases):
+        fase = create_record(
+            token,
+            simple["id"],
+            pm_id,
+            record_type="fase",
+            titulo=nombre_fase,
+            fecha_inicio=add_days(today, d0),
+            fecha_fin=add_days(today, d1),
+        )
+        record_total += 1
+        for j in range(8):
+            titulo = f"{nombre_fase} — actividad {j + 1}"
+            rec = create_record(
+                token,
+                simple["id"],
+                pm_id,
+                record_type="tarea",
+                titulo=titulo,
+                parent_id=fase["id"],
+                fecha_inicio=add_days(today, d0 + j * 2),
+                fecha_fin=add_days(today, d0 + j * 2 + 3),
+                data={"proveedor": "Consultor externo" if j % 2 else "Equipo interno"},
+            )
+            record_total += 1
+            if j % 3 == 0:
+                transition_record(token, simple["id"], pm_id, rec["id"], "iniciar")
+            if j % 5 == 0:
+                transition_record(token, simple["id"], pm_id, rec["id"], "iniciar")
+                transition_record(token, simple["id"], pm_id, rec["id"], "completar")
+    stats.append(
+        {
+            "nombre": simple["nombre"],
+            "pack": "simple",
+            "records": record_total,
+        }
+    )
+    return stats
+
+
 def seed_rich_demo() -> None:
     wait_for_api()
     today = date.today()
@@ -842,8 +1101,9 @@ def seed_rich_demo() -> None:
 
     portal_stats = seed_portal_cliente(token, org_id, today, users)
     interno_stats = seed_plataforma_interna(token, org_id, today, users)
+    generic_stats = seed_generic_pack_projects(token, org_id, pm["id"], today, users)
 
-    print(f"[seed] {SEED_VERSION} OK — {len(DEMO_USERS)} usuarios, {len(DEMO_PROJECTS)} proyectos")
+    print(f"[seed] {SEED_VERSION} OK — {len(DEMO_USERS)} usuarios, {len(DEMO_PROJECTS) + len(generic_stats)} proyectos")
     print(f"  • {portal_stats['project']['nombre']} (con_cliente):")
     print(
         f"      {portal_stats['milestones']} hitos, {portal_stats['features']} features, "
@@ -855,6 +1115,8 @@ def seed_rich_demo() -> None:
         f"      {interno_stats['milestones']} hitos, {interno_stats['features']} features, "
         f"{interno_stats['tasks']} tareas, {interno_stats['queries']} consultas"
     )
+    for gs in generic_stats:
+        print(f"  • {gs['nombre']} (pack {gs['pack']}): {gs['records']} registros")
     print("  Cuentas: " + ", ".join(e for e, _ in DEMO_USERS))
     print(f"  Password: {DEMO_PASSWORD}")
 

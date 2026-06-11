@@ -55,9 +55,28 @@ def get_active_workflow_version(
     return row.version if row is not None else None
 
 
+def workflow_entity_types(db: Session, project_id: uuid.UUID) -> list[str]:
+    from app.services.records.registry import registry
+
+    types = registry.workflow_entity_types_for_project(db, project_id)
+    if types:
+        return types
+    rows = db.scalars(
+        select(ProjectWorkflowDefinition.entity_type)
+        .where(
+            ProjectWorkflowDefinition.project_id == project_id,
+            ProjectWorkflowDefinition.is_active.is_(True),
+        )
+        .distinct()
+    ).all()
+    if rows:
+        return list(rows)
+    return list(WORKFLOW_ENTITY_TYPES)
+
+
 def get_all_active_workflows(db: Session, project_id: uuid.UUID) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
-    for entity_type in WORKFLOW_ENTITY_TYPES:
+    for entity_type in workflow_entity_types(db, project_id):
         wf = get_active_workflow(db, project_id, entity_type)
         if wf:
             result[entity_type] = wf

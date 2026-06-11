@@ -8,6 +8,8 @@ from app.api.v1 import (
     jobs,
     organizations,
     project_access,
+    project_packs,
+    project_records,
     project_templates,
     projects,
     users,
@@ -19,7 +21,9 @@ api_router.include_router(organizations.router)
 api_router.include_router(users.router)
 api_router.include_router(jobs.router)
 api_router.include_router(project_templates.router)
+api_router.include_router(project_packs.router)
 api_router.include_router(projects.router)
 api_router.include_router(project_access.router)
+api_router.include_router(project_records.router)
 api_router.include_router(comments.router)
 api_router.include_router(attachments.router)

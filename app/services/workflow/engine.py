@@ -8,14 +8,15 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.entities import Feature, FeatureReport, Milestone, Project, Task
+from app.domain.records.types import RecordRef
+from app.models.entities import Project
 from app.services.audit import record_audit_log
-from app.services.features import cancel_feature_cascade
-from app.services.workflow.authorize import assert_any_capability
+from app.services.records.registry import registry
+from app.services.workflow.authorize import assert_any_capability, resolve_capability_keys
 from app.services.workflow.gates import check_transition_conditions, evaluate_gates
+from app.services.workflow.side_effects import run_side_effect
 from app.services.workflow.store import get_active_workflow
-from app.services.workflow.capabilities import users_with_capability
-from app.services.notifications import create_notification
+from app.services.workflow.capabilities import get_effective_capabilities
 
 
 def _find_transition(
@@ -70,18 +71,19 @@ def validate_transition_form_fields(
             )
 
 
-def apply_entity_transition(
+def apply_record_transition(
     db: Session,
     project: Project,
     entity: Any,
     *,
-    entity_type: str,
+    record_ref: RecordRef,
     action_id: str,
     actor_user_id: uuid.UUID,
     target_state: str | None = None,
     form_data: dict[str, Any] | None = None,
     side_effect_context: dict[str, Any] | None = None,
 ) -> str:
+    entity_type = record_ref.record_type
     workflow = get_active_workflow(db, project.id, entity_type)
     if workflow is None:
         raise HTTPException(status_code=500, detail=f"Workflow '{entity_type}' no configurado")
@@ -97,7 +99,7 @@ def apply_entity_transition(
             detail=f"Transición '{action_id}' no permitida desde '{current}'",
         )
 
-    required = transition.get("required_capabilities", [])
+    required = resolve_capability_keys(transition.get("required_capabilities", []))
     if required:
         assert_any_capability(db, project.id, actor_user_id, required)
 
@@ -130,13 +132,7 @@ def apply_entity_transition(
     anterior = current
     entity.estado = nuevo
 
-    entidad_tipo_map = {
-        "feature": "feature",
-        "task": "tarea",
-        "query": "feature_query",
-        "report": "feature_report",
-    }
-    entidad_tipo = entidad_tipo_map.get(entity_type, entity_type)
+    entidad_tipo = registry.audit_entidad_tipo(entity_type)
     record_audit_log(
         db,
         project_id=project.id,
@@ -160,160 +156,54 @@ def apply_entity_transition(
             valor_nuevo=json.dumps(form_data, ensure_ascii=False),
         )
 
-    _run_side_effects(
-        db,
-        project=project,
-        entity=entity,
-        entity_type=entity_type,
-        action_id=action_id,
-        actor_user_id=actor_user_id,
-        effects=transition.get("side_effects", []),
-        form_data=form_data,
-        side_effect_context=side_effect_context,
-    )
+    for effect in transition.get("side_effects", []):
+        run_side_effect(
+            db,
+            project=project,
+            entity=entity,
+            entity_type=entity_type,
+            action_id=action_id,
+            actor_user_id=actor_user_id,
+            effect=effect,
+            form_data=form_data,
+            side_effect_context=side_effect_context,
+            entidad_tipo=entidad_tipo,
+        )
     return nuevo
 
 
-def _notification_entidad_tipo(entity_type: str) -> str:
-    return {
-        "feature": "feature",
-        "task": "tarea",
-        "query": "feature_query",
-        "report": "feature_report",
-        "milestone": "milestone",
-    }.get(entity_type, entity_type)
-
-
-def _run_side_effects(
+def apply_entity_transition(
     db: Session,
-    *,
     project: Project,
     entity: Any,
+    *,
     entity_type: str,
     action_id: str,
     actor_user_id: uuid.UUID,
-    effects: list[dict[str, Any]],
+    target_state: str | None = None,
     form_data: dict[str, Any] | None = None,
     side_effect_context: dict[str, Any] | None = None,
-) -> None:
-    ctx = side_effect_context or {}
-    entidad_tipo = _notification_entidad_tipo(entity_type)
-    for effect in effects:
-        etype = effect.get("type")
-        if etype == "notify":
-            cap = effect.get("target", {}).get("capability")
-            if cap:
-                for uid in users_with_capability(db, project.id, cap):
-                    create_notification(
-                        db,
-                        user_id=uid,
-                        project_id=project.id,
-                        tipo="estado_changed",
-                        entidad_tipo=entidad_tipo,  # type: ignore[arg-type]
-                        entidad_id=entity.id,
-                    )
-        elif etype == "notify_reporter" and entity_type == "report" and isinstance(
-            entity, FeatureReport
-        ):
-            create_notification(
-                db,
-                user_id=entity.reported_by,
-                project_id=project.id,
-                tipo=effect.get("notification_tipo", "reporte_resuelto"),
-                entidad_tipo="feature_report",
-                entidad_id=entity.id,
-            )
-        elif etype == "generate_feature_from_report" and entity_type == "report" and isinstance(
-            entity, FeatureReport
-        ):
-            from app.services.feature_reports import generate_feature_from_report
-
-            milestone_id = ctx.get("milestone_id")
-            if milestone_id is None:
-                raise HTTPException(
-                    status_code=500,
-                    detail="milestone_id requerido para generate_feature_from_report",
-                )
-            milestone = db.get(Milestone, milestone_id)
-            if milestone is None:
-                raise HTTPException(status_code=404, detail="Hito no encontrado")
-            original = db.get(Feature, entity.feature_id)
-            if original is None:
-                raise HTTPException(status_code=404, detail="Feature original no encontrada")
-            generate_feature_from_report(
-                db,
-                entity,
-                original,
-                project,
-                milestone,
-                actor_user_id=actor_user_id,
-                form_data=form_data or ctx.get("form_data"),
-            )
-        elif etype == "sync_milestone_from_report" and entity_type == "report":
-            milestone_id = ctx.get("milestone_id")
-            if milestone_id is not None:
-                milestone = db.get(Milestone, milestone_id)
-                if milestone is not None:
-                    from app.services.milestones import sync_milestone_state
-
-                    sync_milestone_state(
-                        db, milestone, project, actor_user_id=actor_user_id
-                    )
-        elif etype == "cancel_features_cascade" and entity_type == "milestone" and isinstance(
-            entity, Milestone
-        ):
-            from sqlalchemy import select
-
-            features = list(
-                db.scalars(select(Feature).where(Feature.milestone_id == entity.id))
-            )
-            for feature in features:
-                if feature.estado != "cancelado":
-                    cancel_feature_cascade(
-                        db, feature, project, actor_user_id=actor_user_id
-                    )
-        elif etype == "cancel_tasks_cascade" and entity_type == "feature":
-            cancel_feature_cascade(db, entity, project, actor_user_id=actor_user_id)
-        elif etype == "sync_tasks" and entity_type == "feature":
-            rule = effect.get("rule")
-            if rule == "complete_ready_for_test":
-                from app.services.features import load_active_tasks
-
-                tasks = load_active_tasks(db, entity.id)
-                for task in tasks:
-                    if task.estado == "ready_for_test":
-                        prev = task.estado
-                        task.estado = "completed"
-                        record_audit_log(
-                            db,
-                            project_id=project.id,
-                            user_id=actor_user_id,
-                            entidad_tipo="tarea",
-                            entidad_id=task.id,
-                            accion="estado_changed",
-                            campo="estado",
-                            valor_anterior=prev,
-                            valor_nuevo="completed (workflow)",
-                        )
-        elif etype == "rework_tasks" and entity_type == "feature":
-            from app.services.features import load_active_tasks
-
-            tasks = load_active_tasks(db, entity.id)
-            for task in tasks:
-                if task.estado == "ready_for_test":
-                    prev = task.estado
-                    task.estado = "in_progress"
-                    record_audit_log(
-                        db,
-                        project_id=project.id,
-                        user_id=actor_user_id,
-                        entidad_tipo="tarea",
-                        entidad_id=task.id,
-                        accion="estado_changed",
-                        campo="estado",
-                        valor_anterior=prev,
-                        valor_nuevo="in_progress (workflow_rework)",
-                    )
+) -> str:
+    ref = registry.resolve_ref(db, entity_type, entity.id)
+    storage = "legacy" if registry.is_legacy(entity_type) else "generic"
+    if ref is None:
+        ref = RecordRef(
+            id=entity.id,
+            record_type=entity_type,
+            storage=storage,
+            project_id=project.id,
+        )
+    return apply_record_transition(
+        db,
+        project,
+        entity,
+        record_ref=ref,
+        action_id=action_id,
+        actor_user_id=actor_user_id,
+        target_state=target_state,
+        form_data=form_data,
+        side_effect_context=side_effect_context,
+    )
 
 
 def get_available_transitions(
@@ -324,8 +214,6 @@ def get_available_transitions(
     entity_type: str,
     user_id: uuid.UUID,
 ) -> list[dict[str, Any]]:
-    from app.services.workflow.capabilities import get_effective_capabilities
-
     workflow = get_active_workflow(db, project.id, entity_type)
     if workflow is None:
         return []
@@ -338,7 +226,7 @@ def get_available_transitions(
             continue
         if not check_transition_conditions(project, t.get("conditions")):
             continue
-        required = t.get("required_capabilities", [])
+        required = resolve_capability_keys(t.get("required_capabilities", []))
         if required and not any(r in caps for r in required):
             continue
         available.append(

@@ -367,10 +367,59 @@ TEMPLATE_ROLE_LABELS: dict[str, str] = {
 }
 
 
+WORKBENCH_BOARD = "workbench.board"
+WORKBENCH_GANTT = "workbench.gantt"
+WORKBENCH_TIMELINE = "workbench.timeline"
+WORKBENCH_CHECKLIST = "workbench.checklist"
+WORKBENCH_INBOX_GENERIC = "workbench.inbox"
+
+GENERIC_WORKBENCH_CAPS = frozenset(
+    {
+        WORKBENCH_BOARD,
+        WORKBENCH_GANTT,
+        WORKBENCH_TIMELINE,
+        WORKBENCH_CHECKLIST,
+        WORKBENCH_INBOX_GENERIC,
+    }
+)
+
+
+def is_record_capability(key: str) -> bool:
+    return key.startswith("record.")
+
+
 def is_valid_capability(key: str) -> bool:
-    return key in ALL_CAPABILITY_KEYS
+    if key in ALL_CAPABILITY_KEYS or key in GENERIC_WORKBENCH_CAPS:
+        return True
+    if is_record_capability(key):
+        parts = key.split(".")
+        if len(parts) >= 4 and parts[-2] == "transition":
+            return True
+        return len(parts) >= 3 and parts[-1] in ("read", "create", "edit", "delete")
+    return False
 
 
 def validate_capability_keys(keys: list[str]) -> list[str]:
     """Devuelve claves inválidas."""
-    return [k for k in keys if k not in ALL_CAPABILITY_KEYS]
+    return [k for k in keys if not is_valid_capability(k)]
+
+
+_LEGACY_TRANSITION_PREFIX = "feature.transition."
+
+
+def resolve_capability_keys(keys: list[str]) -> list[str]:
+    """Expande alias legacy ↔ record para autorización."""
+    expanded: list[str] = []
+    for key in keys:
+        expanded.append(key)
+        if key.startswith(_LEGACY_TRANSITION_PREFIX):
+            action = key[len(_LEGACY_TRANSITION_PREFIX) :]
+            expanded.append(f"record.feature.transition.{action}")
+        elif key.startswith("record.feature.transition."):
+            action = key.split(".")[-1]
+            expanded.append(f"{_LEGACY_TRANSITION_PREFIX}{action}")
+        elif key == KANBAN_TASK_MOVE:
+            expanded.extend(["record.task.transition.move", key])
+        elif key == KANBAN_TASK_CANCEL:
+            expanded.extend(["record.task.transition.cancel", key])
+    return list(dict.fromkeys(expanded))

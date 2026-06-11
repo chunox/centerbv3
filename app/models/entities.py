@@ -213,6 +213,9 @@ class Project(Base):
     template_slug: Mapped[str] = mapped_column(
         String(40), nullable=False, default="t1_cliente_clasico"
     )
+    pack_slug: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="software"
+    )
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="activo")
     fecha_inicio: Mapped[date] = mapped_column(Date, nullable=False)
     fecha_fin: Mapped[date] = mapped_column(Date, nullable=False)
@@ -259,6 +262,139 @@ class Project(Base):
     workbench_definition: Mapped["ProjectWorkbenchDefinition | None"] = relationship(
         back_populates="project", uselist=False, cascade="all, delete-orphan"
     )
+    record_types: Mapped[list["ProjectRecordType"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    records: Mapped[list["ProjectRecord"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+class ProjectPack(Base):
+    """Catálogo global de packs de proyecto."""
+    __tablename__ = "project_packs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    slug: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
+    nombre: Mapped[str] = mapped_column(String(120), nullable=False)
+    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manifest: Mapped[str] = mapped_column(Text, nullable=False)
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class ProjectRecordType(Base):
+    """Tipo de entidad activo en un proyecto (copiado del pack)."""
+    __tablename__ = "project_record_types"
+    __table_args__ = (
+        UniqueConstraint("project_id", "key", name="uq_project_record_type_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(40), nullable=False)
+    label: Mapped[str] = mapped_column(String(80), nullable=False)
+    storage: Mapped[str] = mapped_column(String(10), nullable=False, default="generic")
+    field_schema: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    parent_types: Mapped[str | None] = mapped_column(Text, nullable=True)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="record_types")
+
+
+class ProjectRecord(Base):
+    """Registro genérico de proyecto."""
+    __tablename__ = "project_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    record_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("project_records.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    titulo: Mapped[str] = mapped_column(String(255), nullable=False)
+    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    estado: Mapped[str] = mapped_column(String(40), nullable=False)
+    data: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    fecha_inicio: Mapped[date | None] = mapped_column(Date, nullable=True)
+    fecha_fin: Mapped[date | None] = mapped_column(Date, nullable=True)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="records")
+    parent: Mapped["ProjectRecord | None"] = relationship(
+        remote_side="ProjectRecord.id", back_populates="children"
+    )
+    children: Mapped[list["ProjectRecord"]] = relationship(back_populates="parent")
+    assignees: Mapped[list["ProjectRecordAssignee"]] = relationship(
+        back_populates="record", cascade="all, delete-orphan"
+    )
+
+
+class ProjectRecordAssignee(Base):
+    __tablename__ = "project_record_assignees"
+
+    record_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("project_records.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), primary_key=True
+    )
+
+    record: Mapped[ProjectRecord] = relationship(back_populates="assignees")
+    user: Mapped[User] = relationship()
+
+
+class ProjectRecordDependency(Base):
+    __tablename__ = "project_record_dependencies"
+    __table_args__ = (
+        UniqueConstraint(
+            "predecessor_id", "successor_id", name="uq_record_dependency_pair"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    predecessor_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("project_records.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    successor_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("project_records.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    dependency_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="finish_to_start"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class ProjectRole(Base):
@@ -321,7 +457,7 @@ class ProjectWorkflowDefinition(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
-    entity_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     definition: Mapped[str] = mapped_column(Text, nullable=False)

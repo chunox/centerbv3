@@ -148,19 +148,39 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Organización no encontrada")
     require_org_admin(db, payload.organization_id, payload.created_by)
 
-    template_slug = payload.template_slug or "t1_cliente_clasico"
-    tpl = get_template(template_slug)
-    tipo = resolve_project_tipo(template_slug, payload.tipo)
-    fields = payload.model_dump(exclude={"template_slug", "tipo"})
-    project = Project(**fields, template_slug=template_slug, tipo=tipo)
+    pack_slug = payload.pack_slug or "software"
+    if pack_slug == "software":
+        template_slug = payload.template_slug or "t1_cliente_clasico"
+        tpl = get_template(template_slug)
+        tipo = resolve_project_tipo(template_slug, payload.tipo)
+    else:
+        template_slug = payload.template_slug or "t5_freestyle"
+        tipo = payload.tipo or "freestyle"
+        tpl = get_template(template_slug)
+    fields = payload.model_dump(exclude={"template_slug", "tipo", "pack_slug"})
+    project = Project(
+        **fields,
+        template_slug=template_slug,
+        pack_slug=pack_slug,
+        tipo=tipo,
+    )
     db.add(project)
     db.flush()
-    roles = seed_project_from_template(db, project, template_slug)
-    creator_role = roles.get(tpl.creator_role)
+    if pack_slug == "software":
+        roles = seed_project_from_template(db, project, template_slug)
+        creator_key = tpl.creator_role
+    else:
+        from app.domain.packs.catalog import get_pack_manifest
+        from app.services.packs import seed_project_from_pack
+
+        roles = seed_project_from_pack(db, project, pack_slug)
+        manifest = get_pack_manifest(pack_slug)
+        creator_key = manifest.roles[0].slug if manifest and manifest.roles else "owner"
+    creator_role = roles.get(creator_key)
     if not creator_role:
         raise HTTPException(
             status_code=500,
-            detail=f"Template sin rol creador: {tpl.creator_role}",
+            detail=f"Pack sin rol creador: {creator_key}",
         )
     db.add(
         ProjectMember(
