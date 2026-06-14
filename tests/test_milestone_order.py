@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.models.entities import Milestone, Project, ProjectMember, User
+from app.models.entities import Project, ProjectRecord
 from app.schemas.milestones import MilestoneUpdate
 from app.services.deletions import delete_milestone
 from app.services.milestones import (
@@ -17,7 +17,8 @@ from app.services.milestones import (
     reorder_milestone,
     update_milestone,
 )
-from tests.org_helpers import add_member_with_slug, create_organization
+from tests.org_helpers import create_organization, create_project_for_org
+from tests.record_helpers import create_milestone_record
 
 
 @pytest.fixture
@@ -34,37 +35,21 @@ def db_session():
 
 def _seed_project(session: Session):
     pm_id = uuid4()
+    from app.models.entities import User
+
     session.add(User(id=pm_id, nombre="PM", email="pm@order.test", password_hash="x"))
     org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="Proyecto",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
-        created_by=pm_id,
-    )
-    session.add(project)
-    add_member_with_slug(session, project, pm_id, 'pm')
+    project = create_project_for_org(session, pm_id, org, nombre="Proyecto")
     session.commit()
     return project, pm_id
 
 
-def _add_milestone(session: Session, project: Project, pm_id, nombre: str, orden: int) -> Milestone:
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre=nombre,
-        tipo="entrega",
-        orden=orden,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        estado="pendiente",
-        created_by=pm_id,
+def _add_milestone(
+    session: Session, project: Project, pm_id, nombre: str, orden: int
+) -> ProjectRecord:
+    milestone = create_milestone_record(
+        session, project, created_by=pm_id, nombre=nombre, orden=orden
     )
-    session.add(milestone)
     session.commit()
     return milestone
 
@@ -102,7 +87,7 @@ def test_delete_middle_recompacta(db_session: Session):
     from app.services.milestones import _ordered_milestones
 
     rows = _ordered_milestones(db_session, project.id)
-    assert [m.nombre for m in rows] == ["H1", "H3"]
+    assert [m.titulo for m in rows] == ["H1", "H3"]
     assert [m.orden for m in rows] == [1, 2]
     assert next_milestone_orden(db_session, project.id) == 3
     assert h1.orden == 1

@@ -3,7 +3,7 @@ Modelos SQLAlchemy — schema v8 (organizaciones + dominio PM).
 
 Relaciones principales:
   User ↔ OrganizationMember ↔ Organization
-  Organization → Project → Milestone → Feature → Task
+  Organization → Project → ProjectRecord (generic)
   ProjectMember: rol por proyecto (pm/dev/qa/cliente), independiente de org
 """
 from __future__ import annotations
@@ -19,6 +19,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -51,22 +52,6 @@ class User(Base):
     projects_created: Mapped[list[Project]] = relationship(back_populates="creator")
     project_memberships: Mapped[list[ProjectMember]] = relationship(
         back_populates="user"
-    )
-    milestones_created: Mapped[list[Milestone]] = relationship(
-        back_populates="creator"
-    )
-    features_created: Mapped[list[Feature]] = relationship(back_populates="creator")
-    task_assignments: Mapped[list["TaskAssignee"]] = relationship(
-        back_populates="user"
-    )
-    tasks_created: Mapped[list[Task]] = relationship(
-        back_populates="creator", foreign_keys="Task.created_by"
-    )
-    feature_reports_submitted: Mapped[list[FeatureReport]] = relationship(
-        back_populates="reporter", foreign_keys="FeatureReport.reported_by"
-    )
-    feature_queries_created: Mapped[list[FeatureQuery]] = relationship(
-        back_populates="creator", foreign_keys="FeatureQuery.created_by"
     )
     comments: Mapped[list[Comment]] = relationship(back_populates="author")
     documents_created: Mapped[list[Document]] = relationship(
@@ -209,13 +194,16 @@ class Project(Base):
     )
     nombre: Mapped[str] = mapped_column(String(150), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tipo: Mapped[str] = mapped_column(String(20), nullable=False, default="con_cliente")
+    profile_slug: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="default"
+    )
     template_slug: Mapped[str] = mapped_column(
         String(40), nullable=False, default="t1_cliente_clasico"
     )
     pack_slug: Mapped[str] = mapped_column(
         String(40), nullable=False, default="software"
     )
+    structure_version: Mapped[int] = mapped_column(nullable=False, default=2)
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="activo")
     fecha_inicio: Mapped[date] = mapped_column(Date, nullable=False)
     fecha_fin: Mapped[date] = mapped_column(Date, nullable=False)
@@ -235,11 +223,6 @@ class Project(Base):
     members: Mapped[list[ProjectMember]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
-    milestones: Mapped[list[Milestone]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    features: Mapped[list[Feature]] = relationship(back_populates="project")
-    tasks: Mapped[list[Task]] = relationship(back_populates="project")
     document: Mapped[Document | None] = relationship(
         back_populates="project", uselist=False, cascade="all, delete-orphan"
     )
@@ -262,12 +245,114 @@ class Project(Base):
     workbench_definition: Mapped["ProjectWorkbenchDefinition | None"] = relationship(
         back_populates="project", uselist=False, cascade="all, delete-orphan"
     )
+    communication_rules: Mapped["ProjectCommunicationRules | None"] = relationship(
+        back_populates="project", uselist=False, cascade="all, delete-orphan"
+    )
     record_types: Mapped[list["ProjectRecordType"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
     records: Mapped[list["ProjectRecord"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    blocks: Mapped[list["ProjectBlock"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    views: Mapped[list["ProjectView"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    field_definitions: Mapped[list["ProjectFieldDefinition"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+class BlockCatalog(Base):
+    """Catálogo global de bloques reutilizables (kanban, inbox, gantt, etc.)."""
+    __tablename__ = "block_catalog"
+
+    slug: Mapped[str] = mapped_column(String(40), primary_key=True)
+    nombre: Mapped[str] = mapped_column(String(120), nullable=False)
+    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manifest: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class ProjectBlock(Base):
+    """Instancia de bloque activa en un proyecto."""
+    __tablename__ = "project_blocks"
+    __table_args__ = (
+        UniqueConstraint("project_id", "key", name="uq_project_block_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    block_slug: Mapped[str] = mapped_column(
+        String(40), ForeignKey("block_catalog.slug"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(40), nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="blocks")
+
+
+class ProjectView(Base):
+    """Vista de navegación que compone uno o más bloques."""
+    __tablename__ = "project_views"
+    __table_args__ = (
+        UniqueConstraint("project_id", "key", name="uq_project_view_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(40), nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    route: Mapped[str] = mapped_column(String(80), nullable=False)
+    icon: Mapped[str] = mapped_column(String(40), nullable=False, default="circle")
+    section: Mapped[str] = mapped_column(String(20), nullable=False, default="plan")
+    layout: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    required_capabilities: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="views")
+
+
+class ProjectFieldDefinition(Base):
+    """Definición de campo personalizado por entity type en un proyecto."""
+    __tablename__ = "project_field_definitions"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "entity_type_key", "field_key", name="uq_project_field_def"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    entity_type_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    field_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    field_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="field_definitions")
 
 
 class ProjectPack(Base):
@@ -304,6 +389,9 @@ class ProjectRecordType(Base):
     storage: Mapped[str] = mapped_column(String(10), nullable=False, default="generic")
     field_schema: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     parent_types: Mapped[str | None] = mapped_column(Text, nullable=True)
+    icon: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    traits: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
@@ -329,7 +417,7 @@ class ProjectRecord(Base):
     titulo: Mapped[str] = mapped_column(String(255), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
     estado: Mapped[str] = mapped_column(String(40), nullable=False)
-    data: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     fecha_inicio: Mapped[date | None] = mapped_column(Date, nullable=True)
     fecha_fin: Mapped[date | None] = mapped_column(Date, nullable=True)
     orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -487,6 +575,47 @@ class ProjectWorkbenchDefinition(Base):
     project: Mapped[Project] = relationship(back_populates="workbench_definition")
 
 
+class ProjectCommunicationRules(Base):
+    """Reglas de comunicación configurables por proyecto (Studio)."""
+    __tablename__ = "project_communication_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    definition: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="communication_rules")
+
+
+class ProjectConfigSnapshot(Base):
+    """Snapshots de configuración Studio (workflows, communication, workbenches)."""
+    __tablename__ = "project_config_snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 class ProjectMember(Base):
     """Acceso por proyecto; un cliente puede ser member sin OrganizationMember (guest)."""
     __tablename__ = "project_members"
@@ -511,266 +640,6 @@ class ProjectMember(Base):
     project: Mapped[Project] = relationship(back_populates="members")
     user: Mapped[User] = relationship(back_populates="project_memberships")
     role: Mapped[ProjectRole] = relationship(back_populates="members")
-
-
-class Milestone(Base):
-    __tablename__ = "milestones"
-    __table_args__ = (
-        CheckConstraint("fecha_fin >= fecha_inicio", name="chk_milestone_fechas"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    nombre: Mapped[str] = mapped_column(String(150), nullable=False)
-    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tipo: Mapped[str] = mapped_column(String(20), nullable=False, default="entrega")
-    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    fecha_inicio: Mapped[date] = mapped_column(Date, nullable=False)
-    fecha_fin: Mapped[date] = mapped_column(Date, nullable=False)
-    estado: Mapped[str] = mapped_column(String(25), nullable=False, default="pendiente")
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
-
-    project: Mapped[Project] = relationship(back_populates="milestones")
-    creator: Mapped[User] = relationship(back_populates="milestones_created")
-    features: Mapped[list[Feature]] = relationship(
-        back_populates="milestone", cascade="all, delete-orphan"
-    )
-
-
-class Feature(Base):
-    __tablename__ = "features"
-    __table_args__ = (
-        CheckConstraint("fecha_fin >= fecha_inicio", name="chk_feature_fechas"),
-        CheckConstraint(
-            "tipo <> 'mejora' OR duracion_estimada IS NOT NULL",
-            name="chk_feature_duracion_mejora",
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    milestone_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("milestones.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id"), nullable=False
-    )
-    nombre: Mapped[str] = mapped_column(String(150), nullable=False)
-    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tipo: Mapped[str] = mapped_column(String(20), nullable=False, default="desarrollo")
-    prioridad: Mapped[str] = mapped_column(String(10), nullable=False, default="media")
-    fecha_inicio: Mapped[date] = mapped_column(Date, nullable=False)
-    fecha_fin: Mapped[date] = mapped_column(Date, nullable=False)
-    duracion_estimada: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    estado: Mapped[str] = mapped_column(String(40), nullable=False, default="pendiente")
-    bloqueada: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    origen_report_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("feature_reports.id"), nullable=True
-    )
-    origen_feature_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("features.id"), nullable=True
-    )
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
-
-    milestone: Mapped[Milestone] = relationship(back_populates="features")
-    project: Mapped[Project] = relationship(back_populates="features")
-    creator: Mapped[User] = relationship(back_populates="features_created")
-    tasks: Mapped[list[Task]] = relationship(
-        back_populates="feature", cascade="all, delete-orphan"
-    )
-    reports: Mapped[list[FeatureReport]] = relationship(
-        back_populates="feature",
-        foreign_keys="FeatureReport.feature_id",
-        cascade="all, delete-orphan",
-    )
-    origen_report: Mapped[FeatureReport | None] = relationship(
-        foreign_keys=[origen_report_id],
-    )
-    origen_feature: Mapped[Feature | None] = relationship(
-        foreign_keys=[origen_feature_id],
-        remote_side="Feature.id",
-    )
-    queries: Mapped[list[FeatureQuery]] = relationship(
-        back_populates="feature", cascade="all, delete-orphan"
-    )
-
-
-class FeatureReport(Base):
-    __tablename__ = "feature_reports"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    feature_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("features.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    reported_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    tipo: Mapped[str] = mapped_column(String(20), nullable=False)
-    descripcion: Mapped[str] = mapped_column(Text, nullable=False)
-    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="pendiente")
-    generated_feature_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("features.id"), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
-
-    feature: Mapped[Feature] = relationship(
-        back_populates="reports", foreign_keys=[feature_id]
-    )
-    reporter: Mapped[User] = relationship(
-        back_populates="feature_reports_submitted", foreign_keys=[reported_by]
-    )
-    generated_feature: Mapped[Feature | None] = relationship(
-        foreign_keys=[generated_feature_id],
-    )
-
-
-class FeatureQuery(Base):
-    __tablename__ = "feature_queries"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    feature_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("features.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    titulo: Mapped[str] = mapped_column(String(255), nullable=False)
-    descripcion: Mapped[str] = mapped_column(Text, nullable=False)
-    estado: Mapped[str] = mapped_column(String(30), nullable=False, default="borrador")
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
-
-    feature: Mapped[Feature] = relationship(back_populates="queries")
-    creator: Mapped[User] = relationship(
-        back_populates="feature_queries_created", foreign_keys=[created_by]
-    )
-
-
-class Task(Base):
-    __tablename__ = "tasks"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    feature_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("features.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id"), nullable=False
-    )
-    titulo: Mapped[str] = mapped_column(String(255), nullable=False)
-    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="backlog")
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    parent_task_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
-
-    feature: Mapped[Feature] = relationship(back_populates="tasks")
-    project: Mapped[Project] = relationship(back_populates="tasks")
-    task_assignees: Mapped[list["TaskAssignee"]] = relationship(
-        back_populates="task",
-        cascade="all, delete-orphan",
-    )
-    creator: Mapped[User] = relationship(
-        back_populates="tasks_created", foreign_keys=[created_by]
-    )
-
-    @property
-    def asignado_ids(self) -> list[uuid.UUID]:
-        return sorted(ta.user_id for ta in self.task_assignees)
-
-
-class TaskAssignee(Base):
-    __tablename__ = "task_assignees"
-
-    task_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("users.id"),
-        primary_key=True,
-    )
-
-    task: Mapped[Task] = relationship(back_populates="task_assignees")
-    user: Mapped[User] = relationship(back_populates="task_assignments")
-
-
-class TaskDependency(Base):
-    __tablename__ = "task_dependencies"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id"), nullable=False
-    )
-    task_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    depends_on_task_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    successor: Mapped[Task] = relationship(
-        foreign_keys=[task_id],
-    )
-    predecessor: Mapped[Task] = relationship(
-        foreign_keys=[depends_on_task_id],
-    )
 
 
 class Comment(Base):
@@ -885,12 +754,12 @@ class DocumentExposure(Base):
     ambito: Mapped[str] = mapped_column(String(20), nullable=False)
     milestone_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("milestones.id", ondelete="CASCADE"),
+        ForeignKey("project_records.id", ondelete="CASCADE"),
         nullable=True,
     )
     feature_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("features.id", ondelete="CASCADE"),
+        ForeignKey("project_records.id", ondelete="CASCADE"),
         nullable=True,
     )
     document_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -915,8 +784,10 @@ class DocumentExposure(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     project: Mapped[Project] = relationship(back_populates="document_exposures")
-    milestone: Mapped[Milestone | None] = relationship()
-    feature: Mapped[Feature | None] = relationship()
+    milestone: Mapped["ProjectRecord | None"] = relationship(
+        foreign_keys=[milestone_id]
+    )
+    feature: Mapped["ProjectRecord | None"] = relationship(foreign_keys=[feature_id])
     document: Mapped[Document | None] = relationship(back_populates="exposures")
     attachment: Mapped[Attachment | None] = relationship(
         back_populates="exposures"
@@ -1009,6 +880,8 @@ class Notification(Base):
     entidad_tipo: Mapped[str] = mapped_column(String(20), nullable=False)
     entidad_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     leida: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    deep_link: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     user: Mapped[User] = relationship(back_populates="notifications")

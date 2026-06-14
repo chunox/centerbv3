@@ -35,6 +35,7 @@ class WorkbenchRead(BaseModel):
     section: str = "plan"
     view_type: str = "custom"
     entity_type: str | None = None
+    custom_view_key: str | None = None
     required_capabilities: list[str] = Field(default_factory=list)
     queue_filter: dict[str, Any] | None = None
     orden: int = 0
@@ -47,6 +48,27 @@ class WorkflowSummaryRead(BaseModel):
     transitions: list[dict[str, Any]]
     initial_state: str | None = None
     terminal_states: list[str] = Field(default_factory=list)
+    capabilities_added: list[str] = Field(default_factory=list)
+    node_positions: dict[str, Any] | None = None
+
+
+def workflow_summary_from_definition(
+    entity_type: str,
+    version: int,
+    defn: dict[str, Any],
+    *,
+    capabilities_added: list[str] | None = None,
+) -> WorkflowSummaryRead:
+    return WorkflowSummaryRead(
+        entity_type=entity_type,
+        version=version,
+        states=defn.get("states", []),
+        transitions=defn.get("transitions", []),
+        initial_state=defn.get("initial_state"),
+        terminal_states=defn.get("terminal_states", []),
+        capabilities_added=capabilities_added or [],
+        node_positions=defn.get("node_positions"),
+    )
 
 
 class RecordTypeRead(BaseModel):
@@ -55,6 +77,43 @@ class RecordTypeRead(BaseModel):
     storage: str
     field_schema: list[dict[str, Any]] = Field(default_factory=list)
     parent_types: list[str] = Field(default_factory=list)
+    icon: str | None = None
+    traits: dict[str, Any] = Field(default_factory=dict)
+    is_system: bool = False
+    orden: int = 0
+
+
+class EntityTypeRead(RecordTypeRead):
+    """Alias semántico para entity types del espacio."""
+
+
+class FieldDefinitionRead(BaseModel):
+    entity_type_key: str
+    field_key: str
+    label: str
+    field_type: str
+    config: dict[str, Any] = Field(default_factory=dict)
+    orden: int = 0
+    is_system: bool = False
+
+
+class ProjectBlockRead(BaseModel):
+    key: str
+    block_slug: str
+    label: str
+    config: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    orden: int = 0
+
+
+class ProjectViewRead(BaseModel):
+    key: str
+    label: str
+    route: str
+    icon: str = "circle"
+    section: str = "plan"
+    layout: dict[str, Any] = Field(default_factory=dict)
+    required_capabilities: list[str] = Field(default_factory=list)
     orden: int = 0
 
 
@@ -74,7 +133,14 @@ class ProjectAccessContextRead(BaseModel):
     capability_catalog: list[CapabilityDefRead] = Field(default_factory=list)
     pack: PackContextRead | None = None
     record_types: list[RecordTypeRead] = Field(default_factory=list)
+    entity_types: list[EntityTypeRead] = Field(default_factory=list)
+    field_definitions: list[FieldDefinitionRead] = Field(default_factory=list)
+    blocks: list[ProjectBlockRead] = Field(default_factory=list)
+    views: list[ProjectViewRead] = Field(default_factory=list)
     pack_slug: str = "software"
+    profile_slug: str = "default"
+    project_role_slugs: list[str] = Field(default_factory=list)
+    member_role_slugs: list[str] = Field(default_factory=list)
 
 
 class ProjectRoleCreate(BaseModel):
@@ -98,6 +164,7 @@ class ProjectWorkflowUpdate(BaseModel):
 
 class WorkflowTemplateApply(BaseModel):
     actor_user_id: UUID
+    profile_slug: str | None = None
     project_tipo: str | None = None
 
 

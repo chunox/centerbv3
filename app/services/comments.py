@@ -11,10 +11,9 @@ from sqlalchemy import select
 
 from app.models.entities import (
     Comment,
-    FeatureQuery,
-    FeatureReport,
     Project,
     ProjectMember,
+    ProjectRecord,
     User,
 )
 from app.schemas.comments import CommentCreate
@@ -50,20 +49,31 @@ def _notify_thread_participants(
     )
 
     if entidad_tipo == "feature_report":
-        report = db.get(FeatureReport, entidad_id)
-        if report:
-            recipients.add(report.reported_by)
+        row = db.get(ProjectRecord, entidad_id)
+        if row is None or row.record_type != "report":
+            return
+        import json
+
+        data = json.loads(row.data) if isinstance(row.data, str) else (row.data or {})
+        reported_by = data.get("reported_by")
+        if reported_by:
+            recipients.add(uuid.UUID(reported_by))
+        elif row.created_by:
+            recipients.add(row.created_by)
     else:
-        query = db.get(FeatureQuery, entidad_id)
-        if query:
-            recipients.add(query.created_by)
-            if (
-                project.tipo in ("con_cliente", "freestyle")
-                and query.estado in CLIENTE_QUERY_STATES
-            ):
-                recipients.update(
-                    users_with_capability(db, project.id, WORKBENCH_INBOX_CLIENT)
-                )
+        query_row = db.get(ProjectRecord, entidad_id)
+        if query_row is None or query_row.record_type != "query":
+            return
+        created_by = query_row.created_by
+        estado = query_row.estado
+        if created_by:
+            recipients.add(created_by)
+        from app.services.project_profile import supports_external_stakeholder
+
+        if supports_external_stakeholder(db, project) and estado in CLIENTE_QUERY_STATES:
+            recipients.update(
+                users_with_capability(db, project.id, WORKBENCH_INBOX_CLIENT)
+            )
 
     recipients.discard(author_id)
     recipients -= mentioned_ids
@@ -133,13 +143,25 @@ def create_comment(
             entidad_id=payload.entidad_id,
         )
 
-    _notify_thread_participants(
-        db,
-        project=project,
-        author_id=payload.user_id,
-        entidad_tipo=payload.entidad_tipo,
-        entidad_id=payload.entidad_id,
-        mentioned_ids=mentioned_ids,
-    )
+    from app.services.communication.engine import dispatch_comment_rules
+
+    if payload.entidad_tipo in ("feature_query", "feature_report"):
+        dispatch_comment_rules(
+            db,
+            project=project,
+            author_id=payload.user_id,
+            entidad_tipo=payload.entidad_tipo,
+            entidad_id=payload.entidad_id,
+            mentioned_ids=mentioned_ids,
+        )
+    else:
+        _notify_thread_participants(
+            db,
+            project=project,
+            author_id=payload.user_id,
+            entidad_tipo=payload.entidad_tipo,
+            entidad_id=payload.entidad_id,
+            mentioned_ids=mentioned_ids,
+        )
 
     return comment

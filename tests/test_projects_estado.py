@@ -36,7 +36,7 @@ def _seed(session: Session):
         organization_id=org.id,
         id=uuid4(),
         nombre="P",
-        tipo="interno",
+        profile_slug="internal",
         estado="activo",
         fecha_inicio=date(2026, 1, 1),
         fecha_fin=date(2026, 12, 31),

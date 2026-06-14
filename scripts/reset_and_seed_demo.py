@@ -25,12 +25,13 @@ from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "v3.db"
 UPLOADS_DIR = DATA_DIR / "uploads"
 BASE = "http://127.0.0.1:8000/api/v1"
 DEMO_PASSWORD = "demo12345"
-SEED_VERSION = "v11-generic-packs"
+SEED_VERSION = "v12-project-profiles"
 # Procedimiento de wipe y smoke post-reset: docs/SMOKE_RESET_ROLES.md
 
 DEMO_USERS = [
@@ -39,6 +40,9 @@ DEMO_USERS = [
     ("dev2@center.demo", "Mía Dev2"),
     ("qa@center.demo", "Sofía QA"),
     ("cliente@center.demo", "Clara Cliente"),
+    ("copy@center.demo", "Tomás Copy"),
+    ("design@center.demo", "Valentina Diseño"),
+    ("social@center.demo", "Nico Social"),
 ]
 
 DEMO_PROJECTS = [
@@ -117,7 +121,15 @@ def truncate_database() -> None:
             conn.execute(f'DELETE FROM "{table}"')
         conn.execute("PRAGMA foreign_keys = ON")
         conn.commit()
-    print(f"[reset] Tablas vaciadas en {DB_PATH} (uvicorn puede seguir activo)")
+    from app.database import SessionLocal
+    from app.services.blocks import ensure_block_catalog
+    from app.services.packs import ensure_system_packs
+
+    with SessionLocal() as db:
+        ensure_system_packs(db)
+        ensure_block_catalog(db)
+        db.commit()
+    print(f"[reset] Tablas vaciadas en {DB_PATH} + catálogos re-seeded")
 
 
 def reset_database() -> None:
@@ -215,19 +227,21 @@ def create_milestone(
     fecha_fin: str,
     descripcion: str = "",
 ) -> dict:
-    return post(
-        token,
-        f"/projects/{project_id}/milestones",
-        {
-            "nombre": nombre,
-            "descripcion": descripcion,
-            "tipo": "entrega",
-            "orden": orden,
-            "fecha_inicio": fecha_inicio,
-            "fecha_fin": fecha_fin,
-            "created_by": pm_id,
-        },
-    )
+    body: dict = {
+        "actor_user_id": pm_id,
+        "record_type": "milestone",
+        "titulo": nombre,
+        "descripcion": descripcion,
+        "data": {"tipo": "entrega"},
+        "orden": orden,
+        "fecha_inicio": fecha_inicio,
+        "fecha_fin": fecha_fin,
+    }
+    return post(token, f"/projects/{project_id}/records", body)
+
+
+def record_title(rec: dict) -> str:
+    return str(rec.get("titulo") or rec.get("nombre") or "registro")
 
 
 def create_feature(
@@ -245,16 +259,17 @@ def create_feature(
 ) -> dict:
     return post(
         token,
-        f"/projects/{project_id}/milestones/{milestone_id}/features",
+        f"/projects/{project_id}/records",
         {
-            "nombre": nombre,
+            "actor_user_id": pm_id,
+            "record_type": "feature",
+            "titulo": nombre,
             "descripcion": descripcion,
-            "tipo": "desarrollo",
-            "prioridad": prioridad,
-            "estado": estado,
+            "parent_id": milestone_id,
+            "initial_state": estado,
+            "data": {"tipo": "desarrollo", "prioridad": prioridad, "bloqueada": False},
             "fecha_inicio": fecha_inicio,
             "fecha_fin": fecha_fin,
-            "created_by": pm_id,
         },
     )
 
@@ -262,7 +277,7 @@ def create_feature(
 def create_task(
     token: str,
     project_id: str,
-    milestone_id: str,
+    _milestone_id: str,
     feature_id: str,
     *,
     titulo: str,
@@ -272,18 +287,89 @@ def create_task(
     descripcion: str = "",
 ) -> dict:
     body: dict = {
+        "actor_user_id": created_by,
+        "record_type": "task",
         "titulo": titulo,
-        "estado": estado,
-        "created_by": created_by,
+        "parent_id": feature_id,
+        "initial_state": estado,
     }
     if asignado_ids:
-        body["asignado_ids"] = asignado_ids
+        body["assignee_ids"] = asignado_ids
     if descripcion:
         body["descripcion"] = descripcion
+    return post(token, f"/projects/{project_id}/records", body)
+
+
+def transition_record(
+    token: str,
+    project_id: str,
+    record_id: str,
+    *,
+    actor_user_id: str,
+    action_id: str,
+    target_state: str | None = None,
+    ignore_errors: bool = False,
+) -> dict | None:
+    body: dict = {"actor_user_id": actor_user_id, "action_id": action_id}
+    if target_state is not None:
+        body["target_state"] = target_state
+    try:
+        _, data = http(
+            "POST",
+            f"/projects/{project_id}/records/{record_id}/transition",
+            body=body,
+            token=token,
+            expect_status=200,
+        )
+        return data
+    except RuntimeError:
+        if ignore_errors:
+            return None
+        raise
+
+
+def create_query(
+    token: str,
+    project_id: str,
+    feature_id: str,
+    *,
+    titulo: str,
+    descripcion: str,
+    author_id: str,
+) -> dict:
     return post(
         token,
-        f"/projects/{project_id}/milestones/{milestone_id}/features/{feature_id}/tasks",
-        body,
+        f"/projects/{project_id}/records",
+        {
+            "actor_user_id": author_id,
+            "record_type": "query",
+            "titulo": titulo,
+            "descripcion": descripcion,
+            "parent_id": feature_id,
+        },
+    )
+
+
+def create_report(
+    token: str,
+    project_id: str,
+    feature_id: str,
+    *,
+    tipo: str,
+    descripcion: str,
+    reported_by: str,
+) -> dict:
+    return post(
+        token,
+        f"/projects/{project_id}/records",
+        {
+            "actor_user_id": reported_by,
+            "record_type": "report",
+            "titulo": descripcion[:120],
+            "descripcion": descripcion,
+            "parent_id": feature_id,
+            "data": {"tipo": tipo, "reported_by": reported_by},
+        },
     )
 
 
@@ -374,7 +460,7 @@ def seed_portal_cliente(
             "Proyecto con cliente externo: inbox denso, reportes, consultas, "
             "hub, validación UAT y Kanban con muchas tareas."
         ),
-        tipo="con_cliente",
+        profile_slug="with_client",
         fecha_inicio=add_days(today, -45),
         fecha_fin=add_days(today, 120),
     )
@@ -408,12 +494,12 @@ def seed_portal_cliente(
         )
         milestones.append(ms)
 
-    http(
-        "POST",
-        f"/projects/{portal['id']}/milestones/{milestones[4]['id']}/actions",
-        body={"action": "cancelar", "actor_user_id": pm["id"]},
-        token=token,
-        expect_status=200,
+    transition_record(
+        token,
+        portal["id"],
+        milestones[4]["id"],
+        actor_user_id=pm["id"],
+        action_id="cancelar",
     )
 
     features_spec: list[tuple[int, str, str, str, int, int]] = [
@@ -484,18 +570,21 @@ def seed_portal_cliente(
     ]
     for feat_idx, titulo, desc, author, action in queries_spec:
         feat = features[feat_idx]
-        ms_id = milestones[features_spec[feat_idx][0]]["id"]
-        q = post(
+        q = create_query(
             token,
-            f"/projects/{portal['id']}/milestones/{ms_id}/features/{feat['id']}/queries",
-            {"titulo": titulo, "descripcion": desc, "created_by": author},
+            portal["id"],
+            feat["id"],
+            titulo=titulo,
+            descripcion=desc,
+            author_id=author,
         )
         actor = dev["id"] if action == "solicitar_envio" else pm["id"]
-        post(
+        transition_record(
             token,
-            f"/projects/{portal['id']}/milestones/{ms_id}/features/{feat['id']}/queries/{q['id']}/actions",
-            {"action": action, "actor_user_id": actor},
-            expect=200,
+            portal["id"],
+            q["id"],
+            actor_user_id=actor,
+            action_id=action,
         )
 
     reports_spec = [
@@ -508,11 +597,13 @@ def seed_portal_cliente(
     ]
     for feat_idx, tipo, desc in reports_spec:
         feat = features[feat_idx]
-        ms_id = milestones[features_spec[feat_idx][0]]["id"]
-        post(
+        create_report(
             token,
-            f"/projects/{portal['id']}/milestones/{ms_id}/features/{feat['id']}/reports",
-            {"tipo": tipo, "descripcion": desc, "reported_by": cliente["id"]},
+            portal["id"],
+            feat["id"],
+            tipo=tipo,
+            descripcion=desc,
+            reported_by=cliente["id"],
         )
 
     doc = post(
@@ -608,7 +699,7 @@ def seed_portal_cliente(
             entidad_tipo="feature",
             entidad_id=feat["id"],
             user_id=dev_ids[i % 2],
-            contenido=f"Comentario demo #{i + 1} en {feat['nombre'][:40]}.",
+            contenido=f"Comentario demo #{i + 1} en {record_title(feat)[:40]}.",
             estado_momento=features_spec[i][2],
         )
 
@@ -643,7 +734,7 @@ def seed_plataforma_interna(
             "Proyecto interno: múltiples sprints, UAT denso, consultas PM, "
             "hub interno y Kanban con decenas de tareas."
         ),
-        tipo="interno",
+        profile_slug="internal",
         fecha_inicio=add_days(today, -30),
         fecha_fin=add_days(today, 90),
     )
@@ -737,17 +828,20 @@ def seed_plataforma_interna(
     ]
     for feat_idx, titulo, desc, author in queries_spec:
         feat = features[feat_idx]
-        ms_id = milestones[features_spec[feat_idx][0]]["id"]
-        q = post(
+        q = create_query(
             token,
-            f"/projects/{interno['id']}/milestones/{ms_id}/features/{feat['id']}/queries",
-            {"titulo": titulo, "descripcion": desc, "created_by": author},
+            interno["id"],
+            feat["id"],
+            titulo=titulo,
+            descripcion=desc,
+            author_id=author,
         )
-        post(
+        transition_record(
             token,
-            f"/projects/{interno['id']}/milestones/{ms_id}/features/{feat['id']}/queries/{q['id']}/actions",
-            {"action": "activar", "actor_user_id": pm["id"]},
-            expect=200,
+            interno["id"],
+            q["id"],
+            actor_user_id=pm["id"],
+            action_id="activar",
         )
 
     post(
@@ -808,7 +902,7 @@ def seed_plataforma_interna(
             entidad_tipo="feature",
             entidad_id=feat["id"],
             user_id=dev_ids[i % 2],
-            contenido=f"Seguimiento interno #{i + 1}: {feat['nombre'][:35]}.",
+            contenido=f"Seguimiento interno #{i + 1}: {record_title(feat)[:35]}.",
             estado_momento=features_spec[i][2],
         )
 
@@ -849,24 +943,6 @@ def create_record(
     return post(token, f"/projects/{project_id}/records", body)
 
 
-def transition_record(
-    token: str,
-    project_id: str,
-    pm_id: str,
-    record_id: str,
-    action_id: str,
-) -> None:
-    try:
-        post(
-            token,
-            f"/projects/{project_id}/records/{record_id}/transition",
-            {"actor_user_id": pm_id, "action_id": action_id},
-            expect=200,
-        )
-    except RuntimeError:
-        pass
-
-
 def seed_generic_pack_projects(
     token: str,
     org_id: str,
@@ -884,7 +960,7 @@ def seed_generic_pack_projects(
         nombre="Conferencia Producto 2026",
         descripcion="Pack evento — checklist y timeline",
         pack_slug="evento",
-        tipo="freestyle",
+        profile_slug="default",
         fecha_inicio=add_days(today, 0),
         fecha_fin=add_days(today, 90),
     )
@@ -937,10 +1013,19 @@ def seed_generic_pack_projects(
             data={"proveedor": f"Proveedor {i % 5 + 1}"},
         )
         if i % 4 == 1:
-            transition_record(token, evento["id"], pm_id, rec["id"], "iniciar")
+            transition_record(
+                token, evento["id"], rec["id"],
+                actor_user_id=pm_id, action_id="iniciar", ignore_errors=True,
+            )
         if i % 7 == 0:
-            transition_record(token, evento["id"], pm_id, rec["id"], "iniciar")
-            transition_record(token, evento["id"], pm_id, rec["id"], "completar")
+            transition_record(
+                token, evento["id"], rec["id"],
+                actor_user_id=pm_id, action_id="iniciar", ignore_errors=True,
+            )
+            transition_record(
+                token, evento["id"], rec["id"],
+                actor_user_id=pm_id, action_id="completar", ignore_errors=True,
+            )
     stats.append(
         {
             "nombre": evento["nombre"],
@@ -956,7 +1041,7 @@ def seed_generic_pack_projects(
         nombre="Campaña Verano Creativo",
         descripcion="Pack creativo — board e inbox de aprobaciones",
         pack_slug="creativo",
-        tipo="freestyle",
+        profile_slug="default",
         fecha_inicio=add_days(today, -14),
         fecha_fin=add_days(today, 60),
     )
@@ -998,21 +1083,37 @@ def seed_generic_pack_projects(
             data={"version": i + 1},
         )
         if i % 5 == 0:
-            transition_record(token, creativo["id"], pm_id, rec["id"], "enviar_revision")
+            transition_record(
+                token, creativo["id"], rec["id"],
+                actor_user_id=pm_id, action_id="enviar_revision", ignore_errors=True,
+            )
         elif i % 5 == 1:
-            transition_record(token, creativo["id"], pm_id, rec["id"], "enviar_revision")
-            transition_record(token, creativo["id"], pm_id, rec["id"], "solicitar_aprobacion")
+            transition_record(
+                token, creativo["id"], rec["id"],
+                actor_user_id=pm_id, action_id="enviar_revision", ignore_errors=True,
+            )
+            transition_record(
+                token, creativo["id"], rec["id"],
+                actor_user_id=pm_id, action_id="solicitar_aprobacion", ignore_errors=True,
+            )
         elif i % 5 == 2:
-            transition_record(token, creativo["id"], pm_id, rec["id"], "enviar_revision")
-            transition_record(token, creativo["id"], pm_id, rec["id"], "solicitar_aprobacion")
+            transition_record(
+                token, creativo["id"], rec["id"],
+                actor_user_id=pm_id, action_id="enviar_revision", ignore_errors=True,
+            )
+            transition_record(
+                token, creativo["id"], rec["id"],
+                actor_user_id=pm_id, action_id="solicitar_aprobacion", ignore_errors=True,
+            )
             cliente_id = users["cliente@center.demo"]["id"]
             cliente_auth = login("cliente@center.demo")
             transition_record(
                 cliente_auth["access_token"],
                 creativo["id"],
-                cliente_id,
                 rec["id"],
-                "aprobar",
+                actor_user_id=cliente_id,
+                action_id="aprobar",
+                ignore_errors=True,
             )
     stats.append(
         {
@@ -1029,7 +1130,7 @@ def seed_generic_pack_projects(
         nombre="Consultoría ONG Demo",
         descripcion="Pack simple — fases, gantt y checklist",
         pack_slug="simple",
-        tipo="freestyle",
+        profile_slug="default",
         fecha_inicio=add_days(today, 0),
         fecha_fin=add_days(today, 120),
     )
@@ -1066,10 +1167,19 @@ def seed_generic_pack_projects(
             )
             record_total += 1
             if j % 3 == 0:
-                transition_record(token, simple["id"], pm_id, rec["id"], "iniciar")
+                transition_record(
+                    token, simple["id"], rec["id"],
+                    actor_user_id=pm_id, action_id="iniciar", ignore_errors=True,
+                )
             if j % 5 == 0:
-                transition_record(token, simple["id"], pm_id, rec["id"], "iniciar")
-                transition_record(token, simple["id"], pm_id, rec["id"], "completar")
+                transition_record(
+                    token, simple["id"], rec["id"],
+                    actor_user_id=pm_id, action_id="iniciar", ignore_errors=True,
+                )
+                transition_record(
+                    token, simple["id"], rec["id"],
+                    actor_user_id=pm_id, action_id="completar", ignore_errors=True,
+                )
     stats.append(
         {
             "nombre": simple["nombre"],
@@ -1077,7 +1187,80 @@ def seed_generic_pack_projects(
             "records": record_total,
         }
     )
+
+    from scripts.seed_marketing360_demo import seed_marketing360_project
+
+    m360 = seed_marketing360_project(token, org_id, pm_id, today, users)
+    stats.append(m360)
+
+    _enrich_generic_projects_db(
+        evento_id=evento["id"],
+        ev_root_id=ev_root["id"],
+        creativo_id=creativo["id"],
+        campana_id=campana["id"],
+        simple_id=simple["id"],
+        pm_id=pm_id,
+        today=today,
+    )
     return stats
+
+
+def _enrich_generic_projects_db(
+    *,
+    evento_id: str,
+    ev_root_id: str,
+    creativo_id: str,
+    campana_id: str,
+    simple_id: str,
+    pm_id: str,
+    today: date,
+) -> None:
+    """Tipos, vistas y registros extra vía modelo genérico (sin HTTP)."""
+    import uuid
+
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models.entities import Project, ProjectRecord
+    from app.services.generic_enrichment import (
+        enrich_creativo_project,
+        enrich_evento_project,
+        enrich_simple_project,
+    )
+
+    with SessionLocal() as db:
+        pm_uuid = uuid.UUID(pm_id)
+        evento_p = db.get(Project, uuid.UUID(evento_id))
+        creativo_p = db.get(Project, uuid.UUID(creativo_id))
+        simple_p = db.get(Project, uuid.UUID(simple_id))
+        if evento_p:
+            enrich_evento_project(
+                db,
+                evento_p,
+                evento_root_id=uuid.UUID(ev_root_id),
+                pm_id=pm_uuid,
+                today=today,
+            )
+        if creativo_p:
+            enrich_creativo_project(
+                db,
+                creativo_p,
+                campana_root_id=uuid.UUID(campana_id),
+                pm_id=pm_uuid,
+            )
+        if simple_p:
+            fase_ids = [
+                r.id
+                for r in db.scalars(
+                    select(ProjectRecord).where(
+                        ProjectRecord.project_id == simple_p.id,
+                        ProjectRecord.record_type == "fase",
+                    )
+                )
+            ]
+            enrich_simple_project(db, simple_p, fase_ids=fase_ids, pm_id=pm_uuid)
+        db.commit()
+    print("[seed] Enriquecimiento genérico: vistas + tipos custom aplicados")
 
 
 def seed_rich_demo() -> None:

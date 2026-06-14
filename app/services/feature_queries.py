@@ -9,7 +9,9 @@ from fastapi import HTTPException
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
-from app.models.entities import Feature, FeatureQuery, Project, ProjectMember
+from app.models.entities import Project, ProjectRecord
+
+QueryEntity = ProjectRecord
 from app.domain.capabilities import (
     QUERY_APPROVE,
     QUERY_CLOSE,
@@ -20,6 +22,7 @@ from app.services.access import MemberRol, assert_member_has_role, assert_projec
 from app.services.workflow.authorize import assert_capability
 from app.services.audit import record_audit_log
 from app.services.notifications import NotificationTipo, create_notification
+from app.services.records.repository import _data, set_field
 
 QueryEstado = Literal[
     "borrador",
@@ -55,6 +58,7 @@ ACTIVE_TARGET_INTERNO = "esperando_pm"
 
 
 def blocking_states_for_project(tipo: str) -> frozenset[str]:
+    """Deprecated: usar blocking_query_states(db, project)."""
     if tipo == "con_cliente":
         return BLOCKING_CON_CLIENTE
     if tipo == "freestyle":
@@ -63,6 +67,7 @@ def blocking_states_for_project(tipo: str) -> frozenset[str]:
 
 
 def active_target_for_project(tipo: str) -> str:
+    """Deprecated: usar active_query_target(db, project)."""
     if tipo == "con_cliente":
         return ACTIVE_TARGET_CON_CLIENTE
     if tipo == "freestyle":
@@ -70,31 +75,42 @@ def active_target_for_project(tipo: str) -> str:
     return ACTIVE_TARGET_INTERNO
 
 
+def _feature_has_blocking_queries(
+    db: Session,
+    feature_id: uuid.UUID,
+    blocking: frozenset[str],
+) -> bool:
+    return bool(
+        db.scalar(
+            select(
+                exists().where(
+                    ProjectRecord.parent_id == feature_id,
+                    ProjectRecord.record_type == "query",
+                    ProjectRecord.estado.in_(blocking),
+                )
+            )
+        )
+    )
+
+
 def sync_feature_bloqueada(
     db: Session,
-    feature: Feature,
+    feature: ProjectRecord,
     project: Project,
     *,
     actor_user_id: uuid.UUID,
 ) -> bool:
     """Recalcula features.bloqueada (acumulativo). Devuelve el nuevo valor."""
     db.flush()
-    blocking = blocking_states_for_project(project.tipo)
-    blocked = bool(
-        db.scalar(
-            select(
-                exists().where(
-                    FeatureQuery.feature_id == feature.id,
-                    FeatureQuery.estado.in_(blocking),
-                )
-            )
-        )
-    )
-    previous = feature.bloqueada
+    from app.services.project_profile import blocking_query_states
+
+    blocking = blocking_query_states(db, project)
+    blocked = _feature_has_blocking_queries(db, feature.id, blocking)
+    previous = bool(_data(feature).get("bloqueada", False))
     if previous == blocked:
         return blocked
 
-    feature.bloqueada = blocked
+    set_field(feature, "bloqueada", blocked)
     record_audit_log(
         db,
         project_id=project.id,
@@ -107,19 +123,32 @@ def sync_feature_bloqueada(
         valor_nuevo=str(blocked),
     )
     notif_tipo = "feature_desbloqueada" if not blocked else "feature_bloqueada"
-    from app.domain.capabilities import WORKBENCH_INBOX_DEV, WORKBENCH_INBOX_PM
-    from app.services.workflow.capabilities import users_with_capability
+    from app.config import settings
 
-    for cap in (WORKBENCH_INBOX_PM, WORKBENCH_INBOX_DEV):
-        for member_id in users_with_capability(db, project.id, cap):
-            create_notification(
-                db,
-                user_id=member_id,
-                project_id=project.id,
-                tipo=notif_tipo,
-                entidad_tipo="feature",
-                entidad_id=feature.id,
-            )
+    if settings.communication_rules_only:
+        from app.services.communication.engine import dispatch_feature_block_rules
+
+        dispatch_feature_block_rules(
+            db,
+            project=project,
+            feature=feature,
+            actor_user_id=actor_user_id,
+            blocked=blocked,
+        )
+    else:
+        from app.domain.capabilities import WORKBENCH_INBOX_DEV, WORKBENCH_INBOX_PM
+        from app.services.workflow.capabilities import users_with_capability
+
+        for cap in (WORKBENCH_INBOX_PM, WORKBENCH_INBOX_DEV):
+            for member_id in users_with_capability(db, project.id, cap):
+                create_notification(
+                    db,
+                    user_id=member_id,
+                    project_id=project.id,
+                    tipo=notif_tipo,
+                    entidad_tipo="feature",
+                    entidad_id=feature.id,
+                )
     return blocked
 
 
@@ -167,7 +196,7 @@ def _notify_clientes(
 def _notify_query_respondida(
     db: Session,
     project: Project,
-    query: FeatureQuery,
+    query: ProjectRecord,
 ) -> None:
     """PM y autor de la consulta (§4.13)."""
     _notify_pm(db, project, tipo="query_respondida", query_id=query.id)
@@ -184,7 +213,7 @@ def _notify_query_respondida(
 def _notify_query_rechazada(
     db: Session,
     project: Project,
-    query: FeatureQuery,
+    query: ProjectRecord,
 ) -> None:
     """Autor de la consulta cuando el PM rechaza (§4.13)."""
     create_notification(
@@ -200,25 +229,28 @@ def _notify_query_rechazada(
 def _apply_query_capability_side_effects(
     db: Session,
     project: Project,
-    query: FeatureQuery,
+    query: ProjectRecord,
     *,
     action: QueryAction,
     estado_anterior: str,
 ) -> None:
     if query.estado == estado_anterior:
         return
+    from app.services.project_profile import supports_external_stakeholder
+
+    external = supports_external_stakeholder(db, project)
     if action == "solicitar_envio":
-        if project.tipo == "interno":
+        if not external:
             _notify_pm(db, project, tipo="query_creada", query_id=query.id)
         else:
             _notify_pm(db, project, tipo="query_pendiente_aprobacion", query_id=query.id)
     elif action == "aprobar_envio":
-        if project.tipo in ("con_cliente", "freestyle"):
+        if external:
             _notify_clientes(db, project, query_id=query.id)
         else:
             _notify_pm(db, project, tipo="query_creada", query_id=query.id)
     elif action in ("activar", "activar_cliente"):
-        if project.tipo in ("con_cliente", "freestyle"):
+        if external:
             _notify_clientes(db, project, query_id=query.id)
         else:
             _notify_pm(db, project, tipo="query_creada", query_id=query.id)
@@ -236,14 +268,14 @@ def _apply_query_capability_side_effects(
 
 def apply_query_action(
     db: Session,
-    query: FeatureQuery,
-    feature: Feature,
+    query: QueryEntity,
+    feature: ProjectRecord,
     project: Project,
     *,
     action: QueryAction,
     actor_user_id: uuid.UUID,
     form_data: dict | None = None,
-) -> FeatureQuery:
+) -> QueryEntity:
     from app.services.workflow.engine import apply_entity_transition
 
     assert_project_active(project)
@@ -258,8 +290,11 @@ def apply_query_action(
         actor_user_id=actor_user_id,
         form_data=form_data,
     )
-    _apply_query_capability_side_effects(
-        db, project, query, action=action, estado_anterior=estado_anterior
-    )
+    from app.config import settings
+
+    if not settings.communication_rules_only:
+        _apply_query_capability_side_effects(
+            db, project, query, action=action, estado_anterior=estado_anterior
+        )
     sync_feature_bloqueada(db, feature, project, actor_user_id=actor_user_id)
     return query

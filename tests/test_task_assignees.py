@@ -1,6 +1,5 @@
 """Tests de asignación múltiple en tareas."""
 
-from datetime import date
 from uuid import UUID, uuid4
 
 import pytest
@@ -11,16 +10,9 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models.entities import (
-    Feature,
-    Milestone,
-    Notification,
-    Project,
-    ProjectMember,
-    Task,
-    User,
-)
-from tests.org_helpers import add_member_with_slug, create_organization
+from app.models.entities import Notification, User
+from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
+from tests.record_helpers import create_feature_record, create_milestone_record
 
 
 @pytest.fixture
@@ -50,6 +42,10 @@ def api_client(db_session: Session):
     app.dependency_overrides.clear()
 
 
+def _records_base(project_id) -> str:
+    return f"/api/v1/projects/{project_id}/records"
+
+
 def _seed_three_devs(session: Session):
     pm_id = uuid4()
     dev_a = uuid4()
@@ -64,81 +60,51 @@ def _seed_three_devs(session: Session):
         ]
     )
     org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="P",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
+    project = create_project_for_org(session, pm_id, org)
+    add_member_with_slug(session, project, dev_a, "dev")
+    add_member_with_slug(session, project, dev_b, "dev")
+    add_member_with_slug(session, project, dev_c, "dev")
+    milestone = create_milestone_record(session, project, created_by=pm_id)
+    feature = create_feature_record(
+        session,
+        project,
+        milestone,
         created_by=pm_id,
+        with_default_task=False,
     )
-    session.add(project)
-    add_member_with_slug(session, project, pm_id, 'pm')
-    add_member_with_slug(session, project, dev_a, 'dev')
-    add_member_with_slug(session, project, dev_b, 'dev')
-    add_member_with_slug(session, project, dev_c, 'dev')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        estado="pendiente",
-        created_by=pm_id,
-    )
-    session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
-        prioridad="media",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        estado="pendiente",
-        created_by=pm_id,
-    )
-    session.add(feature)
     session.commit()
-    return project, milestone, feature, dev_a, dev_b, dev_c
+    return project, feature, dev_a, dev_b, dev_c
 
 
 def test_create_task_with_multiple_assignees(db_session, api_client):
-    project, milestone, feature, dev_a, dev_b, _ = _seed_three_devs(db_session)
-    base = (
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}"
-        f"/features/{feature.id}/tasks"
-    )
+    project, feature, dev_a, dev_b, _ = _seed_three_devs(db_session)
+    base = _records_base(project.id)
     response = api_client.post(
         base,
         json={
+            "actor_user_id": str(dev_a),
+            "record_type": "task",
             "titulo": "Multi",
-            "created_by": str(dev_a),
-            "asignado_ids": [str(dev_a), str(dev_b)],
+            "parent_id": str(feature.id),
+            "assignee_ids": [str(dev_a), str(dev_b)],
         },
     )
     assert response.status_code == 201
-    ids = response.json()["asignado_ids"]
+    ids = response.json()["assignee_ids"]
     assert set(ids) == {str(dev_a), str(dev_b)}
 
 
 def test_patch_adds_assignee_notifies_only_new(db_session, api_client):
-    project, milestone, feature, dev_a, dev_b, dev_c = _seed_three_devs(db_session)
-    base = (
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}"
-        f"/features/{feature.id}/tasks"
-    )
+    project, feature, dev_a, dev_b, dev_c = _seed_three_devs(db_session)
+    base = _records_base(project.id)
     create = api_client.post(
         base,
         json={
+            "actor_user_id": str(dev_a),
+            "record_type": "task",
             "titulo": "T",
-            "created_by": str(dev_a),
-            "asignado_ids": [str(dev_a), str(dev_b)],
+            "parent_id": str(feature.id),
+            "assignee_ids": [str(dev_a), str(dev_b)],
         },
     )
     task_id = create.json()["id"]
@@ -147,11 +113,11 @@ def test_patch_adds_assignee_notifies_only_new(db_session, api_client):
         f"{base}/{task_id}",
         json={
             "actor_user_id": str(dev_a),
-            "asignado_ids": [str(dev_a), str(dev_b), str(dev_c)],
+            "assignee_ids": [str(dev_a), str(dev_b), str(dev_c)],
         },
     )
     assert response.status_code == 200
-    assert set(response.json()["asignado_ids"]) == {
+    assert set(response.json()["assignee_ids"]) == {
         str(dev_a),
         str(dev_b),
         str(dev_c),
@@ -178,17 +144,16 @@ def test_patch_adds_assignee_notifies_only_new(db_session, api_client):
 
 
 def test_patch_remove_assignee_no_notification_to_removed(db_session, api_client):
-    project, milestone, feature, dev_a, dev_b, dev_c = _seed_three_devs(db_session)
-    base = (
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}"
-        f"/features/{feature.id}/tasks"
-    )
+    project, feature, dev_a, dev_b, dev_c = _seed_three_devs(db_session)
+    base = _records_base(project.id)
     create = api_client.post(
         base,
         json={
+            "actor_user_id": str(dev_a),
+            "record_type": "task",
             "titulo": "T",
-            "created_by": str(dev_a),
-            "asignado_ids": [str(dev_a), str(dev_b), str(dev_c)],
+            "parent_id": str(feature.id),
+            "assignee_ids": [str(dev_a), str(dev_b), str(dev_c)],
         },
     )
     task_id = create.json()["id"]
@@ -197,11 +162,11 @@ def test_patch_remove_assignee_no_notification_to_removed(db_session, api_client
         f"{base}/{task_id}",
         json={
             "actor_user_id": str(dev_a),
-            "asignado_ids": [str(dev_a)],
+            "assignee_ids": [str(dev_a)],
         },
     )
     assert response.status_code == 200
-    assert response.json()["asignado_ids"] == [str(dev_a)]
+    assert response.json()["assignee_ids"] == [str(dev_a)]
 
     notifs_b = list(
         db_session.scalars(
@@ -216,24 +181,23 @@ def test_patch_remove_assignee_no_notification_to_removed(db_session, api_client
 
 
 def test_patch_empty_assignees(db_session, api_client):
-    project, milestone, feature, dev_a, dev_b, _ = _seed_three_devs(db_session)
-    base = (
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}"
-        f"/features/{feature.id}/tasks"
-    )
+    project, feature, dev_a, dev_b, _ = _seed_three_devs(db_session)
+    base = _records_base(project.id)
     create = api_client.post(
         base,
         json={
+            "actor_user_id": str(dev_a),
+            "record_type": "task",
             "titulo": "T",
-            "created_by": str(dev_a),
-            "asignado_ids": [str(dev_b)],
+            "parent_id": str(feature.id),
+            "assignee_ids": [str(dev_b)],
         },
     )
     task_id = create.json()["id"]
 
     response = api_client.patch(
         f"{base}/{task_id}",
-        json={"actor_user_id": str(dev_a), "asignado_ids": []},
+        json={"actor_user_id": str(dev_a), "assignee_ids": []},
     )
     assert response.status_code == 200
-    assert response.json()["asignado_ids"] == []
+    assert response.json()["assignee_ids"] == []

@@ -8,14 +8,8 @@ from pydantic import BaseModel, Field
 
 MemberRol = Literal["pm", "dev", "qa", "cliente"]
 
-TaskEstado = Literal[
-    "backlog",
-    "to_do",
-    "in_progress",
-    "ready_for_test",
-    "completed",
-    "cancel",
-]
+# Alias documentado; estados válidos se resuelven contra el workflow activo del proyecto.
+TaskEstado = str
 
 
 class TaskCreate(BaseModel):

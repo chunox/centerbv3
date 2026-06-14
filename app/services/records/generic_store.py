@@ -19,13 +19,16 @@ from app.models.entities import (
     ProjectRecordType,
     User,
 )
+from app.services.records.field_validation import apply_validated_data, validate_record_data
 from app.services.workflow.engine import apply_record_transition
 
 
-def _parse_data(raw: str) -> dict[str, Any]:
+def _parse_data(raw: str | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
     try:
         return json.loads(raw) if raw else {}
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         return {}
 
 
@@ -59,8 +62,6 @@ def _get_record_type(db: Session, project_id: uuid.UUID, key: str) -> ProjectRec
     )
     if rt is None:
         raise HTTPException(status_code=422, detail=f"Tipo de registro '{key}' no configurado")
-    if rt.storage != "generic":
-        raise HTTPException(status_code=422, detail=f"Tipo '{key}' usa storage legacy")
     return rt
 
 
@@ -103,7 +104,11 @@ def create_record(
     fecha_fin: date | None = None,
     assignee_ids: list[uuid.UUID] | None = None,
     initial_state: str | None = None,
+    orden: int | None = None,
 ) -> RecordDTO:
+    from app.services.access import assert_project_active
+
+    assert_project_active(project)
     rt = _get_record_type(db, project.id, record_type)
     if parent_id and rt.parent_types:
         parents = json.loads(rt.parent_types)
@@ -121,6 +126,9 @@ def create_record(
     if not db.get(User, created_by):
         raise HTTPException(status_code=404, detail="Usuario creador no encontrado")
 
+    validated_data = validate_record_data(
+        db, project.id, record_type, data or {}, partial=bool(data)
+    )
     row = ProjectRecord(
         project_id=project.id,
         record_type=record_type,
@@ -128,16 +136,28 @@ def create_record(
         titulo=titulo.strip(),
         descripcion=descripcion,
         estado=estado,
-        data=json.dumps(data or {}, ensure_ascii=False),
+        data=validated_data,
         fecha_inicio=fecha_inicio,
         fecha_fin=fecha_fin,
         created_by=created_by,
+        orden=orden or 0,
     )
     db.add(row)
     db.flush()
 
     if assignee_ids:
         sync_assignees(db, row, assignee_ids)
+
+    from app.config import settings
+    from app.services.communication.engine import dispatch_record_created_rules
+
+    if settings.communication_rules_only:
+        dispatch_record_created_rules(
+            db,
+            project=project,
+            actor_user_id=created_by,
+            record=row,
+        )
 
     return _to_dto(row)
 
@@ -148,17 +168,35 @@ def update_record(
     *,
     titulo: str | None = None,
     descripcion: str | None = None,
+    parent_id: uuid.UUID | None = None,
     data: dict[str, Any] | None = None,
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
     orden: int | None = None,
+    reparent: bool = False,
 ) -> RecordDTO:
     if titulo is not None:
         record.titulo = titulo.strip()
     if descripcion is not None:
         record.descripcion = descripcion
+    if reparent:
+        rt = _get_record_type(db, record.project_id, record.record_type)
+        if parent_id is None:
+            if rt.parent_types:
+                parents = json.loads(rt.parent_types)
+                if parents:
+                    raise HTTPException(status_code=422, detail="Tipo de padre requerido")
+            record.parent_id = None
+        else:
+            parents = json.loads(rt.parent_types) if rt.parent_types else []
+            parent_row = db.get(ProjectRecord, parent_id)
+            if parent_row is None or parent_row.project_id != record.project_id:
+                raise HTTPException(status_code=404, detail="Registro padre no encontrado")
+            if parents and parent_row.record_type not in parents:
+                raise HTTPException(status_code=422, detail="Tipo de padre inválido")
+            record.parent_id = parent_id
     if data is not None:
-        record.data = json.dumps(data, ensure_ascii=False)
+        apply_validated_data(db, record, data, partial=True)
     if fecha_inicio is not None:
         record.fecha_inicio = fecha_inicio
     if fecha_fin is not None:
@@ -190,6 +228,40 @@ def sync_assignees(
             db.add(ProjectRecordAssignee(record_id=record.id, user_id=uid))
 
 
+def _task_transition_target_state(
+    db: Session,
+    project: Project,
+    record: ProjectRecord,
+    *,
+    action_id: str,
+    actor_user_id: uuid.UUID,
+    target_state: str | None,
+) -> str | None:
+    from app.services.workflow.engine import _find_transition
+    from app.services.workflow.store import get_active_workflow
+
+    workflow = get_active_workflow(db, project.id, record.record_type)
+    if workflow is None:
+        return None
+    transition = _find_transition(
+        workflow,
+        action_id,
+        record.estado,
+        db=db,
+        project=project,
+        target_state=target_state,
+        actor_user_id=actor_user_id,
+    )
+    if transition is None:
+        return None
+    if transition.get("dynamic_to") and target_state:
+        return target_state
+    nuevo = transition.get("to")
+    if nuevo == "*":
+        return target_state
+    return nuevo if isinstance(nuevo, str) else None
+
+
 def transition_record(
     db: Session,
     project: Project,
@@ -200,6 +272,20 @@ def transition_record(
     target_state: str | None = None,
     form_data: dict[str, Any] | None = None,
 ) -> RecordDTO:
+    if record.record_type == "task":
+        from app.services.task_dependencies import assert_move_allowed_by_dependencies
+
+        nuevo = _task_transition_target_state(
+            db,
+            project,
+            record,
+            action_id=action_id,
+            actor_user_id=actor_user_id,
+            target_state=target_state,
+        )
+        if nuevo:
+            assert_move_allowed_by_dependencies(db, record.id, nuevo)
+
     apply_record_transition(
         db,
         project,

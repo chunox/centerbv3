@@ -7,6 +7,12 @@ from pydantic import BaseModel, Field
 from app.schemas.audit_logs import AuditLogRead
 from app.schemas.feature_queries import FeatureQueryRead
 from app.schemas.feature_reports import FeatureReportRead
+from app.schemas.features import FeatureRead
+from app.schemas.milestones import MilestoneRead
+from app.schemas.projects import ProjectRead
+from app.schemas.records import RecordRead
+from app.schemas.task_dependencies import TaskDependencyRead
+from app.schemas.tasks import TaskRead
 
 
 class BundleFeatureReportRead(FeatureReportRead):
@@ -17,11 +23,6 @@ class BundleFeatureReportRead(FeatureReportRead):
 class BundleFeatureQueryRead(FeatureQueryRead):
     feature_nombre: str | None = None
     milestone_id: UUID | None = None
-from app.schemas.features import FeatureRead
-from app.schemas.milestones import MilestoneRead
-from app.schemas.projects import ProjectRead
-from app.schemas.task_dependencies import TaskDependencyRead
-from app.schemas.tasks import TaskRead
 
 
 class FeatureContextEntryRead(BaseModel):
@@ -34,6 +35,13 @@ class FeatureContextEntryRead(BaseModel):
 
 class ProjectBundleRead(BaseModel):
     project: ProjectRead
+    record_types: list[str] = Field(default_factory=list, serialization_alias="recordTypes")
+    records_by_type: dict[str, list[RecordRead]] = Field(
+        default_factory=dict, serialization_alias="recordsByType"
+    )
+    children_by_parent: dict[str, list[RecordRead]] = Field(
+        default_factory=dict, serialization_alias="childrenByParent"
+    )
     milestones: list[MilestoneRead]
     features_by_milestone: dict[str, list[FeatureRead]] = Field(
         serialization_alias="featuresByMilestone"

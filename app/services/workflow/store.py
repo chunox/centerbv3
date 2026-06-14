@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.domain.workbenches import DEFAULT_WORKBENCHES
+from app.domain.workbenches import DEFAULT_WORKBENCHES, DEPRECATED_WORKBENCH_KEYS
 from app.domain.workflow_templates import workflow_for_project_tipo
 from app.models.entities import (
     Project,
@@ -45,7 +45,12 @@ def get_active_workflow(
     row = _active_workflow_row(db, project_id, entity_type)
     if row is None:
         return None
-    return _parse_json(row.definition)  # type: ignore[return-value]
+    wf = _parse_json(row.definition)  # type: ignore[assignment]
+    if entity_type == "task" and isinstance(wf, dict):
+        from app.services.workflow.engine import normalize_task_workflow_moves
+
+        return normalize_task_workflow_moves(wf)
+    return wf  # type: ignore[return-value]
 
 
 def get_active_workflow_version(
@@ -90,13 +95,51 @@ def get_workbenches(db: Session, project_id: uuid.UUID) -> list[dict[str, Any]]:
         )
     )
     if row is None:
-        return list(DEFAULT_WORKBENCHES)
-    return list(_parse_json(row.definition))  # type: ignore[arg-type]
+        stored: list[dict[str, Any]] = []
+    else:
+        stored = list(_parse_json(row.definition))  # type: ignore[arg-type]
+    return merge_default_workbenches(stored)
+
+
+ADMIN_NAV_KEYS = frozenset({"studio", "settings"})
+
+
+def merge_default_workbenches(stored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Agrega workbenches sistema faltantes (p. ej. Studio) sin pisar personalizaciones."""
+    stored = [wb for wb in stored if wb.get("key") not in DEPRECATED_WORKBENCH_KEYS]
+    by_key = {wb["key"]: wb for wb in stored}
+    merged = list(stored)
+    for default in DEFAULT_WORKBENCHES:
+        if default["key"] not in by_key:
+            merged.append(dict(default))
+    return sorted(merged, key=lambda w: w.get("orden", 0))
+
+
+def admin_views_from_defaults(existing_keys: set[str]) -> list[dict[str, Any]]:
+    """Vistas admin sintéticas para proyectos cuyo pack no las declaró."""
+    extra: list[dict[str, Any]] = []
+    for wb in DEFAULT_WORKBENCHES:
+        key = wb["key"]
+        if key not in ADMIN_NAV_KEYS or key in existing_keys:
+            continue
+        extra.append(
+            {
+                "key": key,
+                "label": wb["label"],
+                "route": wb["route"],
+                "icon": wb.get("icon", "circle"),
+                "section": wb.get("section", "admin"),
+                "layout": {"blocks": [{"project_block_key": key, "width": "full"}]},
+                "required_capabilities": wb.get("required_capabilities", []),
+                "orden": wb.get("orden", 0),
+            }
+        )
+    return extra
 
 
 def ensure_project_defaults(db: Session, project: Project) -> None:
     """Crea roles sistema, workflows y workbenches si faltan (idempotente)."""
-    from app.services.project_roles import seed_default_project_access
+    from app.services.packs import seed_project_from_pack
 
     existing = db.scalar(
         select(ProjectWorkflowDefinition.id)
@@ -105,4 +148,9 @@ def ensure_project_defaults(db: Session, project: Project) -> None:
     )
     if existing is not None:
         return
-    seed_default_project_access(db, project)
+    seed_project_from_pack(
+        db,
+        project,
+        project.pack_slug or "software",
+        template_slug=project.template_slug,
+    )

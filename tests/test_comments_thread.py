@@ -10,20 +10,12 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 
-from app.models.entities import (
-    AuditLog,
-    Feature,
-    FeatureQuery,
-    FeatureReport,
-    Milestone,
-    Notification,
-    Project,
-    ProjectMember,
-    User,
-)
+from app.models.entities import AuditLog, Notification, User
 from app.services.comments import create_comment
 from app.schemas.comments import CommentCreate
-from tests.org_helpers import add_member_with_slug, create_organization
+from app.services.records.repository import create_record
+from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
+from tests.record_helpers import create_milestone_record, create_query_record, create_report_record
 
 
 @pytest.fixture
@@ -59,58 +51,36 @@ def _seed_con_cliente(session: Session):
         ]
     )
     org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="CC",
-        tipo="con_cliente",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
+    project = create_project_for_org(session, pm_id, org, nombre="CC", tipo="con_cliente")
+    add_member_with_slug(session, project, cliente_id, "cliente")
+    add_member_with_slug(session, project, dev_id, "dev")
+    milestone = create_milestone_record(session, project, created_by=pm_id)
+    feature = create_record(
+        session,
+        project,
+        entity_type="feature",
+        titulo="Login",
         created_by=pm_id,
-    )
-    session.add(project)
-    add_member_with_slug(session, project, pm_id, 'pm')
-    add_member_with_slug(session, project, cliente_id, 'cliente')
-    add_member_with_slug(session, project, dev_id, 'dev')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        created_by=pm_id,
-    )
-    session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
+        parent_id=milestone.id,
         estado="completado",
+        data={"tipo": "desarrollo", "prioridad": "media", "bloqueada": False},
         fecha_inicio=date(2026, 1, 1),
         fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
     )
-    session.add(feature)
     session.commit()
     return project, feature, pm_id, cliente_id, dev_id
 
 
 def test_comentario_reporte_audit_guarda_parent(db_session: Session):
     project, feature, pm_id, cliente_id, _ = _seed_con_cliente(db_session)
-    report = FeatureReport(
-        id=uuid4(),
-        feature_id=feature.id,
+    report = create_report_record(
+        db_session,
+        project,
+        feature,
         reported_by=cliente_id,
         tipo="bug",
         descripcion="Botón roto",
-        estado="pendiente",
     )
-    db_session.add(report)
     db_session.commit()
 
     create_comment(
@@ -138,15 +108,14 @@ def test_comentario_reporte_audit_guarda_parent(db_session: Session):
 
 def test_comentario_reporte_notifica_cliente(db_session: Session):
     project, feature, pm_id, cliente_id, _ = _seed_con_cliente(db_session)
-    report = FeatureReport(
-        id=uuid4(),
-        feature_id=feature.id,
+    report = create_report_record(
+        db_session,
+        project,
+        feature,
         reported_by=cliente_id,
         tipo="bug",
         descripcion="Botón roto",
-        estado="pendiente",
     )
-    db_session.add(report)
     db_session.commit()
 
     create_comment(
@@ -172,15 +141,15 @@ def test_comentario_reporte_notifica_cliente(db_session: Session):
 
 def test_comentario_consulta_notifica_autor(db_session: Session):
     project, feature, pm_id, _, dev_id = _seed_con_cliente(db_session)
-    query = FeatureQuery(
-        id=uuid4(),
-        feature_id=feature.id,
+    query = create_query_record(
+        db_session,
+        project,
+        feature,
+        created_by=dev_id,
         titulo="Duda API",
         descripcion="¿Cuál es el endpoint?",
         estado="pendiente_aprobacion_pm",
-        created_by=dev_id,
     )
-    db_session.add(query)
     db_session.commit()
 
     create_comment(

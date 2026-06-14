@@ -124,7 +124,9 @@ WORKBENCH_ACTIVITY = "workbench.activity"
 WORKBENCH_HUB = "workbench.hub"
 WORKBENCH_TIMELINE = "workbench.timeline"
 WORKBENCH_SETTINGS = "workbench.settings"
+WORKBENCH_STUDIO = "workbench.studio"
 WORKBENCH_PORTFOLIO = "workbench.portfolio"
+WORKBENCH_TEAM = "workbench.team"
 
 # ── Auditoría ─────────────────────────────────────────────────────────────
 
@@ -197,7 +199,9 @@ CAPABILITY_CATALOG: tuple[CapabilityDef, ...] = (
     CapabilityDef(WORKBENCH_HUB, "Centro del proyecto", "workbench"),
     CapabilityDef(WORKBENCH_TIMELINE, "Cronograma", "workbench"),
     CapabilityDef(WORKBENCH_SETTINGS, "Configuración", "workbench"),
+    CapabilityDef(WORKBENCH_STUDIO, "Studio", "workbench"),
     CapabilityDef(WORKBENCH_PORTFOLIO, "Portfolio PM", "workbench"),
+    CapabilityDef(WORKBENCH_TEAM, "Vista Equipo PM", "workbench"),
     CapabilityDef(AUDIT_VIEW_ALL, "Ver toda la auditoría", "audit"),
     CapabilityDef(AUDIT_VIEW_SCOPED, "Ver auditoría acotada", "audit"),
     CapabilityDef(TIMELINE_VIEW, "Ver cronograma", "audit"),
@@ -246,13 +250,14 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             WORKBENCH_INBOX_PM,
             WORKBENCH_OVERVIEW,
             WORKBENCH_SCOPE,
-            WORKBENCH_FEATURES,
             WORKBENCH_KANBAN,
             WORKBENCH_ACTIVITY,
             WORKBENCH_HUB,
             WORKBENCH_TIMELINE,
             WORKBENCH_SETTINGS,
+            WORKBENCH_STUDIO,
             WORKBENCH_PORTFOLIO,
+            WORKBENCH_TEAM,
             AUDIT_VIEW_ALL,
             TIMELINE_VIEW,
             COMMENT_CREATE,
@@ -277,10 +282,8 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             DOCUMENT_VIEW_PUBLIC,
             WORKBENCH_INBOX_DEV,
             WORKBENCH_SCOPE,
-            WORKBENCH_FEATURES,
             WORKBENCH_KANBAN,
             WORKBENCH_MY_TASKS,
-            WORKBENCH_MY_DELIVERIES,
             WORKBENCH_ACTIVITY,
             WORKBENCH_HUB,
             WORKBENCH_TIMELINE,
@@ -302,7 +305,6 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             WORKBENCH_INBOX_QA,
             WORKBENCH_UAT,
             WORKBENCH_SCOPE,
-            WORKBENCH_FEATURES,
             WORKBENCH_ACTIVITY,
             WORKBENCH_HUB,
             WORKBENCH_TIMELINE,
@@ -322,7 +324,6 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             DOCUMENT_VIEW_PUBLIC,
             WORKBENCH_INBOX_CLIENT,
             WORKBENCH_SCOPE,
-            WORKBENCH_FEATURES,
             WORKBENCH_ACTIVITY,
             WORKBENCH_HUB,
             WORKBENCH_TIMELINE,
@@ -418,8 +419,82 @@ def resolve_capability_keys(keys: list[str]) -> list[str]:
         elif key.startswith("record.feature.transition."):
             action = key.split(".")[-1]
             expanded.append(f"{_LEGACY_TRANSITION_PREFIX}{action}")
+        elif key.startswith("scope.milestone."):
+            expanded.append(key.replace("scope.milestone.", "record.milestone.", 1))
+            ms_suffix = key.split("scope.milestone.", 1)[1]
+            if ms_suffix in ("create", "edit", "reorder", "cancel", "delete"):
+                expanded.append("record.milestone.read")
+        elif key.startswith("record.milestone.") and key.count(".") >= 2:
+            suffix = key.split("record.milestone.", 1)[1]
+            expanded.append(f"scope.milestone.{suffix}")
+        elif key.startswith("scope.feature."):
+            expanded.append(key.replace("scope.feature.", "record.feature.", 1))
+            feat_suffix = key.split("scope.feature.", 1)[1]
+            if feat_suffix in ("create", "edit", "migrate", "cancel"):
+                expanded.append("record.feature.read")
+        elif key.startswith("record.feature.") and not key.startswith("record.feature.transition."):
+            suffix = key.split("record.feature.", 1)[1]
+            if suffix in ("create", "edit", "migrate", "cancel", "read", "delete"):
+                expanded.append(f"scope.feature.{suffix}")
+        elif key.startswith("kanban.task."):
+            suffix = key.split("kanban.task.", 1)[1]
+            expanded.append(f"record.task.{suffix}")
+            if suffix in ("move", "cancel"):
+                expanded.append(f"record.task.transition.{suffix}")
+        elif key.startswith("record.task.") and not key.startswith("record.task.transition."):
+            suffix = key.split("record.task.", 1)[1]
+            if suffix in ("create", "edit", "move", "cancel", "assign", "read"):
+                expanded.append(f"kanban.task.{suffix}")
+        elif key == WORKBENCH_FEATURES:
+            expanded.append("record.feature.read")
+        elif key == WORKBENCH_MY_DELIVERIES:
+            expanded.append("record.feature.read")
+        elif key == WORKBENCH_SCOPE:
+            expanded.extend(["record.milestone.read", "record.feature.read"])
+        elif key == KANBAN_VIEW:
+            expanded.append("record.task.read")
+        elif key == "record.task.read":
+            expanded.append(KANBAN_VIEW)
         elif key == KANBAN_TASK_MOVE:
-            expanded.extend(["record.task.transition.move", key])
+            expanded.extend(["record.task.transition.move", "record.task.move", key])
         elif key == KANBAN_TASK_CANCEL:
-            expanded.extend(["record.task.transition.cancel", key])
+            expanded.extend(["record.task.transition.cancel", "record.task.cancel", key])
+        elif key.startswith("query."):
+            expanded.append(key.replace("query.", "record.query.", 1))
+            expanded.append("record.query.read")
+        elif key.startswith("record.query."):
+            suffix = key.split("record.query.", 1)[1]
+            expanded.append(f"query.{suffix}")
+            if suffix != "read":
+                expanded.append("record.query.read")
+        elif key.startswith("report."):
+            expanded.append(key.replace("report.", "record.report.", 1))
+            expanded.append("record.report.read")
+        elif key.startswith("record.report."):
+            suffix = key.split("record.report.", 1)[1]
+            expanded.append(f"report.{suffix}")
+            if suffix != "read":
+                expanded.append("record.report.read")
+        elif key == WORKBENCH_INBOX_PM:
+            expanded.extend(
+                ["record.report.read", "record.query.read", "record.feature.read"]
+            )
+        elif key == WORKBENCH_INBOX_CLIENT:
+            expanded.extend(
+                ["record.report.read", "record.query.read", "record.feature.read"]
+            )
+        elif key == WORKBENCH_INBOX_DEV:
+            expanded.extend(["record.query.read", "record.feature.read", "record.task.read"])
+        elif key == WORKBENCH_INBOX_QA:
+            expanded.extend(["record.feature.read", "record.task.read"])
     return list(dict.fromkeys(expanded))
+
+
+def expand_nav_capabilities(caps: frozenset[str]) -> frozenset[str]:
+    """Caps extra para ítems de menú admin (compat proyectos existentes)."""
+    expanded = set(resolve_capability_keys(list(caps)))
+    if WORKBENCH_SETTINGS in caps:
+        expanded.add(WORKBENCH_STUDIO)
+    if PROJECT_ROLES_MANAGE in caps:
+        expanded.update({WORKBENCH_STUDIO, WORKBENCH_SETTINGS})
+    return frozenset(expanded)

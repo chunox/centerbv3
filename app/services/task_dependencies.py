@@ -8,9 +8,16 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.entities import Project, Task, TaskDependency
-from app.services.access import assert_not_pm_for_task_ops, assert_project_active
+from app.models.entities import Project, ProjectRecord, ProjectRecordDependency
+from app.services.access import assert_project_active
 from app.services.audit import record_audit_log
+
+from app.services.workflow.categories import (
+    is_task_cancel_state,
+    resolve_workflow,
+    task_forward_move_keys,
+    task_satisfied_predecessor_keys,
+)
 
 SATISFIED_PREDECESSOR_STATES = frozenset({"completed", "cancel"})
 FORWARD_MOVE_STATES = frozenset(
@@ -18,14 +25,21 @@ FORWARD_MOVE_STATES = frozenset(
 )
 
 
+def _task_workflow(db: Session, project_id: uuid.UUID) -> dict:
+    project = db.get(Project, project_id)
+    if project is None:
+        return {}
+    return resolve_workflow(db, project.id, "task", project.profile_slug)
+
+
 def list_project_dependencies(
     db: Session, project_id: uuid.UUID
-) -> list[TaskDependency]:
+) -> list[ProjectRecordDependency]:
     return list(
         db.scalars(
-            select(TaskDependency)
-            .where(TaskDependency.project_id == project_id)
-            .order_by(TaskDependency.created_at.asc())
+            select(ProjectRecordDependency)
+            .where(ProjectRecordDependency.project_id == project_id)
+            .order_by(ProjectRecordDependency.created_at.asc())
         )
     )
 
@@ -45,9 +59,9 @@ def _would_create_cycle(
             continue
         visited.add(current)
         dependents = db.scalars(
-            select(TaskDependency.task_id).where(
-                TaskDependency.project_id == project_id,
-                TaskDependency.depends_on_task_id == current,
+            select(ProjectRecordDependency.successor_id).where(
+                ProjectRecordDependency.project_id == project_id,
+                ProjectRecordDependency.predecessor_id == current,
             )
         )
         for dependent_id in dependents:
@@ -57,22 +71,39 @@ def _would_create_cycle(
     return False
 
 
-def unsatisfied_predecessors(db: Session, task_id: uuid.UUID) -> list[Task]:
-    rows = db.execute(
-        select(Task)
-        .join(TaskDependency, TaskDependency.depends_on_task_id == Task.id)
+def unsatisfied_predecessors(
+    db: Session, task_id: uuid.UUID
+) -> list[ProjectRecord]:
+    task = db.get(ProjectRecord, task_id)
+    satisfied = (
+        task_satisfied_predecessor_keys(_task_workflow(db, task.project_id))
+        if task is not None
+        else SATISFIED_PREDECESSOR_STATES
+    )
+    rows = db.scalars(
+        select(ProjectRecord)
+        .join(
+            ProjectRecordDependency,
+            ProjectRecordDependency.predecessor_id == ProjectRecord.id,
+        )
         .where(
-            TaskDependency.task_id == task_id,
-            Task.estado.notin_(SATISFIED_PREDECESSOR_STATES),
+            ProjectRecordDependency.successor_id == task_id,
+            ProjectRecord.estado.notin_(satisfied),
         )
     )
-    return list(rows.scalars())
+    return list(rows)
 
 
 def assert_move_allowed_by_dependencies(
     db: Session, task_id: uuid.UUID, nuevo_estado: str
 ) -> None:
-    if nuevo_estado not in FORWARD_MOVE_STATES:
+    task = db.get(ProjectRecord, task_id)
+    forward = (
+        task_forward_move_keys(_task_workflow(db, task.project_id))
+        if task is not None
+        else FORWARD_MOVE_STATES
+    )
+    if nuevo_estado not in forward:
         return
     blocking = unsatisfied_predecessors(db, task_id)
     if blocking:
@@ -87,13 +118,12 @@ def assert_move_allowed_by_dependencies(
 def create_dependency(
     db: Session,
     project: Project,
-    successor: Task,
-    predecessor: Task,
+    successor: ProjectRecord,
+    predecessor: ProjectRecord,
     *,
     actor_user_id: uuid.UUID,
-) -> TaskDependency:
+) -> ProjectRecordDependency:
     assert_project_active(project)
-    assert_not_pm_for_task_ops(db, project.id, actor_user_id)
     from app.domain.capabilities import KANBAN_TASK_EDIT
     from app.services.workflow.authorize import assert_capability
 
@@ -108,11 +138,13 @@ def create_dependency(
             status_code=400,
             detail="Las tareas deben pertenecer al mismo proyecto",
         )
+    if successor.record_type != "task" or predecessor.record_type != "task":
+        raise HTTPException(status_code=400, detail="Las dependencias son entre tareas")
 
     existing = db.scalar(
-        select(TaskDependency.id).where(
-            TaskDependency.task_id == successor.id,
-            TaskDependency.depends_on_task_id == predecessor.id,
+        select(ProjectRecordDependency.id).where(
+            ProjectRecordDependency.successor_id == successor.id,
+            ProjectRecordDependency.predecessor_id == predecessor.id,
         )
     )
     if existing:
@@ -124,11 +156,10 @@ def create_dependency(
             detail="La dependencia crearía un ciclo entre tareas",
         )
 
-    dep = TaskDependency(
+    dep = ProjectRecordDependency(
         project_id=project.id,
-        task_id=successor.id,
-        depends_on_task_id=predecessor.id,
-        created_by=actor_user_id,
+        successor_id=successor.id,
+        predecessor_id=predecessor.id,
     )
     db.add(dep)
     db.flush()
@@ -150,12 +181,11 @@ def create_dependency(
 def delete_dependency(
     db: Session,
     project: Project,
-    dep: TaskDependency,
+    dep: ProjectRecordDependency,
     *,
     actor_user_id: uuid.UUID,
 ) -> None:
     assert_project_active(project)
-    assert_not_pm_for_task_ops(db, project.id, actor_user_id)
     from app.domain.capabilities import KANBAN_TASK_EDIT
     from app.services.workflow.authorize import assert_capability
 
@@ -166,10 +196,10 @@ def delete_dependency(
         project_id=project.id,
         user_id=actor_user_id,
         entidad_tipo="tarea",
-        entidad_id=dep.task_id,
+        entidad_id=dep.successor_id,
         accion="dependency_removed",
         campo="depends_on_task_id",
-        valor_anterior=str(dep.depends_on_task_id),
+        valor_anterior=str(dep.predecessor_id),
         valor_nuevo=None,
     )
     db.delete(dep)

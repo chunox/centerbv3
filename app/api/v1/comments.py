@@ -5,49 +5,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.entities import (
-    Comment,
-    Feature,
-    FeatureQuery,
-    FeatureReport,
-    Task,
-)
+from app.models.entities import Comment, ProjectRecord
 from app.schemas.comments import CommentCreate, CommentRead, EntidadTipo
-from app.services.access import assert_member_of_project
+from app.services.access import assert_member_of_project, get_project_id_for_comment_entity
 from app.services.comments import create_comment as create_comment_service
 
 router = APIRouter(prefix="/comments", tags=["comments"])
 
-_ENTITY_GETTERS: dict[EntidadTipo, type] = {
-    "feature": Feature,
-    "tarea": Task,
-    "feature_query": FeatureQuery,
-    "feature_report": FeatureReport,
-}
-
-
-def _project_id_for_entidad(
-    entidad_tipo: EntidadTipo, entidad_id: UUID, db: Session
-) -> UUID:
-    model = _ENTITY_GETTERS[entidad_tipo]
-    row = db.get(model, entidad_id)
-    if not row:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No existe {entidad_tipo} con id {entidad_id}",
-        )
-    if entidad_tipo == "feature":
-        return row.project_id
-    if entidad_tipo == "tarea":
-        return row.project_id
-    feature = db.get(Feature, row.feature_id)
-    if not feature:
-        raise HTTPException(status_code=404, detail="Feature no encontrada")
-    return feature.project_id
-
 
 def _ensure_entidad_exists(entidad_tipo: EntidadTipo, entidad_id: UUID, db: Session) -> UUID:
-    return _project_id_for_entidad(entidad_tipo, entidad_id, db)
+    return get_project_id_for_comment_entity(db, entidad_tipo, entidad_id)
 
 
 @router.get("", response_model=list[CommentRead])

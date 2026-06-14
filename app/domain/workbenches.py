@@ -5,20 +5,24 @@ from __future__ import annotations
 
 from typing import Any
 
+# Vistas legacy retiradas (lista global de features / mis entregas).
+DEPRECATED_WORKBENCH_KEYS = frozenset({"features", "my_deliveries"})
+DEPRECATED_VIEW_ROUTES = frozenset({"features", "dev/features"})
+
 from app.domain.capabilities import (
     WORKBENCH_ACTIVITY,
-    WORKBENCH_FEATURES,
     WORKBENCH_HUB,
     WORKBENCH_INBOX_CLIENT,
     WORKBENCH_INBOX_DEV,
     WORKBENCH_INBOX_PM,
     WORKBENCH_INBOX_QA,
     WORKBENCH_KANBAN,
-    WORKBENCH_MY_DELIVERIES,
     WORKBENCH_MY_TASKS,
     WORKBENCH_OVERVIEW,
     WORKBENCH_SCOPE,
     WORKBENCH_SETTINGS,
+    WORKBENCH_STUDIO,
+    WORKBENCH_TEAM,
     WORKBENCH_TIMELINE,
     WORKBENCH_UAT,
 )
@@ -40,8 +44,20 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         "icon": "inbox",
         "section": "pm",
         "required_capabilities": [WORKBENCH_INBOX_PM],
-        "queue_filter": {"entity_types": ["report", "query", "feature"], "state_categories": ["inbox_pm"]},
+        "queue_filter": {
+            "entity_types": ["report", "query", "feature"],
+            "state_categories": ["inbox_pm", "inbox_shared"],
+        },
         "orden": 20,
+    },
+    {
+        "key": "team",
+        "label": "Equipo",
+        "route": "team",
+        "icon": "users",
+        "section": "pm",
+        "required_capabilities": [WORKBENCH_TEAM],
+        "orden": 25,
     },
     {
         "key": "inbox_dev",
@@ -50,6 +66,11 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         "icon": "inbox",
         "section": "dev",
         "required_capabilities": [WORKBENCH_INBOX_DEV],
+        "queue_filter": {
+            "entity_types": ["query"],
+            "state_categories": ["active", "pending", "inbox_pm", "inbox_client"],
+            "created_by_actor": True,
+        },
         "orden": 30,
     },
     {
@@ -71,21 +92,17 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         "orden": 50,
     },
     {
-        "key": "my_deliveries",
-        "label": "Mis entregas",
-        "route": "dev/features",
-        "icon": "package",
-        "section": "dev",
-        "required_capabilities": [WORKBENCH_MY_DELIVERIES],
-        "orden": 60,
-    },
-    {
         "key": "inbox_qa",
         "label": "Bandeja",
         "route": "qa/inbox",
         "icon": "inbox",
         "section": "qa",
         "required_capabilities": [WORKBENCH_INBOX_QA],
+        "queue_filter": {
+            "entity_types": ["query"],
+            "state_categories": ["active", "pending", "inbox_pm", "inbox_client"],
+            "created_by_actor": True,
+        },
         "orden": 70,
     },
     {
@@ -105,6 +122,11 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         "icon": "inbox",
         "section": "client",
         "required_capabilities": [WORKBENCH_INBOX_CLIENT],
+        "queue_filter": {
+            "entity_types": ["query", "report", "feature"],
+            "state_categories": ["inbox_client", "pending", "inbox_shared"],
+            "include_states": ["respuesta_cliente", "esperando_validacion_cliente"],
+        },
         "orden": 90,
     },
     {
@@ -115,15 +137,6 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         "section": "plan",
         "required_capabilities": [WORKBENCH_SCOPE],
         "orden": 100,
-    },
-    {
-        "key": "features",
-        "label": "Features",
-        "route": "features",
-        "icon": "layers",
-        "section": "plan",
-        "required_capabilities": [WORKBENCH_FEATURES],
-        "orden": 110,
     },
     {
         "key": "hub",
@@ -151,6 +164,15 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         "section": "track",
         "required_capabilities": [WORKBENCH_ACTIVITY],
         "orden": 140,
+    },
+    {
+        "key": "studio",
+        "label": "Studio",
+        "route": "studio",
+        "icon": "layout-grid",
+        "section": "admin",
+        "required_capabilities": [WORKBENCH_STUDIO],
+        "orden": 145,
     },
     {
         "key": "settings",

@@ -12,10 +12,8 @@ from app.models.entities import (
     AttachmentRelation,
     Comment,
     Document,
-    Feature,
-    FeatureReport,
     HubEntry,
-    Task,
+    ProjectRecord,
     User,
 )
 from app.models.entities import Project
@@ -37,11 +35,18 @@ from app.services.file_storage import (
 _ENTITY_GETTERS: dict[AttachmentEntidadTipo, type] = {
     "comment": Comment,
     "document": Document,
-    "tarea": Task,
-    "feature": Feature,
-    "feature_report": FeatureReport,
     "hub_entry": HubEntry,
     "project": Project,
+}
+
+_RECORD_ENTITY_TYPES: dict[AttachmentEntidadTipo, str] = {
+    "tarea": "task",
+    "feature": "feature",
+    "feature_query": "query",
+    "feature_report": "report",
+    "pieza": "pieza",
+    "entregable": "entregable",
+    "campana": "campana",
 }
 
 
@@ -61,6 +66,15 @@ def ensure_attachment_entidad_exists(
     entidad_id: uuid.UUID,
     db: Session,
 ) -> None:
+    record_type = _RECORD_ENTITY_TYPES.get(entidad_tipo)
+    if record_type:
+        row = db.get(ProjectRecord, entidad_id)
+        if not row or row.record_type != record_type:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No existe {entidad_tipo} con id {entidad_id}",
+            )
+        return
     model = _ENTITY_GETTERS[entidad_tipo]
     if not db.get(model, entidad_id):
         raise HTTPException(

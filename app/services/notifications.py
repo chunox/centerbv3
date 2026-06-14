@@ -1,18 +1,16 @@
+import json
 import uuid
 from datetime import timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.entities import (
     AuditLog,
-    Feature,
-    FeatureQuery,
-    FeatureReport,
     Notification,
     Project,
-    Task,
+    ProjectRecord,
     User,
 )
 
@@ -42,6 +40,8 @@ def create_notification(
     entidad_tipo: NotificationEntidadTipo,
     entidad_id: uuid.UUID,
     leida: bool = False,
+    deep_link: dict[str, Any] | None = None,
+    message: str | None = None,
 ) -> Notification:
     notification = Notification(
         user_id=user_id,
@@ -50,6 +50,8 @@ def create_notification(
         entidad_tipo=entidad_tipo,
         entidad_id=entidad_id,
         leida=leida,
+        deep_link=json.dumps(deep_link, ensure_ascii=False) if deep_link else None,
+        message=message,
     )
     db.add(notification)
     return notification
@@ -77,21 +79,31 @@ def _entity_display_name(
     entidad_id: uuid.UUID,
 ) -> str | None:
     if entidad_tipo == "feature":
-        row = db.get(Feature, entidad_id)
-        return row.nombre if row else None
+        row = db.get(ProjectRecord, entidad_id)
+        if row is not None and row.record_type == "feature":
+            return row.titulo
+        return None
     if entidad_tipo == "tarea":
-        row = db.get(Task, entidad_id)
-        return row.titulo if row else None
+        row = db.get(ProjectRecord, entidad_id)
+        if row is not None and row.record_type == "task":
+            return row.titulo
+        return None
     if entidad_tipo == "feature_query":
-        row = db.get(FeatureQuery, entidad_id)
-        return row.titulo if row else None
+        row = db.get(ProjectRecord, entidad_id)
+        if row is not None and row.record_type == "query":
+            return row.titulo
+        return None
     if entidad_tipo == "feature_report":
-        row = db.get(FeatureReport, entidad_id)
-        if not row:
+        row = db.get(ProjectRecord, entidad_id)
+        if row is None or row.record_type != "report":
             return None
-        feature = db.get(Feature, row.feature_id)
-        feature_name = feature.nombre if feature else "feature"
-        return f"{row.tipo} · {feature_name}"
+        import json
+
+        data = json.loads(row.data) if isinstance(row.data, str) else (row.data or {})
+        tipo = data.get("tipo", "bug")
+        parent = db.get(ProjectRecord, row.parent_id) if row.parent_id else None
+        feature_name = parent.titulo if parent else "feature"
+        return f"{tipo} · {feature_name}"
     return None
 
 
@@ -104,9 +116,14 @@ def _actor_nombre_for_notification(
     t1 = notification.created_at + timedelta(seconds=2)
 
     if notification.tipo == "reporte_recibido":
-        report = db.get(FeatureReport, notification.entidad_id)
-        if report:
-            user = db.get(User, report.reported_by)
+        report = db.get(ProjectRecord, notification.entidad_id)
+        if report and report.record_type == "report":
+            import json
+
+            data = json.loads(report.data) if isinstance(report.data, str) else (report.data or {})
+            reported_by = data.get("reported_by")
+            uid = uuid.UUID(reported_by) if reported_by else report.created_by
+            user = db.get(User, uid) if uid else None
             return user.nombre if user else None
 
     if notification.tipo in ("mencionado", "comentario_nuevo"):
@@ -144,8 +161,8 @@ def _actor_nombre_for_notification(
         return user.nombre if user else None
 
     if notification.entidad_tipo == "feature_query":
-        query = db.get(FeatureQuery, notification.entidad_id)
-        if query:
+        query = db.get(ProjectRecord, notification.entidad_id)
+        if query and query.record_type == "query":
             user = db.get(User, query.created_by)
             return user.nombre if user else None
 
@@ -191,12 +208,22 @@ def notification_display(
     titulo = TITULO_POR_TIPO.get(notification.tipo, notification.tipo)
     project_nombre = project.nombre if project else None
     actor_nombre = _actor_nombre_for_notification(db, notification)
-    mensaje = _build_notification_mensaje(
-        tipo=notification.tipo,
-        actor_nombre=actor_nombre,
-        entidad_nombre=entidad_nombre,
-        project_nombre=project_nombre,
-    )
+    if notification.message:
+        mensaje = notification.message
+    else:
+        mensaje = _build_notification_mensaje(
+            tipo=notification.tipo,
+            actor_nombre=actor_nombre,
+            entidad_nombre=entidad_nombre,
+            project_nombre=project_nombre,
+        )
+
+    deep_link = None
+    if notification.deep_link:
+        try:
+            deep_link = json.loads(notification.deep_link)
+        except (json.JSONDecodeError, TypeError):
+            deep_link = None
 
     return {
         "id": notification.id,
@@ -212,4 +239,5 @@ def notification_display(
         "entidad_nombre": entidad_nombre,
         "project_nombre": project_nombre,
         "actor_nombre": actor_nombre,
+        "deep_link": deep_link,
     }

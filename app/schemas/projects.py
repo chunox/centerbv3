@@ -4,9 +4,13 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
+
+from app.domain.project_profiles import legacy_tipo_from_profile
+from app.schemas.project_structure import ProjectStructureDef
 
 ProjectTipo = Literal["con_cliente", "interno", "freestyle"]
+ProjectProfileSlug = Literal["with_client", "internal", "flexible", "default"]
 ProjectEstado = Literal["activo", "cerrado", "cancelado"]
 MemberRol = Literal["cliente", "pm", "dev", "qa"]
 ProjectTemplateSlug = Literal[
@@ -24,11 +28,13 @@ class ProjectCreate(BaseModel):
     descripcion: str | None = None
     pack_slug: str | None = None
     template_slug: ProjectTemplateSlug | None = None
+    profile_slug: ProjectProfileSlug | None = None
     tipo: ProjectTipo | None = None
     estado: ProjectEstado = "activo"
     fecha_inicio: date
     fecha_fin: date
     created_by: UUID
+    project_structure: ProjectStructureDef | None = None
 
     @model_validator(mode="after")
     def fechas_coherentes(self) -> ProjectCreate:
@@ -42,6 +48,8 @@ class ProjectCreate(BaseModel):
             return self
         if self.tipo == "interno":
             self.template_slug = "t3_interno_clasico"
+        elif self.tipo == "freestyle":
+            self.template_slug = "t5_freestyle"
         else:
             self.template_slug = "t1_cliente_clasico"
         return self
@@ -59,6 +67,7 @@ class ProjectTemplateRead(BaseModel):
     slug: str
     nombre: str
     descripcion: str
+    profile_slug: ProjectProfileSlug
     tipo: ProjectTipo
     roles: list[str]
     creator_role: str
@@ -70,9 +79,10 @@ class ProjectRead(BaseModel):
     organization_id: UUID
     nombre: str
     descripcion: str | None
-    tipo: ProjectTipo
+    profile_slug: ProjectProfileSlug
     template_slug: str
     pack_slug: str = "software"
+    structure_version: int = 2
     estado: ProjectEstado
     fecha_inicio: date
     fecha_fin: date
@@ -81,6 +91,15 @@ class ProjectRead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def tipo(self) -> ProjectTipo:
+        """Deprecated alias computado desde profile_slug."""
+        legacy = legacy_tipo_from_profile(self.profile_slug, pack_slug=self.pack_slug)
+        if legacy == "freestyle" and self.pack_slug != "software":
+            return "interno"
+        return legacy  # type: ignore[return-value]
 
 
 class ProjectEstadoAction(BaseModel):

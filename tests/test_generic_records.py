@@ -52,7 +52,7 @@ def test_create_generic_project_with_evento_pack(db_session: Session):
         id=uuid.uuid4(),
         organization_id=org.id,
         nombre="Fiesta",
-        tipo="freestyle",
+        profile_slug="default",
         template_slug="t5_freestyle",
         pack_slug="evento",
         fecha_inicio=__import__("datetime").date(2026, 6, 1),
@@ -78,6 +78,46 @@ def test_create_generic_project_with_evento_pack(db_session: Session):
     assert row is not None
 
 
+def test_simple_pack_seeds_board_workbench(db_session: Session):
+    ensure_system_packs(db_session)
+    user = create_user(db_session)
+    org = create_organization(db_session, owner_id=user.id)
+    from app.models.entities import Project, ProjectWorkbenchDefinition
+    from app.services.blocks import list_project_blocks
+
+    project = Project(
+        id=uuid.uuid4(),
+        organization_id=org.id,
+        nombre="Tablero simple",
+        profile_slug="default",
+        template_slug="t5_freestyle",
+        pack_slug="simple",
+        fecha_inicio=__import__("datetime").date(2026, 1, 1),
+        fecha_fin=__import__("datetime").date(2026, 12, 31),
+        created_by=user.id,
+    )
+    db_session.add(project)
+    db_session.flush()
+    seed_project_from_pack(db_session, project, "simple")
+    db_session.commit()
+
+    blocks = {b.key: b for b in list_project_blocks(db_session, project.id)}
+    assert "board" in blocks
+    assert blocks["board"].config.get("view_type") == "board"
+    assert blocks["board"].config.get("entity_type_key") == "tarea"
+
+    wb_row = db_session.scalar(
+        __import__("sqlalchemy").select(ProjectWorkbenchDefinition).where(
+            ProjectWorkbenchDefinition.project_id == project.id
+        )
+    )
+    assert wb_row is not None
+    workbenches = __import__("json").loads(wb_row.definition)
+    board_wb = next(w for w in workbenches if w["key"] == "board")
+    assert board_wb["view_type"] == "board"
+    assert board_wb["entity_type"] == "tarea"
+
+
 def test_record_transition_simple_pack(db_session: Session):
     ensure_system_packs(db_session)
     user = create_user(db_session)
@@ -88,7 +128,7 @@ def test_record_transition_simple_pack(db_session: Session):
         id=uuid.uuid4(),
         organization_id=org.id,
         nombre="Personal",
-        tipo="freestyle",
+        profile_slug="default",
         template_slug="t5_freestyle",
         pack_slug="simple",
         fecha_inicio=__import__("datetime").date(2026, 1, 1),
@@ -139,7 +179,7 @@ def test_import_pack_config(db_session: Session):
         id=uuid.uuid4(),
         organization_id=org.id,
         nombre="Import test",
-        tipo="freestyle",
+        profile_slug="default",
         template_slug="t5_freestyle",
         pack_slug="simple",
         fecha_inicio=__import__("datetime").date(2026, 1, 1),
@@ -179,3 +219,56 @@ def test_import_pack_config(db_session: Session):
 
     wbs = get_workbenches(db_session, project.id)
     assert any(wb["label"] == "Lista" for wb in wbs)
+
+
+def test_transition_record_blocked_by_dependency(db_session: Session):
+    from fastapi import HTTPException
+
+    from app.services.records.repository import create_record
+    from app.services.task_dependencies import create_dependency
+    from tests.record_helpers import (
+        create_feature_record,
+        create_milestone_record,
+        seed_project_with_roles,
+    )
+
+    project, pm_id, dev_id, _ = seed_project_with_roles(db_session)
+    milestone = create_milestone_record(db_session, project, created_by=pm_id)
+    feature = create_feature_record(
+        db_session,
+        project,
+        milestone,
+        created_by=pm_id,
+        with_default_task=False,
+    )
+    pred = create_record(
+        db_session,
+        project,
+        entity_type="task",
+        titulo="Predecesora",
+        created_by=dev_id,
+        parent_id=feature.id,
+        estado="in_progress",
+    )
+    succ = create_record(
+        db_session,
+        project,
+        entity_type="task",
+        titulo="Sucesora",
+        created_by=dev_id,
+        parent_id=feature.id,
+        estado="backlog",
+    )
+    create_dependency(db_session, project, succ, pred, actor_user_id=dev_id)
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        generic_store.transition_record(
+            db_session,
+            project,
+            succ,
+            action_id="move",
+            actor_user_id=dev_id,
+            target_state="to_do",
+        )
+    assert exc.value.status_code == 409

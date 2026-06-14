@@ -9,17 +9,15 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.models.entities import (
-    Feature,
-    FeatureQuery,
-    Milestone,
-    Notification,
-    Project,
-    ProjectMember,
-    User,
-)
+from app.models.entities import Notification, User
 from app.services.feature_queries import apply_query_action, sync_feature_bloqueada
-from tests.org_helpers import add_member_with_slug, create_organization
+from app.services.records.repository import get_field
+from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
+from tests.record_helpers import (
+    create_feature_record,
+    create_milestone_record,
+    create_query_record,
+)
 
 
 @pytest.fixture
@@ -61,57 +59,31 @@ def _seed_con_cliente(session: Session):
         ]
     )
     org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="P",
-        tipo="con_cliente",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
+    project = create_project_for_org(session, pm_id, org, nombre="P", tipo="con_cliente")
+    add_member_with_slug(session, project, dev_id, "dev")
+    add_member_with_slug(session, project, cliente_id, "cliente")
+    milestone = create_milestone_record(session, project, created_by=pm_id)
+    feature = create_feature_record(
+        session,
+        project,
+        milestone,
         created_by=pm_id,
+        with_default_task=False,
     )
-    session.add(project)
-    add_member_with_slug(session, project, pm_id, 'pm')
-    add_member_with_slug(session, project, dev_id, 'dev')
-    add_member_with_slug(session, project, cliente_id, 'cliente')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        created_by=pm_id,
-    )
-    session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
-    )
-    session.add(feature)
     session.commit()
     return project, feature, pm_id, dev_id, cliente_id
 
 
 def test_dev_query_flow_blocks_until_closed(db_session: Session):
     project, feature, pm_id, dev_id, cliente_id = _seed_con_cliente(db_session)
-    query = FeatureQuery(
-        id=uuid4(),
-        feature_id=feature.id,
+    query = create_query_record(
+        db_session,
+        project,
+        feature,
+        created_by=dev_id,
         titulo="¿Color del botón?",
         descripcion="Necesitamos confirmación",
-        estado="borrador",
-        created_by=dev_id,
     )
-    db_session.add(query)
     db_session.commit()
 
     apply_query_action(
@@ -138,7 +110,7 @@ def test_dev_query_flow_blocks_until_closed(db_session: Session):
     )
     db_session.flush()
     assert query.estado == "esperando_cliente"
-    assert feature.bloqueada is True
+    assert get_field(feature, "bloqueada") is True
 
     apply_query_action(
         db_session,
@@ -187,49 +159,50 @@ def test_dev_query_flow_blocks_until_closed(db_session: Session):
 
 def test_cumulative_blocking_two_queries(db_session: Session):
     project, feature, pm_id, dev_id, _ = _seed_con_cliente(db_session)
-    q1 = FeatureQuery(
-        id=uuid4(),
-        feature_id=feature.id,
+    q1 = create_query_record(
+        db_session,
+        project,
+        feature,
+        created_by=dev_id,
         titulo="Q1",
         descripcion="D1",
         estado="esperando_cliente",
-        created_by=dev_id,
     )
-    q2 = FeatureQuery(
-        id=uuid4(),
-        feature_id=feature.id,
+    q2 = create_query_record(
+        db_session,
+        project,
+        feature,
+        created_by=dev_id,
         titulo="Q2",
         descripcion="D2",
         estado="esperando_cliente",
-        created_by=dev_id,
     )
-    db_session.add_all([q1, q2])
     db_session.commit()
     sync_feature_bloqueada(db_session, feature, project, actor_user_id=pm_id)
-    assert feature.bloqueada is True
+    assert get_field(feature, "bloqueada") is True
 
     q1.estado = "cerrada"
     db_session.flush()
     sync_feature_bloqueada(db_session, feature, project, actor_user_id=pm_id)
-    assert feature.bloqueada is True
+    assert get_field(feature, "bloqueada") is True
 
     q2.estado = "cerrada"
     db_session.flush()
     sync_feature_bloqueada(db_session, feature, project, actor_user_id=pm_id)
-    assert feature.bloqueada is False
+    assert get_field(feature, "bloqueada") is False
 
 
 def test_reject_notifies_query_author(db_session: Session):
     project, feature, pm_id, dev_id, _ = _seed_con_cliente(db_session)
-    query = FeatureQuery(
-        id=uuid4(),
-        feature_id=feature.id,
+    query = create_query_record(
+        db_session,
+        project,
+        feature,
+        created_by=dev_id,
         titulo="Consulta dev",
         descripcion="Detalle",
         estado="esperando_cliente",
-        created_by=dev_id,
     )
-    db_session.add(query)
     db_session.commit()
 
     apply_query_action(
@@ -263,50 +236,25 @@ def test_interno_dev_solicitar_skips_pm_approval(db_session: Session):
         ]
     )
     org = create_organization(db_session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="Interno Dev",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
+    project = create_project_for_org(db_session, pm_id, org, nombre="Interno Dev")
+    add_member_with_slug(db_session, project, dev_id, "dev")
+    milestone = create_milestone_record(db_session, project, created_by=pm_id)
+    feature = create_feature_record(
+        db_session,
+        project,
+        milestone,
         created_by=pm_id,
-    )
-    db_session.add(project)
-    add_member_with_slug(db_session, project, pm_id, 'pm')
-    add_member_with_slug(db_session, project, dev_id, 'dev')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        created_by=pm_id,
-    )
-    db_session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
         nombre="API",
-        tipo="desarrollo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
+        with_default_task=False,
     )
-    db_session.add(feature)
-    query = FeatureQuery(
-        id=uuid4(),
-        feature_id=feature.id,
+    query = create_query_record(
+        db_session,
+        project,
+        feature,
+        created_by=dev_id,
         titulo="¿Formato export?",
         descripcion="Confirmar con stakeholder externo",
-        estado="borrador",
-        created_by=dev_id,
     )
-    db_session.add(query)
     db_session.commit()
 
     apply_query_action(
@@ -319,7 +267,7 @@ def test_interno_dev_solicitar_skips_pm_approval(db_session: Session):
     )
     db_session.flush()
     assert query.estado == "esperando_pm"
-    assert feature.bloqueada is True
+    assert get_field(feature, "bloqueada") is True
 
     apply_query_action(
         db_session,
@@ -330,7 +278,7 @@ def test_interno_dev_solicitar_skips_pm_approval(db_session: Session):
         actor_user_id=pm_id,
     )
     assert query.estado == "cerrada"
-    assert feature.bloqueada is False
+    assert get_field(feature, "bloqueada") is False
 
 
 def test_interno_pm_self_block(db_session: Session):
@@ -339,49 +287,24 @@ def test_interno_pm_self_block(db_session: Session):
         User(id=pm_id, nombre="PM", email="pm2@test.com", password_hash="x")
     )
     org = create_organization(db_session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="Interno",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
+    project = create_project_for_org(db_session, pm_id, org, nombre="Interno")
+    milestone = create_milestone_record(db_session, project, created_by=pm_id)
+    feature = create_feature_record(
+        db_session,
+        project,
+        milestone,
         created_by=pm_id,
-    )
-    db_session.add(project)
-    add_member_with_slug(db_session, project, pm_id, 'pm')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        created_by=pm_id,
-    )
-    db_session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
         nombre="Export",
-        tipo="desarrollo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
+        with_default_task=False,
     )
-    db_session.add(feature)
-    query = FeatureQuery(
-        id=uuid4(),
-        feature_id=feature.id,
+    query = create_query_record(
+        db_session,
+        project,
+        feature,
+        created_by=pm_id,
         titulo="IVA",
         descripcion="Confirmar con cliente externo",
-        estado="borrador",
-        created_by=pm_id,
     )
-    db_session.add(query)
     db_session.commit()
 
     apply_query_action(
@@ -393,7 +316,7 @@ def test_interno_pm_self_block(db_session: Session):
         actor_user_id=pm_id,
     )
     assert query.estado == "esperando_pm"
-    assert feature.bloqueada is True
+    assert get_field(feature, "bloqueada") is True
 
     apply_query_action(
         db_session,
@@ -404,4 +327,4 @@ def test_interno_pm_self_block(db_session: Session):
         actor_user_id=pm_id,
     )
     assert query.estado == "cerrada"
-    assert feature.bloqueada is False
+    assert get_field(feature, "bloqueada") is False

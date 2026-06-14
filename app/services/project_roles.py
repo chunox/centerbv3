@@ -19,7 +19,7 @@ from app.domain.project_templates import (
     template_slug_for_legacy_tipo,
 )
 from app.domain.workbenches import DEFAULT_WORKBENCHES
-from app.domain.workflow_templates import workflow_for_project_tipo
+from app.domain.workflow_templates import workflow_for_profile
 from app.models.entities import (
     Project,
     ProjectMember,
@@ -55,7 +55,8 @@ def seed_project_from_template(
         created[slug] = role
 
     for entity_type in ("feature", "task", "query", "report", "milestone"):
-        wf = workflow_for_project_tipo(project.tipo, entity_type)
+        profile = getattr(project, "profile_slug", None) or "with_client"
+        wf = workflow_for_profile(profile, entity_type)
         db.add(
             ProjectWorkflowDefinition(
                 project_id=project.id,
@@ -80,8 +81,10 @@ def seed_project_from_template(
 
 def seed_default_project_access(db: Session, project: Project) -> dict[str, ProjectRole]:
     """Compat: seed según template_slug del proyecto o tipo legacy."""
+    from app.services.project_profile import legacy_tipo_for_project
+
     slug = getattr(project, "template_slug", None) or template_slug_for_legacy_tipo(
-        project.tipo
+        legacy_tipo_for_project(project)
     )
     return seed_project_from_template(db, project, slug or DEFAULT_TEMPLATE_SLUG)
 
@@ -212,13 +215,29 @@ def remove_member_role(db: Session, member: ProjectMember) -> None:
     db.delete(member)
 
 
+def _normalize_task_workflow_moves(defn: dict) -> dict:
+    from app.services.workflow.engine import normalize_task_workflow_moves
+
+    return normalize_task_workflow_moves(defn)
+
+
 def update_workflow_definition(
     db: Session,
     project: Project,
     entity_type: str,
     definition: dict,
-) -> ProjectWorkflowDefinition:
-    _validate_workflow_definition(definition)
+) -> tuple[ProjectWorkflowDefinition, list[str]]:
+    from app.services.role_capabilities import sync_workflow_transition_capabilities
+
+    if entity_type == "task":
+        definition = _normalize_task_workflow_moves(definition)
+
+    _validate_workflow_definition(
+        definition,
+        entity_type=entity_type,
+        role_slugs={r.slug for r in list_project_roles(db, project.id)},
+    )
+    capabilities_added = sync_workflow_transition_capabilities(db, project, definition)
     latest = db.scalar(
         select(func.max(ProjectWorkflowDefinition.version)).where(
             ProjectWorkflowDefinition.project_id == project.id,
@@ -250,7 +269,7 @@ def update_workflow_definition(
         definition=json.dumps(definition, ensure_ascii=False),
     )
     db.add(wf)
-    return wf
+    return wf, capabilities_added
 
 
 def update_workbench_definition(
@@ -270,14 +289,26 @@ def update_workbench_definition(
     return row
 
 
-def _validate_workflow_definition(defn: dict) -> None:
+def _validate_workflow_definition(
+    defn: dict,
+    *,
+    entity_type: str | None = None,
+    role_slugs: set[str] | None = None,
+) -> None:
+    from app.services.workflow.categories import validate_task_state_categories
+
     states = defn.get("states", [])
     if not states:
         raise HTTPException(status_code=422, detail="Workflow sin estados")
-    keys = {s["key"] for s in states}
+    keys = {s["key"] for s in states if isinstance(s, dict) and s.get("key")}
     initial = defn.get("initial_state")
     if initial and initial not in keys:
         raise HTTPException(status_code=422, detail="initial_state inválido")
+    if entity_type == "task":
+        try:
+            validate_task_state_categories(defn)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     for t in defn.get("transitions", []):
         to_state = t.get("to")
         if to_state and to_state != "*" and to_state not in keys:
@@ -285,3 +316,16 @@ def _validate_workflow_definition(defn: dict) -> None:
                 status_code=422,
                 detail=f"Transición '{t.get('id')}' apunta a estado inexistente",
             )
+        for from_state in t.get("from") or []:
+            if from_state not in keys:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Transición '{t.get('id')}' parte de estado inexistente: {from_state}",
+                )
+        if role_slugs is not None:
+            for slug in t.get("allowed_role_slugs") or []:
+                if slug not in role_slugs:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Rol '{slug}' no existe en el proyecto",
+                    )

@@ -10,18 +10,12 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models.entities import (
-    AuditLog,
-    Comment,
-    Feature,
-    Milestone,
-    Project,
-    ProjectMember,
-    User,
-)
+from app.models.entities import AuditLog, Comment, User
 from app.services.audit import record_audit_log
+from app.services.records.repository import create_record
 from app.services.timeline import build_project_timeline
-from tests.org_helpers import add_member_with_slug, create_organization
+from tests.org_helpers import create_organization, create_project_for_org
+from tests.record_helpers import create_milestone_record
 
 
 def _session():
@@ -40,53 +34,30 @@ def _seed(session: Session):
         User(id=pm_id, nombre="PM", email="pm@tl.test", password_hash="x")
     )
     org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="P",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
+    project = create_project_for_org(session, pm_id, org, nombre="P")
+    h1 = create_milestone_record(session, project, created_by=pm_id, nombre="H1", orden=1)
+    h1.estado = "en_progreso"
+    h2 = create_milestone_record(
+        session,
+        project,
         created_by=pm_id,
-    )
-    session.add(project)
-    add_member_with_slug(session, project, pm_id, 'pm')
-    h1 = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        estado="en_progreso",
-        created_by=pm_id,
-    )
-    h2 = Milestone(
-        id=uuid4(),
-        project_id=project.id,
         nombre="H2",
-        tipo="entrega",
         orden=2,
-        fecha_inicio=date(2026, 7, 1),
-        fecha_fin=date(2026, 12, 31),
-        estado="pendiente",
-        created_by=pm_id,
     )
-    session.add_all([h1, h2])
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=h1.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
+    h2.fecha_inicio = date(2026, 7, 1)
+    h2.fecha_fin = date(2026, 12, 31)
+    feature = create_record(
+        session,
+        project,
+        entity_type="feature",
+        titulo="Login",
+        created_by=pm_id,
+        parent_id=h1.id,
         estado="en_progreso",
+        data={"tipo": "desarrollo", "prioridad": "media", "bloqueada": False},
         fecha_inicio=date(2026, 2, 1),
         fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
     )
-    session.add(feature)
     session.flush()
     record_audit_log(
         session,

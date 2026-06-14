@@ -4,26 +4,19 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.entities import (
-    AuditLog,
-    Comment,
-    Feature,
-    FeatureQuery,
-    FeatureReport,
-    Milestone,
-    Task,
-    User,
-)
+from app.models.entities import AuditLog, Comment, ProjectRecord, User
 from app.schemas.timeline import (
     ProjectTimelineRead,
     TimelineEventRead,
     TimelinePlanItemRead,
 )
 from app.services.access import resolve_audit_logs_for_user
+from app.services.records.repository import _data, list_records
 from app.services.workflow.visibility import comment_visible_for_capabilities
 
 _ENTIDAD_LABELS = {
@@ -41,11 +34,11 @@ _ENTIDAD_LABELS = {
 
 @dataclass
 class _EntityMaps:
-    milestones: dict[uuid.UUID, Milestone]
-    features: dict[uuid.UUID, Feature]
-    tasks: dict[uuid.UUID, Task]
-    queries: dict[uuid.UUID, FeatureQuery]
-    reports: dict[uuid.UUID, FeatureReport]
+    milestones: dict[uuid.UUID, ProjectRecord]
+    features: dict[uuid.UUID, ProjectRecord]
+    tasks: dict[uuid.UUID, ProjectRecord]
+    queries: dict[uuid.UUID, ProjectRecord]
+    reports: dict[uuid.UUID, ProjectRecord]
     users: dict[uuid.UUID, User]
 
 
@@ -61,10 +54,10 @@ def _entity_label(
 ) -> str:
     if entidad_tipo == "milestone":
         m = maps.milestones.get(entidad_id)
-        return m.nombre if m else _ENTIDAD_LABELS.get(entidad_tipo, entidad_tipo)
+        return m.titulo if m else _ENTIDAD_LABELS.get(entidad_tipo, entidad_tipo)
     if entidad_tipo == "feature":
         f = maps.features.get(entidad_id)
-        return f.nombre if f else _ENTIDAD_LABELS.get(entidad_tipo, entidad_tipo)
+        return f.titulo if f else _ENTIDAD_LABELS.get(entidad_tipo, entidad_tipo)
     if entidad_tipo == "tarea":
         t = maps.tasks.get(entidad_id)
         return t.titulo if t else _ENTIDAD_LABELS.get(entidad_tipo, entidad_tipo)
@@ -83,48 +76,48 @@ def _resolve_context(
 ) -> tuple[uuid.UUID | None, str | None, uuid.UUID | None, str | None]:
     if entidad_tipo == "milestone":
         m = maps.milestones.get(entidad_id)
-        return entidad_id, m.nombre if m else None, None, None
+        return entidad_id, m.titulo if m else None, None, None
     if entidad_tipo == "feature":
         f = maps.features.get(entidad_id)
         if not f:
             return None, None, entidad_id, None
-        m = maps.milestones.get(f.milestone_id)
-        return f.milestone_id, m.nombre if m else None, entidad_id, f.nombre
+        m = maps.milestones.get(f.parent_id) if f.parent_id else None
+        return f.parent_id, m.titulo if m else None, entidad_id, f.titulo
     if entidad_tipo == "tarea":
         t = maps.tasks.get(entidad_id)
         if not t:
             return None, None, None, None
-        f = maps.features.get(t.feature_id)
-        m = maps.milestones.get(f.milestone_id) if f else None
+        f = maps.features.get(t.parent_id) if t.parent_id else None
+        m = maps.milestones.get(f.parent_id) if f and f.parent_id else None
         return (
-            f.milestone_id if f else None,
-            m.nombre if m else None,
-            t.feature_id,
-            f.nombre if f else None,
+            f.parent_id if f else None,
+            m.titulo if m else None,
+            t.parent_id,
+            f.titulo if f else None,
         )
     if entidad_tipo == "feature_query":
         q = maps.queries.get(entidad_id)
         if not q:
             return None, None, None, None
-        f = maps.features.get(q.feature_id)
-        m = maps.milestones.get(f.milestone_id) if f else None
+        f = maps.features.get(q.parent_id) if q.parent_id else None
+        m = maps.milestones.get(f.parent_id) if f and f.parent_id else None
         return (
-            f.milestone_id if f else None,
-            m.nombre if m else None,
-            q.feature_id,
-            f.nombre if f else None,
+            f.parent_id if f else None,
+            m.titulo if m else None,
+            q.parent_id,
+            f.titulo if f else None,
         )
     if entidad_tipo == "feature_report":
         r = maps.reports.get(entidad_id)
         if not r:
             return None, None, None, None
-        f = maps.features.get(r.feature_id)
-        m = maps.milestones.get(f.milestone_id) if f else None
+        f = maps.features.get(r.parent_id) if r.parent_id else None
+        m = maps.milestones.get(f.parent_id) if f and f.parent_id else None
         return (
-            f.milestone_id if f else None,
-            m.nombre if m else None,
-            r.feature_id,
-            f.nombre if f else None,
+            f.parent_id if f else None,
+            m.titulo if m else None,
+            r.parent_id,
+            f.titulo if f else None,
         )
     return None, None, None, None
 
@@ -144,46 +137,19 @@ def _matches_scope(
 
 
 def _load_maps(db: Session, project_id: uuid.UUID) -> _EntityMaps:
-    milestones = {
-        m.id: m
-        for m in db.scalars(
-            select(Milestone).where(Milestone.project_id == project_id)
-        )
-    }
-    features = {
-        f.id: f
-        for f in db.scalars(
-            select(Feature).where(Feature.project_id == project_id)
-        )
-    }
-    tasks = {
-        t.id: t
-        for t in db.scalars(select(Task).where(Task.project_id == project_id))
-    }
-    feature_ids = list(features.keys())
-    queries: dict[uuid.UUID, FeatureQuery] = {}
-    reports: dict[uuid.UUID, FeatureReport] = {}
-    if feature_ids:
-        queries = {
-            q.id: q
-            for q in db.scalars(
-                select(FeatureQuery).where(FeatureQuery.feature_id.in_(feature_ids))
-            )
-        }
-        reports = {
-            r.id: r
-            for r in db.scalars(
-                select(FeatureReport).where(FeatureReport.feature_id.in_(feature_ids))
-            )
-        }
-    users: dict[uuid.UUID, User] = {}
+    all_rows = list_records(db, project_id)
+    milestones = {r.id: r for r in all_rows if r.record_type == "milestone"}
+    features = {r.id: r for r in all_rows if r.record_type == "feature"}
+    tasks = {r.id: r for r in all_rows if r.record_type == "task"}
+    queries = {r.id: r for r in all_rows if r.record_type == "query"}
+    reports = {r.id: r for r in all_rows if r.record_type == "report"}
     return _EntityMaps(
         milestones=milestones,
         features=features,
         tasks=tasks,
         queries=queries,
         reports=reports,
-        users=users,
+        users={},
     )
 
 
@@ -362,7 +328,7 @@ def build_project_timeline(
     if incluir_plan:
         milestone_rows = sorted(
             maps.milestones.values(),
-            key=lambda m: (m.orden, m.fecha_inicio),
+            key=lambda m: (m.orden, m.fecha_inicio or date.min),
         )
         for milestone in milestone_rows:
             if milestone_id is not None and milestone.id != milestone_id:
@@ -371,36 +337,36 @@ def build_project_timeline(
                 TimelinePlanItemRead(
                     id=milestone.id,
                     tipo="milestone",
-                    nombre=milestone.nombre,
+                    nombre=milestone.titulo,
                     fecha_inicio=milestone.fecha_inicio,
                     fecha_fin=milestone.fecha_fin,
                     estado=milestone.estado,
                     milestone_id=milestone.id,
-                    milestone_nombre=milestone.nombre,
+                    milestone_nombre=milestone.titulo,
                     orden=milestone.orden,
                 )
             )
         feature_rows = sorted(
             maps.features.values(),
-            key=lambda f: (f.fecha_inicio, f.nombre),
+            key=lambda f: (f.fecha_inicio, f.titulo),
         )
         for feature in feature_rows:
             if feature_id is not None and feature.id != feature_id:
                 continue
-            if milestone_id is not None and feature.milestone_id != milestone_id:
+            if milestone_id is not None and feature.parent_id != milestone_id:
                 continue
-            parent = maps.milestones.get(feature.milestone_id)
+            parent = maps.milestones.get(feature.parent_id) if feature.parent_id else None
             plan.append(
                 TimelinePlanItemRead(
                     id=feature.id,
                     tipo="feature",
-                    nombre=feature.nombre,
+                    nombre=feature.titulo,
                     fecha_inicio=feature.fecha_inicio,
                     fecha_fin=feature.fecha_fin,
                     estado=feature.estado,
-                    milestone_id=feature.milestone_id,
-                    milestone_nombre=parent.nombre if parent else None,
-                    feature_tipo=feature.tipo,
+                    milestone_id=feature.parent_id,
+                    milestone_nombre=parent.titulo if parent else None,
+                    feature_tipo=_data(feature).get("tipo", "desarrollo"),
                 )
             )
 

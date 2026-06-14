@@ -9,14 +9,73 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.domain.records.types import RecordRef
-from app.models.entities import Project
+from app.models.entities import Project, ProjectRecord
 from app.services.audit import record_audit_log
 from app.services.records.registry import registry
 from app.services.workflow.authorize import assert_any_capability, resolve_capability_keys
 from app.services.workflow.gates import check_transition_conditions, evaluate_gates
 from app.services.workflow.side_effects import run_side_effect
 from app.services.workflow.store import get_active_workflow
-from app.services.workflow.capabilities import get_effective_capabilities
+from app.services.workflow.capabilities import (
+    get_effective_capabilities,
+    get_user_role_assignments,
+)
+
+
+def _is_dynamic_target_transition(transition: dict[str, Any]) -> bool:
+    return bool(transition.get("dynamic_to")) or transition.get("to") == "*"
+
+
+def normalize_task_workflow_moves(defn: dict[str, Any]) -> dict[str, Any]:
+    """Quita move dinámico legacy cuando hay aristas explícitas (grafo kanban)."""
+    transitions = list(defn.get("transitions") or [])
+    explicit_moves = [
+        t
+        for t in transitions
+        if t.get("id") == "move"
+        and not _is_dynamic_target_transition(t)
+        and t.get("to")
+    ]
+    if not explicit_moves:
+        return defn
+    filtered = [
+        t
+        for t in transitions
+        if not (t.get("id") == "move" and _is_dynamic_target_transition(t))
+    ]
+    if len(filtered) == len(transitions):
+        return defn
+    return {**defn, "transitions": filtered}
+
+
+def _is_explicit_move_transition(transition: dict[str, Any]) -> bool:
+    return (
+        transition.get("id") == "move"
+        and not _is_dynamic_target_transition(transition)
+        and bool(transition.get("to"))
+    )
+
+
+def _actor_allowed_for_transition(
+    db: Session | None,
+    project: Project | None,
+    user_id: uuid.UUID | None,
+    transition: dict[str, Any],
+) -> bool:
+    if "allowed_role_slugs" in transition:
+        allowed = transition.get("allowed_role_slugs") or []
+        if not allowed:
+            return False
+    elif _is_explicit_move_transition(transition):
+        return False
+    else:
+        return True
+
+    if db is None or project is None or user_id is None:
+        return True
+    roles = get_user_role_assignments(db, project.id, user_id)
+    user_slugs = {r.slug for r in roles}
+    return bool(user_slugs.intersection(set(transition.get("allowed_role_slugs") or [])))
 
 
 def _find_transition(
@@ -24,8 +83,12 @@ def _find_transition(
     action_id: str,
     current_state: str,
     *,
+    db: Session | None = None,
     project: Project | None = None,
+    target_state: str | None = None,
+    actor_user_id: uuid.UUID | None = None,
 ) -> dict[str, Any] | None:
+    matches: list[dict[str, Any]] = []
     for t in workflow.get("transitions", []):
         if t.get("id") != action_id:
             continue
@@ -33,11 +96,28 @@ def _find_transition(
         if current_state not in from_states and "*" not in from_states:
             continue
         if project is not None and not check_transition_conditions(
-            project, t.get("conditions")
+            db, project, t.get("conditions")
         ):
             continue
-        return t
-    return None
+        if not _actor_allowed_for_transition(db, project, actor_user_id, t):
+            continue
+        matches.append(t)
+
+    if not matches:
+        return None
+
+    if target_state:
+        for t in matches:
+            if _is_dynamic_target_transition(t):
+                continue
+            if t.get("to") == target_state:
+                return t
+        for t in matches:
+            if _is_dynamic_target_transition(t):
+                return t
+        return None
+
+    return matches[0]
 
 
 def _state_meta(workflow: dict[str, Any], state_key: str) -> dict[str, Any]:
@@ -92,7 +172,15 @@ def apply_record_transition(
     if current is None:
         raise HTTPException(status_code=409, detail="Entidad sin estado")
 
-    transition = _find_transition(workflow, action_id, current, project=project)
+    transition = _find_transition(
+        workflow,
+        action_id,
+        current,
+        db=db,
+        project=project,
+        target_state=target_state,
+        actor_user_id=actor_user_id,
+    )
     if transition is None:
         raise HTTPException(
             status_code=409,
@@ -169,6 +257,31 @@ def apply_record_transition(
             side_effect_context=side_effect_context,
             entidad_tipo=entidad_tipo,
         )
+
+    if isinstance(entity, ProjectRecord):
+        from app.services.communication.engine import (
+            dispatch_state_entered_rules,
+            dispatch_transition_rules,
+        )
+
+        dispatch_transition_rules(
+            db,
+            project=project,
+            actor_user_id=actor_user_id,
+            record=entity,
+            action_id=action_id,
+            from_state=anterior,
+            to_state=nuevo,
+        )
+        dispatch_state_entered_rules(
+            db,
+            project=project,
+            actor_user_id=actor_user_id,
+            record=entity,
+            from_state=anterior,
+            to_state=nuevo,
+        )
+
     return nuevo
 
 
@@ -224,7 +337,9 @@ def get_available_transitions(
         from_states = t.get("from", [])
         if current not in from_states and "*" not in from_states:
             continue
-        if not check_transition_conditions(project, t.get("conditions")):
+        if not check_transition_conditions(db, project, t.get("conditions")):
+            continue
+        if not _actor_allowed_for_transition(db, project, user_id, t):
             continue
         required = resolve_capability_keys(t.get("required_capabilities", []))
         if required and not any(r in caps for r in required):

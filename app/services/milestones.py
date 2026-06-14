@@ -6,22 +6,24 @@ import uuid
 from datetime import date
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.entities import Feature, Milestone, Project
+from app.models.entities import Project, ProjectRecord
 from app.schemas.milestones import MilestoneUpdate
 from app.services.audit import record_audit_log
 from app.domain.capabilities import (
     SCOPE_MILESTONE_CANCEL,
-    SCOPE_MILESTONE_CREATE,
-    SCOPE_MILESTONE_DELETE,
     SCOPE_MILESTONE_EDIT,
-    SCOPE_MILESTONE_REORDER,
 )
 from app.services.access import assert_project_active
 from app.services.workflow.authorize import assert_capability
-from app.services.features import CANCELLABLE_TASK_STATES, cancel_feature_cascade
+from app.services.records.repository import (
+    _data,
+    list_children,
+    list_records,
+    update_record_fields,
+)
 
 WORK_ACTIVE_FEATURE = frozenset(
     {
@@ -34,30 +36,29 @@ WORK_ACTIVE_FEATURE = frozenset(
 TERMINAL_FEATURE = frozenset({"completado", "cancelado"})
 
 
-def _ordered_milestones(db: Session, project_id: uuid.UUID) -> list[Milestone]:
-    return list(
-        db.scalars(
-            select(Milestone)
-            .where(Milestone.project_id == project_id)
-            .order_by(Milestone.orden.asc(), Milestone.created_at.asc())
-        )
-    )
+def _feature_tipo(feature: ProjectRecord) -> str:
+    return _data(feature).get("tipo", "desarrollo")
+
+
+def _milestone_field_value(row: ProjectRecord, field: str):
+    if field == "nombre":
+        return row.titulo
+    return getattr(row, field)
+
+
+def _ordered_milestones(db: Session, project_id: uuid.UUID) -> list[ProjectRecord]:
+    return list_records(db, project_id, entity_type="milestone")
 
 
 def compact_milestone_ordenes(db: Session, project_id: uuid.UUID) -> None:
     """Renumerar hitos 1..N tras borrados o datos legacy con huecos."""
     for index, milestone in enumerate(_ordered_milestones(db, project_id), start=1):
         if milestone.orden != index:
-            milestone.orden = index
+            update_record_fields(db, milestone, orden=index)
 
 
 def next_milestone_orden(db: Session, project_id: uuid.UUID) -> int:
-    count = db.scalar(
-        select(func.count())
-        .select_from(Milestone)
-        .where(Milestone.project_id == project_id)
-    )
-    return int(count or 0) + 1
+    return len(list_records(db, project_id, entity_type="milestone")) + 1
 
 
 def reorder_milestone(
@@ -81,7 +82,7 @@ def reorder_milestone(
     for index, milestone in enumerate(remaining, start=1):
         if milestone.orden == index:
             continue
-        milestone.orden = index
+        update_record_fields(db, milestone, orden=index)
         if milestone.id == moving.id:
             record_audit_log(
                 db,
@@ -97,8 +98,8 @@ def reorder_milestone(
 
 
 def compute_milestone_target_state(
-    milestone: Milestone,
-    features: list[Feature],
+    milestone: ProjectRecord,
+    features: list[ProjectRecord],
     *,
     project: Project,
 ) -> str | None:
@@ -108,7 +109,9 @@ def compute_milestone_target_state(
         return None
 
     open_bugs = [
-        f for f in features if f.tipo == "bug" and f.estado not in TERMINAL_FEATURE
+        f
+        for f in features
+        if _feature_tipo(f) == "bug" and f.estado not in TERMINAL_FEATURE
     ]
     if open_bugs:
         nuevo = (
@@ -130,16 +133,14 @@ def compute_milestone_target_state(
 
 def sync_milestone_state(
     db: Session,
-    milestone: Milestone,
+    milestone: ProjectRecord,
     project: Project,
     *,
     actor_user_id: uuid.UUID,
 ) -> bool:
     from app.services.workflow.engine import apply_entity_transition
 
-    features = list(
-        db.scalars(select(Feature).where(Feature.milestone_id == milestone.id))
-    )
+    features = list_children(db, milestone.id, "feature")
     nuevo = compute_milestone_target_state(milestone, features, project=project)
     if nuevo is None:
         return False
@@ -158,7 +159,7 @@ def sync_milestone_state(
 
 def update_milestone(
     db: Session,
-    milestone: Milestone,
+    milestone: ProjectRecord,
     project: Project,
     payload: MilestoneUpdate,
 ) -> None:
@@ -191,11 +192,19 @@ def update_milestone(
             detail="El estado del hito se deriva del workflow; no se puede editar directamente",
         )
 
+    record_updates: dict = {}
     for field, nuevo in changes.items():
-        anterior = getattr(milestone, field)
+        anterior = _milestone_field_value(milestone, field)
         if anterior == nuevo:
             continue
-        setattr(milestone, field, nuevo)
+        if field == "nombre":
+            record_updates["titulo"] = nuevo
+        elif field == "descripcion":
+            record_updates["descripcion"] = nuevo
+        elif field == "fecha_inicio":
+            record_updates["fecha_inicio"] = nuevo
+        elif field == "fecha_fin":
+            record_updates["fecha_fin"] = nuevo
         accion = "estado_changed" if field == "estado" else "updated"
         record_audit_log(
             db,
@@ -208,6 +217,9 @@ def update_milestone(
             valor_anterior=str(anterior),
             valor_nuevo=str(nuevo),
         )
+
+    if record_updates:
+        update_record_fields(db, milestone, **record_updates)
 
     if new_orden is not None and new_orden != milestone.orden:
         reorder_milestone(
@@ -226,7 +238,7 @@ def update_milestone(
 
 def cancel_milestone_cascade(
     db: Session,
-    milestone: Milestone,
+    milestone: ProjectRecord,
     project: Project,
     *,
     actor_user_id: uuid.UUID,
@@ -260,15 +272,9 @@ def sync_milestone_states_for_project(
         return 0
 
     updated = 0
-    milestones = list(
-        db.scalars(
-            select(Milestone).where(
-                Milestone.project_id == project.id,
-                Milestone.estado != "cancelado",
-            )
-        )
-    )
-    for milestone in milestones:
+    for milestone in list_records(db, project.id, entity_type="milestone"):
+        if milestone.estado == "cancelado":
+            continue
         if sync_milestone_state(
             db, milestone, project, actor_user_id=actor_user_id
         ):

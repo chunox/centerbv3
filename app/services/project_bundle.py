@@ -6,35 +6,45 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.entities import (
-    AuditLog,
-    Feature,
-    FeatureQuery,
-    FeatureReport,
-    Milestone,
-    Project,
-    Task,
-    TaskDependency,
-)
+from app.models.entities import AuditLog, Project, ProjectRecordDependency, ProjectRecordType
 from app.services.audit_display import audit_logs_to_read
-from app.schemas.feature_queries import FeatureQueryRead
-from app.schemas.feature_reports import FeatureReportRead
 from app.schemas.project_bundle import (
     BundleFeatureQueryRead,
     BundleFeatureReportRead,
     FeatureContextEntryRead,
     ProjectBundleRead,
 )
-from app.schemas.features import FeatureRead
 from app.schemas.task_dependencies import TaskDependencyRead
-from app.schemas.milestones import MilestoneRead
 from app.schemas.projects import ProjectRead
-from app.schemas.tasks import TaskRead
 from app.services.access import resolve_audit_logs_for_user
+from app.services.records.mappers import (
+    record_to_feature_read,
+    record_to_milestone_read,
+    record_to_query_read,
+    record_to_read,
+    record_to_report_read,
+    record_to_task_read,
+)
+from app.services.records.repository import list_assignee_ids, list_dependencies, list_records
 
 _PENDING_QUERY_STATES = frozenset(
     {"borrador", "pendiente_aprobacion_pm", "esperando_pm", "respuesta_cliente"}
 )
+
+
+def _dependency_to_read(
+    dep: ProjectRecordDependency,
+    *,
+    created_by: UUID,
+) -> TaskDependencyRead:
+    return TaskDependencyRead(
+        id=dep.id,
+        project_id=dep.project_id,
+        task_id=dep.successor_id,
+        depends_on_task_id=dep.predecessor_id,
+        created_by=created_by,
+        created_at=dep.created_at,
+    )
 
 
 def build_project_bundle(
@@ -43,82 +53,73 @@ def build_project_bundle(
     *,
     viewer_user_id: UUID | None = None,
 ) -> ProjectBundleRead:
-    milestones = list(
-        db.scalars(
-            select(Milestone)
-            .where(Milestone.project_id == project.id)
-            .order_by(Milestone.orden, Milestone.fecha_inicio)
+    all_rows = list_records(db, project.id)
+    milestones = [r for r in all_rows if r.record_type == "milestone"]
+    features = [r for r in all_rows if r.record_type == "feature"]
+    tasks = [r for r in all_rows if r.record_type == "task"]
+    reports = [r for r in all_rows if r.record_type == "report"]
+    queries = [r for r in all_rows if r.record_type == "query"]
+    task_dependencies = list_dependencies(db, project.id)
+
+    record_types = [
+        rt.key
+        for rt in db.scalars(
+            select(ProjectRecordType)
+            .where(ProjectRecordType.project_id == project.id)
+            .order_by(ProjectRecordType.orden.asc())
         )
-    )
-    features = list(
-        db.scalars(select(Feature).where(Feature.project_id == project.id))
-    )
-    tasks = list(db.scalars(select(Task).where(Task.project_id == project.id)))
-    task_dependencies = list(
-        db.scalars(
-            select(TaskDependency).where(TaskDependency.project_id == project.id)
-        )
-    )
-    feature_ids = [f.id for f in features]
-    reports = (
-        list(
-            db.scalars(
-                select(FeatureReport).where(FeatureReport.feature_id.in_(feature_ids))
-            )
-        )
-        if feature_ids
-        else []
-    )
-    queries = (
-        list(
-            db.scalars(
-                select(FeatureQuery).where(FeatureQuery.feature_id.in_(feature_ids))
-            )
-        )
-        if feature_ids
-        else []
-    )
+    ]
+
+    records_by_type: dict[str, list] = {}
+    children_by_parent: dict[str, list] = {}
+    for row in all_rows:
+        read = record_to_read(row, list_assignee_ids(db, row))
+        records_by_type.setdefault(row.record_type, []).append(read)
+        if row.parent_id is not None:
+            children_by_parent.setdefault(str(row.parent_id), []).append(read)
 
     milestone_by_id = {m.id: m for m in milestones}
     feature_by_id = {f.id: f for f in features}
+    task_by_id = {t.id: t for t in tasks}
 
-    features_by_milestone: dict[str, list[FeatureRead]] = {}
+    features_by_milestone: dict[str, list] = {}
     feature_context: dict[str, FeatureContextEntryRead] = {}
     for feature in features:
-        mid = str(feature.milestone_id)
-        features_by_milestone.setdefault(mid, []).append(FeatureRead.model_validate(feature))
-        milestone = milestone_by_id.get(feature.milestone_id)
+        mid = str(feature.parent_id)
+        feature_read = record_to_feature_read(feature)
+        features_by_milestone.setdefault(mid, []).append(feature_read)
+        milestone = milestone_by_id.get(feature.parent_id)
         feature_context[str(feature.id)] = FeatureContextEntryRead(
-            milestone_id=feature.milestone_id,
-            milestone_nombre=milestone.nombre if milestone else "",
-            feature=FeatureRead.model_validate(feature),
+            milestone_id=feature.parent_id,
+            milestone_nombre=milestone.titulo if milestone else "",
+            feature=feature_read,
         )
 
-    tasks_by_feature: dict[str, list[TaskRead]] = {}
+    tasks_by_feature: dict[str, list] = {}
     for task in tasks:
-        tasks_by_feature.setdefault(str(task.feature_id), []).append(
-            TaskRead.model_validate(task)
+        tasks_by_feature.setdefault(str(task.parent_id), []).append(
+            record_to_task_read(task, list_assignee_ids(db, task))
         )
 
     enriched_reports: list[BundleFeatureReportRead] = []
     for report in reports:
-        feature = feature_by_id.get(report.feature_id)
+        feature = feature_by_id.get(report.parent_id)
         enriched_reports.append(
             BundleFeatureReportRead(
-                **FeatureReportRead.model_validate(report).model_dump(),
-                feature_nombre=feature.nombre if feature else None,
-                milestone_id=feature.milestone_id if feature else None,
+                **record_to_report_read(report).model_dump(),
+                feature_nombre=feature.titulo if feature else None,
+                milestone_id=feature.parent_id if feature else None,
             )
         )
 
     enriched_queries: list[BundleFeatureQueryRead] = []
     for query in queries:
-        feature = feature_by_id.get(query.feature_id)
+        feature = feature_by_id.get(query.parent_id)
         enriched_queries.append(
             BundleFeatureQueryRead(
-                **FeatureQueryRead.model_validate(query).model_dump(),
-                feature_nombre=feature.nombre if feature else None,
-                milestone_id=feature.milestone_id if feature else None,
+                **record_to_query_read(query).model_dump(),
+                feature_nombre=feature.titulo if feature else None,
+                milestone_id=feature.parent_id if feature else None,
             )
         )
 
@@ -144,7 +145,10 @@ def build_project_bundle(
 
     return ProjectBundleRead(
         project=ProjectRead.model_validate(project),
-        milestones=[MilestoneRead.model_validate(m) for m in milestones],
+        record_types=record_types,
+        records_by_type=records_by_type,
+        children_by_parent=children_by_parent,
+        milestones=[record_to_milestone_read(m) for m in milestones],
         features_by_milestone=features_by_milestone,
         tasks_by_feature=tasks_by_feature,
         feature_context=feature_context,
@@ -153,6 +157,12 @@ def build_project_bundle(
         audit_logs=audit_logs_to_read(db, audit_logs),
         inbox_action_count=inbox_action_count,
         task_dependencies=[
-            TaskDependencyRead.model_validate(d) for d in task_dependencies
+            _dependency_to_read(
+                dep,
+                created_by=task_by_id[dep.successor_id].created_by
+                if dep.successor_id in task_by_id
+                else dep.id,
+            )
+            for dep in task_dependencies
         ],
     )

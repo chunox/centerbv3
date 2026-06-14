@@ -12,7 +12,9 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.domain.project_templates import PROJECT_TEMPLATES
 from app.main import app
-from app.models.entities import Feature, Milestone, Project, ProjectMember, ProjectRole, Task, User
+from app.models.entities import Project, ProjectMember, ProjectRole, User
+from app.services.records.repository import create_record
+from tests.record_helpers import create_feature_record, create_milestone_record
 from tests.org_helpers import add_member_with_slug, create_organization, create_user
 
 
@@ -64,35 +66,40 @@ def test_list_project_templates(api_client: TestClient):
 
 
 @pytest.mark.parametrize(
-    "template_slug,expected_roles,expected_tipo,expected_creator",
+    "template_slug,expected_roles,expected_profile,expected_tipo,expected_creator",
     [
         (
             "t1_cliente_clasico",
             {"pm", "tech_lead", "dev", "qa", "cliente"},
+            "with_client",
             "con_cliente",
             "pm",
         ),
         (
             "t2_cliente_pm_tecnico",
             {"pm_tecnico", "dev", "qa", "cliente"},
+            "with_client",
             "con_cliente",
             "pm_tecnico",
         ),
         (
             "t3_interno_clasico",
             {"pm", "tech_lead", "dev", "qa"},
+            "internal",
             "interno",
             "pm",
         ),
         (
             "t4_interno_pm_tecnico",
             {"pm_tecnico", "dev", "qa"},
+            "internal",
             "interno",
             "pm_tecnico",
         ),
         (
             "t5_freestyle",
             {"pm", "pm_tecnico", "dev", "tech_lead", "qa", "cliente"},
+            "flexible",
             "freestyle",
             "pm",
         ),
@@ -103,6 +110,7 @@ def test_create_project_per_template(
     db_session: Session,
     template_slug: str,
     expected_roles: set[str],
+    expected_profile: str,
     expected_tipo: str,
     expected_creator: str,
 ):
@@ -116,6 +124,7 @@ def test_create_project_per_template(
     )
     assert response.status_code == 201, response.text
     body = response.json()
+    assert body["profile_slug"] == expected_profile
     assert body["tipo"] == expected_tipo
     assert body["template_slug"] == template_slug
     project_id = UUID(body["id"])
@@ -175,22 +184,25 @@ def test_tech_lead_can_create_milestone(api_client: TestClient, db_session: Sess
     db_session.commit()
 
     response = api_client.post(
-        f"/api/v1/projects/{project_id}/milestones",
+        f"/api/v1/projects/{project_id}/records",
         json={
-            "nombre": "Hito TL",
-            "tipo": "entrega",
+            "actor_user_id": str(tl.id),
+            "record_type": "milestone",
+            "titulo": "Hito TL",
+            "data": {"tipo": "entrega"},
             "orden": 1,
             "fecha_inicio": "2026-01-01",
             "fecha_fin": "2026-06-30",
-            "created_by": str(tl.id),
         },
     )
     assert response.status_code == 201
 
 
-def test_pm_blocked_on_task_move_pm_tecnico_allowed(
+def test_pm_task_move_requires_kanban_capability(
     db_session: Session, api_client: TestClient
 ):
+    from app.domain.capabilities import KANBAN_TASK_MOVE
+    from app.services.role_capabilities import ensure_role_capabilities
     from tests.org_helpers import create_project_for_org
 
     pm_id = uuid4()
@@ -214,51 +226,56 @@ def test_pm_blocked_on_task_move_pm_tecnico_allowed(
         template_slug="t5_freestyle",
     )
     add_member_with_slug(db_session, project, pm_tecnico_id, "pm_tecnico")
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
+    milestone = create_milestone_record(db_session, project, created_by=pm_id)
+    feature = create_feature_record(
+        db_session,
+        project,
+        milestone,
         created_by=pm_id,
-    )
-    db_session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
         nombre="F1",
-        tipo="desarrollo",
-        prioridad="media",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        estado="pendiente",
-        created_by=pm_id,
+        with_default_task=False,
     )
-    db_session.add(feature)
-    task = Task(
-        id=uuid4(),
-        feature_id=feature.id,
-        project_id=project.id,
+    task = create_record(
+        db_session,
+        project,
+        entity_type="task",
         titulo="T1",
-        estado="backlog",
         created_by=pm_tecnico_id,
+        parent_id=feature.id,
+        estado="backlog",
     )
-    db_session.add(task)
     db_session.commit()
 
-    pm_move = api_client.patch(
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}"
-        f"/features/{feature.id}/tasks/{task.id}/move",
-        json={"actor_user_id": str(pm_id), "estado": "in_progress"},
+    pm_move = api_client.post(
+        f"/api/v1/projects/{project.id}/records/{task.id}/transition",
+        json={
+            "actor_user_id": str(pm_id),
+            "action_id": "move",
+            "target_state": "in_progress",
+        },
     )
     assert pm_move.status_code == 403
+    assert "kanban.task.move" in pm_move.json()["detail"]
 
-    pmt_move = api_client.patch(
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}"
-        f"/features/{feature.id}/tasks/{task.id}/move",
-        json={"actor_user_id": str(pm_tecnico_id), "estado": "in_progress"},
+    ensure_role_capabilities(db_session, project.id, "pm", [KANBAN_TASK_MOVE])
+    db_session.commit()
+
+    pm_move_ok = api_client.post(
+        f"/api/v1/projects/{project.id}/records/{task.id}/transition",
+        json={
+            "actor_user_id": str(pm_id),
+            "action_id": "move",
+            "target_state": "in_progress",
+        },
+    )
+    assert pm_move_ok.status_code == 200
+
+    pmt_move = api_client.post(
+        f"/api/v1/projects/{project.id}/records/{task.id}/transition",
+        json={
+            "actor_user_id": str(pm_tecnico_id),
+            "action_id": "move",
+            "target_state": "ready_for_test",
+        },
     )
     assert pmt_move.status_code == 200

@@ -12,8 +12,9 @@ from sqlalchemy.pool import StaticPool
 from app.config import settings
 from app.database import Base, get_db
 from app.main import app
-from app.models.entities import Feature, Milestone, Project, ProjectMember, User
-from tests.org_helpers import add_member_with_slug, create_organization
+from app.models.entities import User
+from tests.org_helpers import create_organization, create_project_for_org
+from tests.record_helpers import create_feature_record, create_milestone_record
 
 
 def _session():
@@ -32,44 +33,15 @@ def _seed(session: Session):
         User(id=pm_id, nombre="PM", email="pm@up.test", password_hash="x")
     )
     org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="P",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
+    project = create_project_for_org(session, pm_id, org, nombre="P")
+    milestone = create_milestone_record(session, project, created_by=pm_id)
+    feature = create_feature_record(
+        session,
+        project,
+        milestone,
         created_by=pm_id,
+        with_default_task=False,
     )
-    session.add(project)
-    session.add(
-    add_member_with_slug(session, project, pm_id, 'pm')
-    )
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        estado="pendiente",
-        created_by=pm_id,
-    )
-    session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
-        estado="pendiente",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
-    )
-    session.add(feature)
     session.commit()
     return feature, pm_id
 
@@ -155,8 +127,10 @@ def test_url_externa_no_descarga_local():
             },
         )
         assert created.status_code == 201
+        att_id = created.json()["id"]
+
         download = client.get(
-            f"/api/v1/attachments/{created.json()['id']}/file",
+            f"/api/v1/attachments/{att_id}/file",
             params={"viewer_user_id": str(pm_id)},
         )
         assert download.status_code == 404

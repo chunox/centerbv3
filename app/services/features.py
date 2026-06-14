@@ -3,20 +3,36 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import HTTPException
-from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
-from app.models.entities import Feature, Milestone, Project, ProjectMember, Task
-from app.schemas.features import FeatureUpdate
-from app.services.audit import record_audit_log
 from app.domain.capabilities import SCOPE_FEATURE_EDIT, SCOPE_FEATURE_MIGRATE
-from app.services.feature_queries import assert_project_active
-from app.services.workflow.authorize import assert_capability
+from app.domain.records.types import RecordRef
+from app.models.entities import Project, ProjectRecord
+from app.schemas.features import FeatureUpdate
+from app.services.access import assert_project_active
+from app.services.audit import record_audit_log
 from app.services.notifications import create_notification
+from app.services.records.repository import (
+    _data,
+    create_record,
+    get_field,
+    list_children,
+    set_field,
+    update_record_fields,
+)
+from app.services.workflow.authorize import assert_capability
+from app.services.workflow.categories import (
+    is_task_cancel_state,
+    resolve_workflow,
+    task_backlog_state_keys,
+    task_cancellable_state_keys,
+    task_cancel_state_keys,
+    task_done_state_keys,
+    task_test_state_keys,
+)
 
 FeatureAction = Literal[
     "pasar_a_uat",
@@ -65,54 +81,85 @@ BLOCKED_WHEN_BLOQUEADA: frozenset[FeatureAction] = frozenset(
 )
 
 
-def load_active_tasks(db: Session, feature_id: uuid.UUID) -> list[Task]:
-    return list(
-        db.scalars(
-            select(Task)
-            .where(Task.feature_id == feature_id, Task.estado != "cancel")
-            .order_by(Task.created_at.asc())
-        )
-    )
+def _feature_bloqueada(feature: ProjectRecord) -> bool:
+    return bool(_data(feature).get("bloqueada", False))
 
 
-def compute_dev_feature_estado(feature: Feature, tasks: list[Task]) -> str | None:
+def _feature_tipo(feature: ProjectRecord) -> str:
+    return str(_data(feature).get("tipo", "desarrollo"))
+
+
+def load_active_tasks(
+    db: Session,
+    feature_id: uuid.UUID,
+    *,
+    task_workflow: dict | None = None,
+) -> list[ProjectRecord]:
+    tasks = list_children(db, feature_id, "task")
+    wf = task_workflow or {}
+    active = [t for t in tasks if not is_task_cancel_state(wf, t.estado)]
+    return sorted(active, key=lambda t: t.created_at)
+
+
+def compute_dev_feature_estado(
+    feature: ProjectRecord,
+    tasks: list[ProjectRecord],
+    *,
+    task_workflow: dict | None = None,
+) -> str | None:
     """Nuevo estado dev o None si no debe cambiar (§5.4 / §5.5)."""
+    wf = task_workflow or {}
+    cancel_keys = task_cancel_state_keys(wf)
+    backlog_keys = task_backlog_state_keys(wf)
+    test_keys = task_test_state_keys(wf)
+    done_keys = task_done_state_keys(wf)
+    allowed_uat = test_keys | done_keys
+
     if feature.estado in FROZEN_DEV_SYNC:
         return None
-    if feature.bloqueada:
+    if _feature_bloqueada(feature):
         return None
 
-    active = [t for t in tasks if t.estado != "cancel"]
+    active = [t for t in tasks if t.estado not in cancel_keys]
     if not active:
         return "pendiente"
-    if all(t.estado == "backlog" for t in active):
+    if all(t.estado in backlog_keys for t in active):
         return "pendiente"
 
     if feature.estado == "uat":
-        if any(t.estado not in ("ready_for_test", "completed") for t in active):
+        if any(t.estado not in allowed_uat for t in active):
             return "en_progreso"
         return None
 
     return "en_progreso"
 
 
-def uat_gate_status(feature: Feature, tasks: list[Task]) -> dict:
-    active = [t for t in tasks if t.estado != "cancel"]
+def uat_gate_status(
+    feature: ProjectRecord,
+    tasks: list[ProjectRecord],
+    *,
+    task_workflow: dict | None = None,
+) -> dict[str, Any]:
+    wf = task_workflow or {}
+    cancel_keys = task_cancel_state_keys(wf)
+    test_keys = task_test_state_keys(wf)
+    active = [t for t in tasks if t.estado not in cancel_keys]
     reasons: list[str] = []
     if feature.estado != "en_progreso":
         reasons.append("La feature debe estar en en_progreso")
-    if feature.bloqueada:
+    if _feature_bloqueada(feature):
         reasons.append("La feature está bloqueada por consultas activas")
     if not active:
         reasons.append("Se requiere al menos una tarea activa")
-    elif not all(t.estado == "ready_for_test" for t in active):
-        reasons.append("Todas las tareas activas deben estar en ready_for_test")
+    elif not all(t.estado in test_keys for t in active):
+        test_label = ", ".join(sorted(test_keys)) or "test"
+        reasons.append(f"Todas las tareas activas deben estar en {test_label}")
 
     return {
         "can_pass_to_uat": len(reasons) == 0,
         "active_tasks": len(active),
-        "ready_for_test_tasks": sum(1 for t in active if t.estado == "ready_for_test"),
-        "bloqueada": feature.bloqueada,
+        "ready_for_test_tasks": sum(1 for t in active if t.estado in test_keys),
+        "bloqueada": _feature_bloqueada(feature),
         "estado": feature.estado,
         "reasons": reasons,
     }
@@ -120,7 +167,7 @@ def uat_gate_status(feature: Feature, tasks: list[Task]) -> dict:
 
 def _set_feature_estado(
     db: Session,
-    feature: Feature,
+    feature: ProjectRecord,
     project: Project,
     *,
     nuevo: str,
@@ -130,7 +177,7 @@ def _set_feature_estado(
     anterior = feature.estado
     if anterior == nuevo:
         return
-    feature.estado = nuevo
+    update_record_fields(db, feature, estado=nuevo)
     record_audit_log(
         db,
         project_id=project.id,
@@ -177,27 +224,27 @@ def _notify_role(
 
 
 def ensure_default_task(
-    db: Session, feature: Feature, *, created_by: uuid.UUID
-) -> Task | None:
-    has_tasks = db.scalar(
-        select(exists().where(Task.feature_id == feature.id))
-    )
-    if has_tasks:
+    db: Session, feature: ProjectRecord, *, created_by: uuid.UUID
+) -> ProjectRecord | None:
+    if list_children(db, feature.id, "task"):
         return None
-    task = Task(
-        feature_id=feature.id,
-        project_id=feature.project_id,
+    project = db.get(Project, feature.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    return create_record(
+        db,
+        project,
+        entity_type="task",
         titulo="Tarea inicial",
-        estado="backlog",
         created_by=created_by,
+        parent_id=feature.id,
+        estado="backlog",
     )
-    db.add(task)
-    return task
 
 
 def sync_feature_from_tasks(
     db: Session,
-    feature: Feature,
+    feature: ProjectRecord,
     project: Project,
     *,
     actor_user_id: uuid.UUID,
@@ -206,11 +253,19 @@ def sync_feature_from_tasks(
     assert_project_active(project)
     if feature.estado in FROZEN_DEV_SYNC:
         return False
-    if feature.bloqueada:
+    if _feature_bloqueada(feature):
         return False
 
-    tasks = load_active_tasks(db, feature.id)
-    nuevo = compute_dev_feature_estado(feature, tasks)
+    tasks = load_active_tasks(
+        db,
+        feature.id,
+        task_workflow=resolve_workflow(db, project.id, "task", project.profile_slug),
+    )
+    nuevo = compute_dev_feature_estado(
+        feature,
+        tasks,
+        task_workflow=resolve_workflow(db, project.id, "task", project.profile_slug),
+    )
     if nuevo is None or nuevo == feature.estado:
         return False
 
@@ -226,17 +281,19 @@ def sync_feature_from_tasks(
             tipo="estado_changed",
             entidad_id=feature.id,
         )
-    milestone = db.get(Milestone, feature.milestone_id)
-    if milestone:
-        from app.services.milestones import sync_milestone_state
+    milestone_id = feature.parent_id
+    if milestone_id:
+        milestone = db.get(ProjectRecord, milestone_id)
+        if milestone is not None:
+            from app.services.milestones import sync_milestone_state
 
-        sync_milestone_state(db, milestone, project, actor_user_id=actor_user_id)
+            sync_milestone_state(db, milestone, project, actor_user_id=actor_user_id)
     return True
 
 
 def cancel_feature_cascade(
     db: Session,
-    feature: Feature,
+    feature: ProjectRecord,
     project: Project,
     *,
     actor_user_id: uuid.UUID,
@@ -258,10 +315,17 @@ def cancel_feature_cascade(
             entidad_id=feature.id,
             accion="cancelada",
         )
-    for task in db.scalars(select(Task).where(Task.feature_id == feature.id)):
-        if task.estado in CANCELLABLE_TASK_STATES:
+    cancellable = task_cancellable_state_keys(
+        resolve_workflow(db, project.id, "task", project.profile_slug)
+    )
+    cancel_targets = task_cancel_state_keys(
+        resolve_workflow(db, project.id, "task", project.profile_slug)
+    )
+    cancel_to = next(iter(cancel_targets), "cancel")
+    for task in list_children(db, feature.id, "task"):
+        if task.estado in cancellable:
             prev = task.estado
-            task.estado = "cancel"
+            update_record_fields(db, task, estado=cancel_to)
             record_audit_log(
                 db,
                 project_id=project.id,
@@ -273,59 +337,68 @@ def cancel_feature_cascade(
                 valor_anterior=prev,
                 valor_nuevo="cancel (cascada_feature)",
             )
-    milestone = db.get(Milestone, feature.milestone_id)
-    if milestone:
-        from app.services.milestones import sync_milestone_state
+    milestone_id = feature.parent_id
+    if milestone_id:
+        milestone = db.get(ProjectRecord, milestone_id)
+        if milestone is not None:
+            from app.services.milestones import sync_milestone_state
 
-        sync_milestone_state(db, milestone, project, actor_user_id=actor_user_id)
+            sync_milestone_state(db, milestone, project, actor_user_id=actor_user_id)
 
 
 def apply_feature_action(
     db: Session,
-    feature: Feature,
+    feature: ProjectRecord,
     project: Project,
     *,
     action: FeatureAction,
     actor_user_id: uuid.UUID,
     form_data: dict | None = None,
 ) -> None:
-    from app.services.workflow.engine import apply_entity_transition
+    from app.services.workflow.engine import apply_record_transition
 
     assert_project_active(project)
-    if action in BLOCKED_WHEN_BLOQUEADA and feature.bloqueada:
+    if action in BLOCKED_WHEN_BLOQUEADA and _feature_bloqueada(feature):
         raise HTTPException(
             status_code=409,
             detail="La feature está bloqueada por consultas activas",
         )
 
-    apply_entity_transition(
+    apply_record_transition(
         db,
         project,
         feature,
-        entity_type="feature",
+        record_ref=RecordRef(
+            id=feature.id,
+            record_type="feature",
+            storage="generic",
+            project_id=project.id,
+        ),
         action_id=action,
         actor_user_id=actor_user_id,
         form_data=form_data,
     )
-    milestone = db.get(Milestone, feature.milestone_id)
-    if milestone:
-        from app.services.milestones import sync_milestone_state
+    milestone_id = feature.parent_id
+    if milestone_id:
+        milestone = db.get(ProjectRecord, milestone_id)
+        if milestone is not None:
+            from app.services.milestones import sync_milestone_state
 
-        sync_milestone_state(db, milestone, project, actor_user_id=actor_user_id)
+            sync_milestone_state(db, milestone, project, actor_user_id=actor_user_id)
 
 
 def _rework_from_pm_cliente(
     db: Session,
-    feature: Feature,
+    feature: ProjectRecord,
     project: Project,
-    tasks: list[Task],
+    tasks: list[ProjectRecord],
     *,
     actor_user_id: uuid.UUID,
 ) -> None:
     for task in tasks:
         if task.estado == "completed":
             prev = task.estado
-            task.estado = "in_progress"
+            update_record_fields(db, task, estado="in_progress")
             record_audit_log(
                 db,
                 project_id=project.id,
@@ -352,7 +425,7 @@ def _rework_from_pm_cliente(
 
 def update_feature(
     db: Session,
-    feature: Feature,
+    feature: ProjectRecord,
     project: Project,
     payload: FeatureUpdate,
 ) -> None:
@@ -371,8 +444,8 @@ def update_feature(
             detail="fecha_fin debe ser mayor o igual que fecha_inicio",
         )
 
-    if feature.tipo == "mejora":
-        duracion = changes.get("duracion_estimada", feature.duracion_estimada)
+    if _feature_tipo(feature) == "mejora":
+        duracion = changes.get("duracion_estimada", get_field(feature, "duracion_estimada"))
         if duracion is None:
             raise HTTPException(
                 status_code=422,
@@ -380,36 +453,86 @@ def update_feature(
             )
 
     for field, nuevo in changes.items():
-        anterior = getattr(feature, field)
-        if anterior == nuevo:
-            continue
-        setattr(feature, field, nuevo)
-        record_audit_log(
-            db,
-            project_id=project.id,
-            user_id=payload.actor_user_id,
-            entidad_tipo="feature",
-            entidad_id=feature.id,
-            accion="updated",
-            campo=field,
-            valor_anterior=str(anterior) if anterior is not None else None,
-            valor_nuevo=str(nuevo) if nuevo is not None else None,
-        )
+        if field == "nombre":
+            anterior = feature.titulo
+            if anterior == nuevo:
+                continue
+            update_record_fields(db, feature, titulo=nuevo)
+            record_audit_log(
+                db,
+                project_id=project.id,
+                user_id=payload.actor_user_id,
+                entidad_tipo="feature",
+                entidad_id=feature.id,
+                accion="updated",
+                campo=field,
+                valor_anterior=str(anterior) if anterior is not None else None,
+                valor_nuevo=str(nuevo) if nuevo is not None else None,
+            )
+        elif field == "descripcion":
+            anterior = feature.descripcion
+            if anterior == nuevo:
+                continue
+            update_record_fields(db, feature, descripcion=nuevo)
+            record_audit_log(
+                db,
+                project_id=project.id,
+                user_id=payload.actor_user_id,
+                entidad_tipo="feature",
+                entidad_id=feature.id,
+                accion="updated",
+                campo=field,
+                valor_anterior=str(anterior) if anterior is not None else None,
+                valor_nuevo=str(nuevo) if nuevo is not None else None,
+            )
+        elif field in ("fecha_inicio", "fecha_fin"):
+            anterior = getattr(feature, field)
+            if anterior == nuevo:
+                continue
+            update_record_fields(db, feature, **{field: nuevo})
+            record_audit_log(
+                db,
+                project_id=project.id,
+                user_id=payload.actor_user_id,
+                entidad_tipo="feature",
+                entidad_id=feature.id,
+                accion="updated",
+                campo=field,
+                valor_anterior=str(anterior) if anterior is not None else None,
+                valor_nuevo=str(nuevo) if nuevo is not None else None,
+            )
+        elif field in ("prioridad", "duracion_estimada"):
+            anterior = get_field(feature, field)
+            if anterior == nuevo:
+                continue
+            set_field(feature, field, nuevo)
+            db.flush()
+            record_audit_log(
+                db,
+                project_id=project.id,
+                user_id=payload.actor_user_id,
+                entidad_tipo="feature",
+                entidad_id=feature.id,
+                accion="updated",
+                campo=field,
+                valor_anterior=str(anterior) if anterior is not None else None,
+                valor_nuevo=str(nuevo) if nuevo is not None else None,
+            )
 
 
 def migrate_feature(
     db: Session,
-    feature: Feature,
+    feature: ProjectRecord,
     project: Project,
-    source_milestone: Milestone,
-    target_milestone: Milestone,
+    source_milestone: ProjectRecord,
+    target_milestone: ProjectRecord,
     *,
     actor_user_id: uuid.UUID,
 ) -> None:
     assert_project_active(project)
     assert_capability(db, project.id, actor_user_id, SCOPE_FEATURE_MIGRATE)
 
-    if feature.tipo in ("bug", "mejora"):
+    if _feature_tipo(feature) in ("bug", "mejora"):
         raise HTTPException(
             status_code=409,
             detail="Las features bug/mejora no se pueden migrar entre hitos",
@@ -426,7 +549,8 @@ def migrate_feature(
         )
 
     anterior = str(source_milestone.id)
-    feature.milestone_id = target_milestone.id
+    feature.parent_id = target_milestone.id
+    db.flush()
     record_audit_log(
         db,
         project_id=project.id,

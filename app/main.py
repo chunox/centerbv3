@@ -28,10 +28,12 @@ run_migrations()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     from app.database import SessionLocal
+    from app.services.blocks import ensure_block_catalog
     from app.services.packs import ensure_system_packs
 
     with SessionLocal() as db:
         ensure_system_packs(db)
+        ensure_block_catalog(db)
         db.commit()
     start_scheduler()
     yield

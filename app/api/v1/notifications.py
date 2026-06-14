@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
-from app.models.entities import Feature, FeatureQuery, FeatureReport, Notification, Task, User
+from app.models.entities import Notification, User
 from app.schemas.notifications import (
     NotificationCreate,
     NotificationRead,
@@ -17,6 +17,7 @@ from app.services.notifications import (
     create_notification,
     notification_display,
 )
+from app.services.record_validation import AUDIT_RECORD_TYPE, assert_project_record
 
 router = APIRouter(tags=["notifications"])
 
@@ -34,31 +35,16 @@ def _validate_entidad_in_project(
     project_id: UUID,
     db: Session,
 ) -> None:
-    if entidad_tipo == "feature":
-        row = db.get(Feature, entidad_id)
-        if not row or row.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Feature no encontrada en el proyecto")
+    record_type = AUDIT_RECORD_TYPE.get(entidad_tipo)
+    if record_type is None:
         return
-    if entidad_tipo == "tarea":
-        row = db.get(Task, entidad_id)
-        if not row or row.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Tarea no encontrada en el proyecto")
-        return
-    if entidad_tipo == "feature_query":
-        row = db.get(FeatureQuery, entidad_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="Consulta no encontrada")
-        feature = db.get(Feature, row.feature_id)
-        if not feature or feature.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Consulta no pertenece al proyecto")
-        return
-    if entidad_tipo == "feature_report":
-        row = db.get(FeatureReport, entidad_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="Reporte no encontrado")
-        feature = db.get(Feature, row.feature_id)
-        if not feature or feature.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Reporte no pertenece al proyecto")
+    assert_project_record(
+        db,
+        record_id=entidad_id,
+        project_id=project_id,
+        record_type=record_type,
+        detail=f"Entidad {entidad_tipo} no encontrada en el proyecto",
+    )
 
 
 @router.get("/{user_id}/notifications", response_model=list[NotificationRead])

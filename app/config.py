@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     upload_max_bytes: int = 25 * 1024 * 1024
 
     demo_mode: bool = True
+    communication_rules_only: bool = True
     jwt_secret: str = "center-v3-dev-secret-change-in-prod"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7

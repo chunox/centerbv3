@@ -8,29 +8,48 @@ from typing import Literal
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.entities import Feature, Project, Task, TaskAssignee, User
+from app.models.entities import Project, ProjectRecord, User
 from app.services.audit import record_audit_log
 from app.schemas.tasks import TaskSubtaskCreate, TaskUpdate
-from app.services.access import (
-    assert_member_has_role,
-    assert_not_pm_for_task_ops,
-    assert_project_active,
-)
+from app.services.access import assert_project_active
 from app.services.features import sync_feature_from_tasks
 from app.services.notifications import create_notification
-from app.services.task_dependencies import (
-    assert_move_allowed_by_dependencies,
-    create_dependency,
+from app.services.records.repository import (
+    _data,
+    create_record,
+    list_assignee_ids,
+    sync_assignees,
+    update_record_fields,
 )
+from app.services.records import generic_store
+from app.services.audit import record_audit_log
+from app.services.task_dependencies import assert_move_allowed_by_dependencies
 
-TaskEstado = Literal[
-    "backlog",
-    "to_do",
-    "in_progress",
-    "ready_for_test",
-    "completed",
-    "cancel",
-]
+TaskEstado = str
+
+
+def _task_state_keys(db: Session, project: Project) -> set[str]:
+    from app.services.workflow.categories import resolve_workflow
+
+    wf = resolve_workflow(db, project.id, "task", project.profile_slug)
+    return {
+        s["key"]
+        for s in wf.get("states", [])
+        if isinstance(s, dict) and s.get("key")
+    }
+
+
+def _assert_valid_task_state(db: Session, project: Project, state_key: str) -> None:
+    keys = _task_state_keys(db, project)
+    if keys and state_key not in keys:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Estado de tarea inválido: {state_key}",
+        )
+
+
+def _feature_bloqueada(feature: ProjectRecord) -> bool:
+    return bool(_data(feature).get("bloqueada", False))
 
 
 def _validate_assignee_ids(db: Session, user_ids: list[uuid.UUID]) -> None:
@@ -44,7 +63,7 @@ def _validate_assignee_ids(db: Session, user_ids: list[uuid.UUID]) -> None:
 
 def sync_task_assignees(
     db: Session,
-    task: Task,
+    task: ProjectRecord,
     project: Project,
     *,
     actor_user_id: uuid.UUID,
@@ -54,19 +73,13 @@ def sync_task_assignees(
     unique_ids = list(dict.fromkeys(user_ids))
     _validate_assignee_ids(db, unique_ids)
 
-    prev_ids = set(task.asignado_ids)
+    prev_ids = set(list_assignee_ids(db, task))
     new_ids = set(unique_ids)
 
     if prev_ids == new_ids:
         return
 
-    for ta in list(task.task_assignees):
-        if ta.user_id not in new_ids:
-            db.delete(ta)
-    existing = {ta.user_id for ta in task.task_assignees}
-    for user_id in unique_ids:
-        if user_id not in existing:
-            db.add(TaskAssignee(task_id=task.id, user_id=user_id))
+    sync_assignees(db, task, unique_ids)
 
     record_audit_log(
         db,
@@ -94,32 +107,35 @@ def sync_task_assignees(
 
 def move_task(
     db: Session,
-    task: Task,
-    feature: Feature,
+    task: ProjectRecord,
+    feature: ProjectRecord,
     project: Project,
     *,
-    nuevo_estado: TaskEstado,
+    nuevo_estado: str,
     actor_user_id: uuid.UUID,
 ) -> None:
     from app.domain.capabilities import KANBAN_TASK_MOVE
     from app.services.workflow.authorize import assert_capability
+    from app.services.workflow.categories import is_task_cancel_state, resolve_workflow
     from app.services.workflow.engine import apply_entity_transition
 
     assert_project_active(project)
-    assert_not_pm_for_task_ops(db, project.id, actor_user_id)
+    _assert_valid_task_state(db, project, nuevo_estado)
 
-    if feature.bloqueada and nuevo_estado != "cancel":
+    task_wf = resolve_workflow(db, project.id, "task", project.profile_slug)
+
+    if _feature_bloqueada(feature) and not is_task_cancel_state(task_wf, nuevo_estado):
         raise HTTPException(
             status_code=409,
             detail="La feature está bloqueada; no se pueden mover tareas",
         )
     if task.estado == nuevo_estado:
         return
-    if task.estado == "cancel":
+    if is_task_cancel_state(task_wf, task.estado):
         raise HTTPException(status_code=409, detail="La tarea está cancelada")
     assert_move_allowed_by_dependencies(db, task.id, nuevo_estado)
 
-    if nuevo_estado == "cancel":
+    if is_task_cancel_state(task_wf, nuevo_estado):
         from app.domain.capabilities import KANBAN_TASK_CANCEL
 
         assert_capability(db, project.id, actor_user_id, KANBAN_TASK_CANCEL)
@@ -146,7 +162,7 @@ def move_task(
     sync_feature_from_tasks(
         db, feature, project, actor_user_id=actor_user_id
     )
-    for assignee_id in task.asignado_ids:
+    for assignee_id in list_assignee_ids(db, task):
         create_notification(
             db,
             user_id=assignee_id,
@@ -159,13 +175,12 @@ def move_task(
 
 def update_task(
     db: Session,
-    task: Task,
-    feature: Feature,
+    task: ProjectRecord,
+    feature: ProjectRecord,
     project: Project,
     payload: TaskUpdate,
 ) -> None:
     assert_project_active(project)
-    assert_not_pm_for_task_ops(db, project.id, payload.actor_user_id)
     from app.domain.capabilities import KANBAN_TASK_EDIT
     from app.services.workflow.authorize import assert_capability
 
@@ -186,11 +201,13 @@ def update_task(
             user_ids=assignee_ids,
         )
 
+    field_map = {"titulo": "titulo", "descripcion": "descripcion"}
     for field, nuevo in changes.items():
-        anterior = getattr(task, field)
+        attr = field_map.get(field, field)
+        anterior = getattr(task, attr, None)
         if anterior == nuevo:
             continue
-        setattr(task, field, nuevo)
+        update_record_fields(db, task, **{attr: nuevo})
         record_audit_log(
             db,
             project_id=project.id,
@@ -206,13 +223,12 @@ def update_task(
 
 def create_subtask(
     db: Session,
-    parent: Task,
-    feature: Feature,
+    parent: ProjectRecord,
+    feature: ProjectRecord,
     project: Project,
     payload: TaskSubtaskCreate,
-) -> Task:
+) -> ProjectRecord:
     assert_project_active(project)
-    assert_not_pm_for_task_ops(db, project.id, payload.actor_user_id)
     from app.domain.capabilities import KANBAN_TASK_CREATE
     from app.services.workflow.authorize import assert_capability
 
@@ -220,30 +236,40 @@ def create_subtask(
 
     if parent.estado == "cancel":
         raise HTTPException(status_code=409, detail="La tarea padre está cancelada")
-    if feature.bloqueada:
+    if _feature_bloqueada(feature):
         raise HTTPException(
             status_code=409,
             detail="La feature está bloqueada; no se pueden crear sub-tareas",
         )
 
-    child = Task(
-        feature_id=parent.feature_id,
-        project_id=parent.project_id,
-        titulo=payload.titulo,
-        descripcion=payload.descripcion,
-        estado=payload.estado,
-        created_by=payload.actor_user_id,
-        parent_task_id=parent.id,
-    )
-    db.add(child)
-    db.flush()
-
-    create_dependency(
+    child = create_record(
         db,
         project,
-        parent,
-        child,
-        actor_user_id=payload.actor_user_id,
+        entity_type="task",
+        titulo=payload.titulo,
+        created_by=payload.actor_user_id,
+        parent_id=parent.parent_id,
+        descripcion=payload.descripcion,
+        estado=payload.estado,
+        data={"parent_task_id": str(parent.id)},
+    )
+
+    generic_store.add_dependency(
+        db,
+        project,
+        predecessor_id=child.id,
+        successor_id=parent.id,
+    )
+    record_audit_log(
+        db,
+        project_id=project.id,
+        user_id=payload.actor_user_id,
+        entidad_tipo="tarea",
+        entidad_id=parent.id,
+        accion="dependency_added",
+        campo="depends_on_task_id",
+        valor_anterior=None,
+        valor_nuevo=str(child.id),
     )
     sync_feature_from_tasks(
         db, feature, project, actor_user_id=payload.actor_user_id

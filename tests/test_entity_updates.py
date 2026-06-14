@@ -9,14 +9,16 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.models.entities import AuditLog, Feature, Milestone, Project, ProjectMember, User
+from app.models.entities import AuditLog, User
 from app.schemas.features import FeatureUpdate
 from app.schemas.milestones import MilestoneUpdate
 from app.schemas.projects import ProjectUpdate
 from app.services.features import update_feature
 from app.services.milestones import update_milestone
 from app.services.projects import apply_project_estado_action, update_project
-from tests.org_helpers import add_member_with_slug, create_organization
+from app.services.records.repository import create_record, get_field
+from tests.org_helpers import create_organization, create_project_for_org
+from tests.record_helpers import create_feature_record, create_milestone_record
 
 
 @pytest.fixture
@@ -37,44 +39,12 @@ def _seed_project(session: Session):
         User(id=pm_id, nombre="PM", email="pm@patch.test", password_hash="x")
     )
     org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="Original",
-        descripcion="Desc",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
-        created_by=pm_id,
+    project = create_project_for_org(session, pm_id, org, nombre="Original")
+    project.descripcion = "Desc"
+    milestone = create_milestone_record(session, project, created_by=pm_id)
+    feature = create_feature_record(
+        session, project, milestone, created_by=pm_id, with_default_task=False
     )
-    session.add(project)
-    add_member_with_slug(session, project, pm_id, 'pm')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        estado="pendiente",
-        created_by=pm_id,
-    )
-    session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
-        prioridad="media",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        estado="pendiente",
-        created_by=pm_id,
-    )
-    session.add(feature)
     session.commit()
     return project, milestone, feature, pm_id
 
@@ -172,25 +142,27 @@ def test_update_feature_prioridad(db_session: Session):
     )
     db_session.commit()
 
-    assert feature.prioridad == "alta"
+    assert get_field(feature, "prioridad") == "alta"
 
 
 def test_update_feature_mejora_sin_duracion_falla(db_session: Session):
     project, milestone, _, pm_id = _seed_project(db_session)
-    mejora = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Export",
-        tipo="mejora",
-        prioridad="media",
+    mejora = create_record(
+        db_session,
+        project,
+        entity_type="feature",
+        titulo="Export",
+        created_by=pm_id,
+        parent_id=milestone.id,
+        data={
+            "tipo": "mejora",
+            "prioridad": "media",
+            "duracion_estimada": 10,
+            "bloqueada": False,
+        },
         fecha_inicio=date(2026, 1, 1),
         fecha_fin=date(2026, 3, 31),
-        duracion_estimada=10,
-        estado="pendiente",
-        created_by=pm_id,
     )
-    db_session.add(mejora)
     db_session.commit()
 
     with pytest.raises(HTTPException) as exc:

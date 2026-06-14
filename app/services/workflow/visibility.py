@@ -15,8 +15,18 @@ from app.domain.capabilities import (
     WORKBENCH_INBOX_CLIENT,
     WORKBENCH_UAT,
 )
-from app.models.entities import AuditLog, Feature, FeatureReport, TaskAssignee
+from app.models.entities import AuditLog, ProjectRecord, ProjectRecordAssignee
+from app.services.records.repository import _data
 from app.services.workflow.capabilities import get_effective_capabilities, user_has_capability
+
+_UAT_FEATURE_STATES = frozenset(
+    {
+        "uat",
+        "esperando_liberacion_pm",
+        "esperando_validacion_cliente",
+        "completado",
+    }
+)
 
 
 def filter_audit_logs_for_capabilities(
@@ -47,19 +57,22 @@ def filter_audit_logs_for_capabilities(
     if is_dev_scope:
         assigned_task_ids = set(
             db.scalars(
-                select(TaskAssignee.task_id).where(
-                    TaskAssignee.user_id == viewer_user_id
+                select(ProjectRecordAssignee.record_id).where(
+                    ProjectRecordAssignee.user_id == viewer_user_id
                 )
             )
         )
     if is_client_scope:
-        own_report_ids = set(
-            db.scalars(
-                select(FeatureReport.id).where(
-                    FeatureReport.reported_by == viewer_user_id
+        own_report_ids = {
+            row.id
+            for row in db.scalars(
+                select(ProjectRecord).where(
+                    ProjectRecord.project_id == project_id,
+                    ProjectRecord.record_type == "report",
                 )
             )
-        )
+            if str(_data(row).get("reported_by") or row.created_by) == str(viewer_user_id)
+        }
 
     filtered: list[AuditLog] = []
     for log in logs:
@@ -78,12 +91,11 @@ def filter_audit_logs_for_capabilities(
             continue
         if is_qa_scope:
             if log.entidad_tipo == "feature":
-                feature = db.get(Feature, log.entidad_id)
-                if feature and feature.estado in (
-                    "uat",
-                    "esperando_liberacion_pm",
-                    "esperando_validacion_cliente",
-                    "completado",
+                feature = db.get(ProjectRecord, log.entidad_id)
+                if (
+                    feature
+                    and feature.record_type == "feature"
+                    and feature.estado in _UAT_FEATURE_STATES
                 ):
                     filtered.append(log)
                 continue

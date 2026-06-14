@@ -8,19 +8,22 @@ from datetime import timedelta
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.entities import Feature, Milestone, Project
+from app.models.entities import Project, ProjectRecord
 from app.schemas.features import FeatureCreate
 from app.services.milestones import sync_milestone_state
+from app.services.records.repository import _data, get_record, update_record_fields
 
 
 def validate_and_prepare_feature_create(
     db: Session,
     project: Project,
-    milestone: Milestone,
+    milestone: ProjectRecord,
     payload: FeatureCreate,
 ) -> None:
     if payload.tipo in ("bug", "mejora"):
-        if project.tipo in ("con_cliente", "freestyle"):
+        from app.services.project_profile import supports_external_stakeholder
+
+        if supports_external_stakeholder(db, project):
             raise HTTPException(
                 status_code=403,
                 detail="En proyectos con cliente, bug/mejora solo se crean al aprobar un reporte",
@@ -30,8 +33,12 @@ def validate_and_prepare_feature_create(
                 status_code=422,
                 detail="bug/mejora en interno requieren origen_feature_id",
             )
-        origen = db.get(Feature, payload.origen_feature_id)
-        if not origen or origen.project_id != project.id:
+        origen = get_record(db, payload.origen_feature_id)
+        if (
+            not origen
+            or origen.project_id != project.id
+            or origen.record_type != "feature"
+        ):
             raise HTTPException(status_code=404, detail="Feature origen no encontrada")
         if origen.estado != "completado":
             raise HTTPException(
@@ -53,19 +60,24 @@ def validate_and_prepare_feature_create(
 def after_feature_created(
     db: Session,
     project: Project,
-    milestone: Milestone,
-    feature: Feature,
+    milestone: ProjectRecord,
+    feature: ProjectRecord,
     payload: FeatureCreate,
     *,
     actor_user_id: uuid.UUID,
 ) -> None:
+    from app.services.project_profile import supports_external_stakeholder
+
     if (
-        project.tipo == "interno"
-        and feature.tipo == "mejora"
+        not supports_external_stakeholder(db, project)
+        and _data(feature).get("tipo") == "mejora"
         and payload.duracion_estimada
+        and milestone.fecha_fin is not None
     ):
-        milestone.fecha_fin = milestone.fecha_fin + timedelta(
-            days=payload.duracion_estimada
+        update_record_fields(
+            db,
+            milestone,
+            fecha_fin=milestone.fecha_fin + timedelta(days=payload.duracion_estimada),
         )
         sync_milestone_state(
             db, milestone, project, actor_user_id=actor_user_id

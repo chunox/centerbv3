@@ -35,14 +35,21 @@ class RecordCreate(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     fecha_inicio: date | None = None
     fecha_fin: date | None = None
+    orden: int | None = None
     assignee_ids: list[UUID] = Field(default_factory=list)
     initial_state: str | None = None
+
+
+class RecordMigrateRequest(BaseModel):
+    actor_user_id: UUID
+    target_milestone_id: UUID
 
 
 class RecordUpdate(BaseModel):
     actor_user_id: UUID
     titulo: str | None = Field(default=None, min_length=1, max_length=255)
     descripcion: str | None = None
+    parent_id: UUID | None = None
     data: dict[str, Any] | None = None
     fecha_inicio: date | None = None
     fecha_fin: date | None = None

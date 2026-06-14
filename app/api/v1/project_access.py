@@ -11,23 +11,43 @@ from sqlalchemy.orm import Session
 from app.api.v1.auth_deps import AuthContext, get_optional_auth
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
-from app.domain.capabilities import CAPABILITY_CATALOG, CapabilityDef
-from app.domain.workbenches import DEFAULT_WORKBENCHES, SECTION_LABELS
-from app.domain.workflow_templates import workflow_for_project_tipo
+from app.domain.capabilities import CAPABILITY_CATALOG, CapabilityDef, expand_nav_capabilities
+from app.domain.workbenches import DEFAULT_WORKBENCHES, DEPRECATED_VIEW_ROUTES, DEPRECATED_WORKBENCH_KEYS, SECTION_LABELS
+from app.schemas.communication_rules import (
+    CommunicationRulesRead,
+    CommunicationRulesUpdate,
+    CommunicationSimulateRead,
+    CommunicationSimulateRequest,
+)
+from app.services.access import assert_member_of_project
+from app.services.communication.engine import CommunicationContext, simulate_communication_rules
+from app.services.communication.store import (
+    get_communication_rules,
+    update_communication_rules,
+)
+from app.services.config_snapshots import list_config_snapshots
+from app.services.studio_health import build_studio_health
+from app.domain.workflow_templates import workflow_for_profile
+from app.services.project_profile import list_project_role_slugs
 from app.models.entities import ProjectMember, ProjectRole, ProjectWorkflowDefinition
 from app.schemas.access_context import (
     CapabilityDefRead,
+    EntityTypeRead,
+    FieldDefinitionRead,
     PackContextRead,
     ProjectAccessContextRead,
+    ProjectBlockRead,
     ProjectRoleCapabilitiesUpdate,
     ProjectRoleCreate,
     ProjectRoleRead,
+    ProjectViewRead,
     ProjectWorkbenchesUpdate,
     ProjectWorkflowUpdate,
     RecordTypeRead,
     WorkflowTemplateApply,
     WorkbenchRead,
     WorkflowSummaryRead,
+    workflow_summary_from_definition,
 )
 from app.schemas.projects import ProjectMemberCreate, ProjectMemberRead
 from app.services.project_members import add_project_member, remove_project_member
@@ -44,10 +64,17 @@ from app.services.project_roles import (
 )
 from app.services.workflow.authorize import assert_capability
 from app.services.workflow.capabilities import get_effective_capabilities, get_user_role_assignments
-from app.services.packs import get_project_pack_manifest, import_project_pack_config, list_record_types
+from app.services.blocks import list_project_blocks, list_project_views
+from app.services.packs import (
+    get_project_pack_manifest,
+    import_project_pack_config,
+    list_field_definitions,
+    list_record_types,
+)
 from app.services.records.registry import registry
 from app.services.workflow.store import (
     WORKFLOW_ENTITY_TYPES,
+    admin_views_from_defaults,
     get_active_workflow,
     get_active_workflow_version,
     get_all_active_workflows,
@@ -92,7 +119,8 @@ def get_access_context(
     effective_user = _resolve_user_id(auth, user_id)
 
     assignments = get_user_role_assignments(db, project.id, effective_user)
-    caps = sorted(get_effective_capabilities(db, project.id, effective_user))
+    raw_caps = get_effective_capabilities(db, project.id, effective_user)
+    caps = sorted(expand_nav_capabilities(raw_caps))
 
     workflows: dict[str, WorkflowSummaryRead] = {}
     for entity_type in workflow_entity_types(db, project.id):
@@ -100,19 +128,16 @@ def get_access_context(
         if defn is None:
             continue
         version = get_active_workflow_version(db, project.id, entity_type) or 1
-        workflows[entity_type] = WorkflowSummaryRead(
-            entity_type=entity_type,
-            version=version,
-            states=defn.get("states", []),
-            transitions=defn.get("transitions", []),
-            initial_state=defn.get("initial_state"),
-            terminal_states=defn.get("terminal_states", []),
+        workflows[entity_type] = workflow_summary_from_definition(
+            entity_type, version, defn
         )
 
     wb_raw = get_workbenches(db, project.id)
     visible_workbenches: list[WorkbenchRead] = []
     cap_set = set(caps)
     for wb in sorted(wb_raw, key=lambda w: w.get("orden", 0)):
+        if wb.get("key") in DEPRECATED_WORKBENCH_KEYS:
+            continue
         required = wb.get("required_capabilities", [])
         if not required or any(r in cap_set for r in required):
             visible_workbenches.append(
@@ -124,6 +149,7 @@ def get_access_context(
                     section=wb.get("section", "plan"),
                     view_type=wb.get("view_type", "custom"),
                     entity_type=wb.get("entity_type"),
+                    custom_view_key=wb.get("custom_view_key"),
                     required_capabilities=required,
                     queue_filter=wb.get("queue_filter"),
                     orden=wb.get("orden", 0),
@@ -162,9 +188,58 @@ def get_access_context(
                 storage=rt.storage,
                 field_schema=fields,
                 parent_types=parents,
+                icon=rt.icon,
+                traits=rt.traits or {},
+                is_system=rt.is_system,
                 orden=rt.orden,
             )
         )
+
+    entity_types = [EntityTypeRead(**rt.model_dump()) for rt in record_types]
+
+    field_defs = [
+        FieldDefinitionRead(
+            entity_type_key=fd.entity_type_key,
+            field_key=fd.field_key,
+            label=fd.label,
+            field_type=fd.field_type,
+            config=fd.config or {},
+            orden=fd.orden,
+            is_system=fd.is_system,
+        )
+        for fd in list_field_definitions(db, project.id)
+    ]
+
+    blocks = [
+        ProjectBlockRead(
+            key=b.key,
+            block_slug=b.block_slug,
+            label=b.label,
+            config=b.config or {},
+            enabled=b.enabled,
+            orden=b.orden,
+        )
+        for b in list_project_blocks(db, project.id)
+    ]
+
+    views = [
+        ProjectViewRead(
+            key=v.key,
+            label=v.label,
+            route=v.route,
+            icon=v.icon,
+            section=v.section,
+            layout=v.layout or {},
+            required_capabilities=v.required_capabilities or [],
+            orden=v.orden,
+        )
+        for v in list_project_views(db, project.id)
+        if v.key not in DEPRECATED_WORKBENCH_KEYS and v.route not in DEPRECATED_VIEW_ROUTES
+    ]
+    existing_view_keys = {v.key for v in views}
+    for extra in admin_views_from_defaults(existing_view_keys):
+        views.append(ProjectViewRead(**extra))
+    views.sort(key=lambda v: v.orden)
 
     return ProjectAccessContextRead(
         user_id=effective_user,
@@ -175,7 +250,14 @@ def get_access_context(
         capability_catalog=catalog,
         pack=pack_ctx,
         record_types=record_types,
+        entity_types=entity_types,
+        field_definitions=field_defs,
+        blocks=blocks,
+        views=views,
         pack_slug=project.pack_slug,
+    profile_slug=getattr(project, "profile_slug", None) or "default",
+    project_role_slugs=list_project_role_slugs(db, project.id),
+    member_role_slugs=[r.slug for r in assignments],
     )
 
 
@@ -193,6 +275,7 @@ def export_project_pack(
     workflows = get_all_active_workflows(db, project.id)
     workbenches = get_workbenches(db, project.id)
     record_types = list_record_types(db, project.id)
+    comm_rules = get_communication_rules(db, project.id)
     return {
         "pack_slug": project.pack_slug,
         "manifest": manifest.model_dump() if manifest else None,
@@ -206,6 +289,7 @@ def export_project_pack(
         ],
         "workflows": workflows,
         "workbenches": workbenches,
+        "communication_rules": [r.model_dump() for r in comm_rules],
         "record_types": [
             {
                 "key": rt.key,
@@ -308,16 +392,11 @@ def put_workflow(
     allowed = set(workflow_entity_types(db, project.id))
     if entity_type not in allowed:
         raise HTTPException(status_code=422, detail="entity_type inválido")
-    wf = update_workflow_definition(db, project, entity_type, payload.definition)
+    wf, capabilities_added = update_workflow_definition(db, project, entity_type, payload.definition)
     db.commit()
     defn = json.loads(wf.definition)
-    return WorkflowSummaryRead(
-        entity_type=entity_type,
-        version=wf.version,
-        states=defn.get("states", []),
-        transitions=defn.get("transitions", []),
-        initial_state=defn.get("initial_state"),
-        terminal_states=defn.get("terminal_states", []),
+    return workflow_summary_from_definition(
+        entity_type, wf.version, defn, capabilities_added=capabilities_added
     )
 
 
@@ -338,12 +417,140 @@ def put_workbenches(
             route=wb["route"],
             icon=wb.get("icon", "circle"),
             section=wb.get("section", "plan"),
+            view_type=wb.get("view_type", "custom"),
+            entity_type=wb.get("entity_type"),
+            custom_view_key=wb.get("custom_view_key"),
             required_capabilities=wb.get("required_capabilities", []),
             queue_filter=wb.get("queue_filter"),
             orden=wb.get("orden", 0),
         )
         for wb in payload.workbenches
     ]
+
+
+@router.get("/{project_id}/communication-rules", response_model=CommunicationRulesRead)
+def get_project_communication_rules(
+    project_id: UUID,
+    user_id: UUID,
+    db: Session = Depends(get_db),
+):
+    project = get_project_or_404(project_id, db)
+    assert_member_of_project(db, project.id, user_id)
+    rules = get_communication_rules(db, project.id)
+    return CommunicationRulesRead(project_id=project.id, rules=rules)
+
+
+@router.put("/{project_id}/communication-rules", response_model=CommunicationRulesRead)
+def put_project_communication_rules(
+    project_id: UUID,
+    payload: CommunicationRulesUpdate,
+    db: Session = Depends(get_db),
+):
+    project = get_project_or_404(project_id, db)
+    assert_capability(db, project.id, payload.actor_user_id, PROJECT_ROLES_MANAGE)
+    rules = update_communication_rules(
+        db, project, payload.rules, actor_user_id=payload.actor_user_id
+    )
+    db.commit()
+    return CommunicationRulesRead(project_id=project.id, rules=rules)
+
+
+@router.post(
+    "/{project_id}/communication-rules/simulate",
+    response_model=CommunicationSimulateRead,
+)
+def simulate_project_communication_rules(
+    project_id: UUID,
+    payload: CommunicationSimulateRequest,
+    db: Session = Depends(get_db),
+):
+    project = get_project_or_404(project_id, db)
+    assert_capability(db, project.id, payload.actor_user_id, PROJECT_ROLES_MANAGE)
+    from app.models.entities import ProjectRecord
+
+    record = db.get(ProjectRecord, payload.entity_id) if payload.entity_id else None
+    ctx = CommunicationContext(
+        event=payload.event,
+        project=project,
+        author_id=payload.actor_user_id,
+        entity_type=payload.entity_type or (record.record_type if record else None),
+        record_type=payload.record_type,
+        entity_id=payload.entity_id,
+        action_id=payload.action_id,
+        from_state=payload.from_state,
+        to_state=payload.to_state,
+        comment_entity_type=payload.comment_entity_type,
+        record=record,
+        sandbox=payload.sandbox,
+    )
+    matched = simulate_communication_rules(db, ctx)
+    return CommunicationSimulateRead(
+        matched=[
+            {
+                "rule_id": m.rule_id,
+                "recipient_ids": m.recipient_ids,
+                "notification_tipo": m.notification_tipo,
+                "deep_link": m.deep_link,
+            }
+            for m in matched
+        ]
+    )
+
+
+@router.get("/{project_id}/studio-health")
+def get_studio_health(
+    project_id: UUID,
+    user_id: UUID,
+    db: Session = Depends(get_db),
+):
+    project = get_project_or_404(project_id, db)
+    assert_capability(db, project.id, user_id, PROJECT_ROLES_MANAGE)
+    return build_studio_health(db, project)
+
+
+@router.get("/{project_id}/config-snapshots")
+def get_config_snapshots(
+    project_id: UUID,
+    user_id: UUID,
+    kind: str | None = None,
+    db: Session = Depends(get_db),
+):
+    project = get_project_or_404(project_id, db)
+    assert_capability(db, project.id, user_id, PROJECT_ROLES_MANAGE)
+    rows = list_config_snapshots(db, project.id, kind=kind)  # type: ignore[arg-type]
+    return [
+        {
+            "id": str(r.id),
+            "kind": r.kind,
+            "created_at": r.created_at,
+            "created_by": str(r.created_by) if r.created_by else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/{project_id}/config-snapshots/{snapshot_id}/restore", status_code=204)
+def restore_config_snapshot(
+    project_id: UUID,
+    snapshot_id: UUID,
+    actor_user_id: UUID,
+    db: Session = Depends(get_db),
+):
+    from app.models.entities import ProjectConfigSnapshot
+    from app.schemas.communication_rules import CommunicationRule
+
+    project = get_project_or_404(project_id, db)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
+    row = db.get(ProjectConfigSnapshot, snapshot_id)
+    if row is None or row.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Snapshot no encontrado")
+    import json as json_lib
+
+    payload = json_lib.loads(row.payload)
+    if row.kind == "communication":
+        rules = [CommunicationRule.model_validate(r) for r in payload]
+        update_communication_rules(db, project, rules, actor_user_id=actor_user_id)
+    db.commit()
 
 
 @router.get("/{project_id}/workbench-sections")
@@ -363,7 +570,13 @@ def get_workflow_template(
     allowed = set(workflow_entity_types(db, project.id))
     if entity_type not in allowed:
         raise HTTPException(status_code=422, detail="entity_type inválido")
-    return workflow_for_project_tipo(project.tipo, entity_type)
+    profile = getattr(project, "profile_slug", None) or "default"
+    if project.pack_slug != "software":
+        raise HTTPException(
+            status_code=422,
+            detail="Plantillas de workflow solo aplican al pack software",
+        )
+    return workflow_for_profile(profile, entity_type)
 
 
 @router.post(
@@ -381,18 +594,25 @@ def apply_workflow_template(
     allowed = set(workflow_entity_types(db, project.id))
     if entity_type not in allowed:
         raise HTTPException(status_code=422, detail="entity_type inválido")
-    tipo = payload.project_tipo or project.tipo
-    definition = workflow_for_project_tipo(tipo, entity_type)
-    wf = update_workflow_definition(db, project, entity_type, definition)
+    from app.domain.project_profiles import LEGACY_TIPO_TO_PROFILE
+
+    if payload.profile_slug:
+        profile = payload.profile_slug
+    elif payload.project_tipo:
+        profile = LEGACY_TIPO_TO_PROFILE.get(payload.project_tipo, "default")
+    else:
+        profile = getattr(project, "profile_slug", None) or "default"
+    if project.pack_slug != "software":
+        raise HTTPException(
+            status_code=422,
+            detail="Plantillas de workflow solo aplican al pack software",
+        )
+    definition = workflow_for_profile(profile, entity_type)
+    wf, _capabilities_added = update_workflow_definition(db, project, entity_type, definition)
     db.commit()
     defn = json.loads(wf.definition)
-    return WorkflowSummaryRead(
-        entity_type=entity_type,
-        version=wf.version,
-        states=defn.get("states", []),
-        transitions=defn.get("transitions", []),
-        initial_state=defn.get("initial_state"),
-        terminal_states=defn.get("terminal_states", []),
+    return workflow_summary_from_definition(
+        entity_type, wf.version, defn, capabilities_added=_capabilities_added
     )
 
 

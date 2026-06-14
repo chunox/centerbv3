@@ -11,17 +11,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models.entities import (
-    AuditLog,
-    Feature,
-    Milestone,
-    Notification,
-    Project,
-    ProjectMember,
-    Task,
-    User,
-)
-from tests.org_helpers import add_member_with_slug, create_organization
+from app.models.entities import AuditLog, Notification, Project, User
+from app.services.records.repository import create_record
+from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
+from tests.record_helpers import create_feature_record, create_milestone_record
 
 
 @pytest.fixture
@@ -68,54 +61,26 @@ def _seed_kanban(session: Session):
         ]
     )
     org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="P",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
+    project = create_project_for_org(session, pm_id, org, nombre="P")
+    add_member_with_slug(session, project, dev_id, "dev")
+    add_member_with_slug(session, project, other_dev, "dev")
+    milestone = create_milestone_record(session, project, created_by=pm_id)
+    feature = create_feature_record(
+        session,
+        project,
+        milestone,
         created_by=pm_id,
+        with_default_task=False,
     )
-    session.add(project)
-    add_member_with_slug(session, project, pm_id, 'pm')
-    add_member_with_slug(session, project, dev_id, 'dev')
-    add_member_with_slug(session, project, other_dev, 'dev')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        estado="pendiente",
-        created_by=pm_id,
-    )
-    session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
-        prioridad="media",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        estado="pendiente",
-        created_by=pm_id,
-    )
-    session.add(feature)
-    task = Task(
-        id=uuid4(),
-        feature_id=feature.id,
-        project_id=project.id,
+    task = create_record(
+        session,
+        project,
+        entity_type="task",
         titulo="Tarea",
-        estado="backlog",
         created_by=dev_id,
+        parent_id=feature.id,
+        estado="backlog",
     )
-    session.add(task)
     session.commit()
     return project, milestone, feature, task, pm_id, dev_id, other_dev
 
@@ -126,17 +91,16 @@ def test_patch_task_asignacion_y_notificacion(db_session: Session, api_client: T
     )
 
     response = api_client.patch(
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}"
-        f"/features/{feature.id}/tasks/{task.id}",
+        f"/api/v1/projects/{project.id}/records/{task.id}",
         json={
             "actor_user_id": str(dev_id),
             "titulo": "Tarea renombrada",
-            "asignado_ids": [str(other_dev)],
+            "assignee_ids": [str(other_dev)],
         },
     )
     assert response.status_code == 200
     assert response.json()["titulo"] == "Tarea renombrada"
-    assert response.json()["asignado_ids"] == [str(other_dev)]
+    assert response.json()["assignee_ids"] == [str(other_dev)]
 
     notif = db_session.scalar(
         select(Notification).where(
@@ -151,14 +115,51 @@ def test_pm_no_puede_crear_tarea(db_session: Session, api_client: TestClient):
     project, milestone, feature, _, pm_id, _, _ = _seed_kanban(db_session)
 
     response = api_client.post(
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}"
-        f"/features/{feature.id}/tasks",
+        f"/api/v1/projects/{project.id}/records",
         json={
+            "actor_user_id": str(pm_id),
+            "record_type": "task",
             "titulo": "Nueva",
-            "created_by": str(pm_id),
+            "parent_id": str(feature.id),
         },
     )
     assert response.status_code == 403
+
+
+def test_dev_puede_crear_dependencia_entre_tareas(
+    db_session: Session, api_client: TestClient
+):
+    project, _, feature, task, _, dev_id, _ = _seed_kanban(db_session)
+    pred = create_record(
+        db_session,
+        project,
+        entity_type="task",
+        titulo="Predecesora",
+        created_by=dev_id,
+        parent_id=feature.id,
+        estado="in_progress",
+    )
+    db_session.commit()
+
+    response = api_client.post(
+        f"/api/v1/projects/{project.id}/record-dependencies",
+        json={
+            "actor_user_id": str(dev_id),
+            "predecessor_id": str(pred.id),
+            "successor_id": str(task.id),
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["predecessor_id"] == str(pred.id)
+    assert body["successor_id"] == str(task.id)
+
+    list_response = api_client.get(
+        f"/api/v1/projects/{project.id}/record-dependencies",
+        params={"actor_user_id": str(dev_id)},
+    )
+    assert list_response.status_code == 200
+    assert len(list_response.json()) == 1
 
 
 def test_list_projects_filtrado_por_miembro(db_session: Session, api_client: TestClient):
@@ -168,7 +169,7 @@ def test_list_projects_filtrado_por_miembro(db_session: Session, api_client: Tes
         id=uuid4(),
         organization_id=other_org.id,
         nombre="Otro",
-        tipo="interno",
+        profile_slug="internal",
         estado="activo",
         fecha_inicio=date(2026, 1, 1),
         fecha_fin=date(2026, 12, 31),

@@ -15,6 +15,7 @@ AuditEntidadTipo = Literal[
     "document",
     "project",
     "hub_entry",
+    "communication_dispatch",
 ]
 AuditAccion = Literal[
     "created",

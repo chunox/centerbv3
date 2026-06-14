@@ -12,17 +12,16 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models.entities import (
-    Feature,
-    FeatureQuery,
-    Milestone,
-    Project,
-    ProjectMember,
-    Task,
-    User,
-)
+from app.models.entities import Project, User
 from app.services.features import apply_feature_action, ensure_default_task
-from tests.org_helpers import add_member_with_slug, create_organization
+from app.services.records.repository import create_record, list_children
+from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
+from tests.record_helpers import (
+    create_feature_record,
+    create_milestone_record,
+    create_query_record,
+    seed_project_with_roles,
+)
 
 
 @pytest.fixture
@@ -53,66 +52,31 @@ def api_client(db_session: Session):
 
 
 def _seed_interno_blocked(session: Session):
-    pm_id = uuid4()
-    dev_id = uuid4()
-    qa_id = uuid4()
-    session.add_all(
-        [
-            User(id=pm_id, nombre="PM", email="pm@guard.test", password_hash="x"),
-            User(id=dev_id, nombre="Dev", email="dev@guard.test", password_hash="x"),
-            User(id=qa_id, nombre="QA", email="qa@guard.test", password_hash="x"),
-        ]
-    )
-    org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="Guard",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
+    project, pm_id, dev_id, qa_id = seed_project_with_roles(session)
+    milestone = create_milestone_record(session, project, created_by=pm_id)
+    feature = create_record(
+        session,
+        project,
+        entity_type="feature",
+        titulo="Login",
         created_by=pm_id,
-    )
-    session.add(project)
-    add_member_with_slug(session, project, pm_id, 'pm')
-    add_member_with_slug(session, project, dev_id, 'dev')
-    add_member_with_slug(session, project, qa_id, 'qa')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        created_by=pm_id,
-    )
-    session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
+        parent_id=milestone.id,
         estado="uat",
-        bloqueada=True,
+        data={"tipo": "desarrollo", "prioridad": "media", "bloqueada": True},
         fecha_inicio=date(2026, 1, 1),
         fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
     )
-    session.add(feature)
     ensure_default_task(session, feature, created_by=pm_id)
-    task = session.query(Task).filter(Task.feature_id == feature.id).one()
+    task = list_children(session, feature.id, "task")[0]
     task.estado = "ready_for_test"
-    session.add(
-        FeatureQuery(
-            feature_id=feature.id,
-            titulo="Consulta",
-            descripcion="Bloqueo",
-            estado="esperando_pm",
-            created_by=dev_id,
-        )
+    create_query_record(
+        session,
+        project,
+        feature,
+        created_by=dev_id,
+        titulo="Consulta",
+        descripcion="Bloqueo",
+        estado="esperando_pm",
     )
     session.commit()
     return project, milestone, feature, pm_id, dev_id, qa_id
@@ -151,29 +115,21 @@ def test_create_milestone_en_proyecto_cerrado_falla(
         User(id=pm_id, nombre="PM", email="pm@closed.test", password_hash="x")
     )
     org = create_organization(db_session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="Cerrado",
-        tipo="interno",
-        estado="cerrado",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
-        created_by=pm_id,
+    project = create_project_for_org(
+        db_session, pm_id, org, nombre="Cerrado", estado="cerrado"
     )
-    db_session.add(project)
-    add_member_with_slug(db_session, project, pm_id, 'pm')
     db_session.commit()
 
     response = api_client.post(
-        f"/api/v1/projects/{project.id}/milestones",
+        f"/api/v1/projects/{project.id}/records",
         json={
-            "nombre": "H2",
-            "tipo": "entrega",
+            "actor_user_id": str(pm_id),
+            "record_type": "milestone",
+            "titulo": "H2",
+            "data": {"tipo": "entrega"},
             "orden": 2,
             "fecha_inicio": "2026-07-01",
             "fecha_fin": "2026-12-31",
-            "created_by": str(pm_id),
         },
     )
     assert response.status_code == 409
@@ -189,40 +145,21 @@ def test_create_feature_sin_rol_pm_falla(db_session: Session, api_client: TestCl
         ]
     )
     org = create_organization(db_session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="P",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
-        created_by=pm_id,
-    )
-    db_session.add(project)
-    add_member_with_slug(db_session, project, pm_id, 'pm')
-    add_member_with_slug(db_session, project, dev_id, 'dev')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        created_by=pm_id,
-    )
-    db_session.add(milestone)
+    project = create_project_for_org(db_session, pm_id, org, nombre="P")
+    add_member_with_slug(db_session, project, dev_id, "dev")
+    milestone = create_milestone_record(db_session, project, created_by=pm_id)
     db_session.commit()
 
     response = api_client.post(
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}/features",
+        f"/api/v1/projects/{project.id}/records",
         json={
-            "nombre": "Nueva",
-            "tipo": "desarrollo",
+            "actor_user_id": str(dev_id),
+            "record_type": "feature",
+            "titulo": "Nueva",
+            "parent_id": str(milestone.id),
+            "data": {"tipo": "desarrollo", "prioridad": "media", "bloqueada": False},
             "fecha_inicio": "2026-01-01",
             "fecha_fin": "2026-03-31",
-            "created_by": str(dev_id),
         },
     )
     assert response.status_code == 403
@@ -243,60 +180,47 @@ def test_reporte_solo_cliente(db_session: Session, api_client: TestClient):
         ]
     )
     org = create_organization(db_session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="CC",
-        tipo="con_cliente",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
-        created_by=pm_id,
+    project = create_project_for_org(
+        db_session, pm_id, org, nombre="CC", tipo="con_cliente"
     )
-    db_session.add(project)
-    add_member_with_slug(db_session, project, pm_id, 'pm')
-    add_member_with_slug(db_session, project, cliente_id, 'cliente')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
+    add_member_with_slug(db_session, project, cliente_id, "cliente")
+    milestone = create_milestone_record(db_session, project, created_by=pm_id)
+    feature = create_record(
+        db_session,
+        project,
+        entity_type="feature",
+        titulo="Login",
         created_by=pm_id,
-    )
-    db_session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
+        parent_id=milestone.id,
         estado="completado",
+        data={"tipo": "desarrollo", "prioridad": "media", "bloqueada": False},
         fecha_inicio=date(2026, 1, 1),
         fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
     )
-    db_session.add(feature)
     db_session.commit()
 
     pm_report = api_client.post(
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}/features/{feature.id}/reports",
+        f"/api/v1/projects/{project.id}/records",
         json={
-            "reported_by": str(pm_id),
-            "tipo": "bug",
+            "actor_user_id": str(pm_id),
+            "record_type": "report",
+            "titulo": "Reporte bug",
+            "parent_id": str(feature.id),
             "descripcion": "PM no puede",
+            "data": {"tipo": "bug", "reported_by": str(pm_id)},
         },
     )
     assert pm_report.status_code == 403
 
     ok = api_client.post(
-        f"/api/v1/projects/{project.id}/milestones/{milestone.id}/features/{feature.id}/reports",
+        f"/api/v1/projects/{project.id}/records",
         json={
-            "reported_by": str(cliente_id),
-            "tipo": "bug",
+            "actor_user_id": str(cliente_id),
+            "record_type": "report",
+            "titulo": "Reporte bug",
+            "parent_id": str(feature.id),
             "descripcion": "Cliente sí",
+            "data": {"tipo": "bug", "reported_by": str(cliente_id)},
         },
     )
     assert ok.status_code == 201
@@ -319,43 +243,17 @@ def test_adjunto_patch_solo_autor_o_pm(db_session: Session, api_client: TestClie
         ]
     )
     org = create_organization(db_session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="P",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
+    project = create_project_for_org(db_session, pm_id, org, nombre="P")
+    add_member_with_slug(db_session, project, dev_id, "dev")
+    add_member_with_slug(db_session, project, other_dev, "dev")
+    milestone = create_milestone_record(db_session, project, created_by=pm_id)
+    feature = create_feature_record(
+        db_session,
+        project,
+        milestone,
         created_by=pm_id,
+        with_default_task=False,
     )
-    db_session.add(project)
-    add_member_with_slug(db_session, project, pm_id, 'pm')
-    add_member_with_slug(db_session, project, dev_id, 'dev')
-    add_member_with_slug(db_session, project, other_dev, 'dev')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        created_by=pm_id,
-    )
-    db_session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
-        estado="pendiente",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
-    )
-    db_session.add(feature)
     db_session.commit()
 
     created = api_client.post(

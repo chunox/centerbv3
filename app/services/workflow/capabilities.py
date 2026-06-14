@@ -6,6 +6,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.capabilities import resolve_capability_keys
 from app.models.entities import ProjectMember, ProjectRole, ProjectRoleCapability
 
 
@@ -50,7 +51,14 @@ def user_has_capability(
     user_id: uuid.UUID,
     capability: str,
 ) -> bool:
-    return capability in get_effective_capabilities(db, project_id, user_id)
+    effective = get_effective_capabilities(db, project_id, user_id)
+    candidates = resolve_capability_keys([capability])
+    if any(c in effective for c in candidates):
+        return True
+    for cap in effective:
+        if capability in resolve_capability_keys([cap]):
+            return True
+    return False
 
 
 def user_ids_with_role_slug(

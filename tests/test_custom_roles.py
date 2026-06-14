@@ -1,6 +1,5 @@
 """Vertical slice: rol custom con capacidades parciales."""
 
-from datetime import date
 from uuid import uuid4
 
 import pytest
@@ -11,11 +10,12 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 from app.domain.capabilities import KANBAN_TASK_MOVE, SCOPE_FEATURE_CREATE
-from app.models.entities import Feature, Milestone, ProjectMember, Task, User
 from app.services.project_roles import assign_member_role, create_custom_role
+from app.services.records.repository import create_record
 from app.services.tasks import move_task
 from app.services.workflow.capabilities import get_effective_capabilities, user_has_capability
-from tests.org_helpers import create_project_for_org, create_user
+from tests.org_helpers import add_member_with_slug, create_project_for_org, create_user
+from tests.record_helpers import create_feature_record, create_milestone_record
 
 
 @pytest.fixture
@@ -35,38 +35,25 @@ def db_session():
 
 
 def _seed_feature_task(session: Session, pm_id, project):
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
+    milestone = create_milestone_record(session, project, created_by=pm_id)
+    feature = create_feature_record(
+        session,
+        project,
+        milestone,
         created_by=pm_id,
-    )
-    session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
         nombre="API",
-        tipo="desarrollo",
-        estado="en_progreso",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
+        with_default_task=False,
     )
-    session.add(feature)
-    task = Task(
-        id=uuid4(),
-        feature_id=feature.id,
-        project_id=project.id,
+    feature.estado = "en_progreso"
+    task = create_record(
+        session,
+        project,
+        entity_type="task",
         titulo="Tarea 1",
-        estado="backlog",
         created_by=pm_id,
+        parent_id=feature.id,
+        estado="backlog",
     )
-    session.add(task)
     session.commit()
     return feature, task
 
@@ -124,8 +111,6 @@ def test_dev_can_move_task_with_kanban_capability(db_session: Session):
     pm = create_user(db_session, email="pm3@arch.test")
     dev = create_user(db_session, email="dev3@arch.test")
     project = create_project_for_org(db_session, pm.id, add_pm_member=True)
-
-    from tests.org_helpers import add_member_with_slug
 
     add_member_with_slug(db_session, project, dev.id, "dev")
     feature, task = _seed_feature_task(db_session, pm.id, project)

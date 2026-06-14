@@ -5,16 +5,18 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models.entities import Feature, FeatureReport, Milestone, Project, ProjectMember, User
+from app.models.entities import Project, User
 from app.services.deletions import delete_project
 from app.services.feature_reports import apply_report_action
-from tests.org_helpers import add_member_with_slug, create_organization
+from app.services.records.repository import create_record, get_field
+from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
+from tests.record_helpers import create_milestone_record, create_report_record
 
 
 @pytest.fixture
@@ -43,51 +45,31 @@ def _seed_with_approved_report(session: Session):
         ]
     )
     org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="Demo",
-        tipo="con_cliente",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
-        created_by=pm_id,
+    project = create_project_for_org(
+        session, pm_id, org, nombre="Demo", tipo="con_cliente"
     )
-    session.add(project)
-    add_member_with_slug(session, project, pm_id, 'pm')
-    add_member_with_slug(session, project, cliente_id, 'cliente')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
+    add_member_with_slug(session, project, cliente_id, "cliente")
+    milestone = create_milestone_record(session, project, created_by=pm_id)
+    original = create_record(
+        session,
+        project,
+        entity_type="feature",
+        titulo="Login",
         created_by=pm_id,
-    )
-    session.add(milestone)
-    original = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
+        parent_id=milestone.id,
         estado="completado",
+        data={"tipo": "desarrollo", "prioridad": "media", "bloqueada": False},
         fecha_inicio=date(2026, 1, 1),
         fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
     )
-    session.add(original)
-    report = FeatureReport(
-        id=uuid4(),
-        feature_id=original.id,
+    report = create_report_record(
+        session,
+        project,
+        original,
         reported_by=cliente_id,
         tipo="bug",
         descripcion="Crash",
-        estado="pendiente",
     )
-    session.add(report)
     session.commit()
 
     apply_report_action(
@@ -95,7 +77,7 @@ def _seed_with_approved_report(session: Session):
     )
     session.commit()
     session.refresh(report)
-    assert report.generated_feature_id is not None
+    assert get_field(report, "generated_feature_id") is not None
     return project, pm_id
 
 

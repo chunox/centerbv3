@@ -13,14 +13,12 @@ from app.database import Base, get_db
 from app.main import app
 from app.models.entities import (
     AuditLog,
-    Feature,
-    FeatureQuery,
-    FeatureReport,
-    Milestone,
     OrganizationMember,
     ProjectMember,
     User,
 )
+from app.services.records.repository import create_record
+from tests.record_helpers import create_milestone_record
 from app.services.auth_tokens import create_access_token
 from app.services.project_bundle import build_project_bundle
 from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org, create_user
@@ -59,72 +57,68 @@ def _auth_headers(user_id, org_id):
 
 
 def _seed_feature_graph(session: Session, project, pm_id):
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
-    )
-    session.add(milestone)
+    milestone = create_milestone_record(session, project, created_by=pm_id, nombre="H1")
+    milestone.fecha_fin = date(2026, 3, 31)
     session.flush()
 
-    completed = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="F done",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 2, 1),
+    completed = create_record(
+        session,
+        project,
+        entity_type="feature",
+        titulo="F done",
+        created_by=pm_id,
+        parent_id=milestone.id,
         estado="completado",
-        created_by=pm_id,
-    )
-    in_progress = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="F wip",
+        data={"tipo": "desarrollo", "prioridad": "media", "bloqueada": False},
         fecha_inicio=date(2026, 1, 1),
         fecha_fin=date(2026, 2, 1),
+    )
+    in_progress = create_record(
+        session,
+        project,
+        entity_type="feature",
+        titulo="F wip",
+        created_by=pm_id,
+        parent_id=milestone.id,
         estado="en_progreso",
-        bloqueada=True,
-        created_by=pm_id,
-    )
-    release = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="F release",
+        data={"tipo": "desarrollo", "prioridad": "media", "bloqueada": True},
         fecha_inicio=date(2026, 1, 1),
         fecha_fin=date(2026, 2, 1),
-        estado="esperando_liberacion_pm",
-        created_by=pm_id,
     )
-    session.add_all([completed, in_progress, release])
+    release = create_record(
+        session,
+        project,
+        entity_type="feature",
+        titulo="F release",
+        created_by=pm_id,
+        parent_id=milestone.id,
+        estado="esperando_liberacion_pm",
+        data={"tipo": "desarrollo", "prioridad": "media", "bloqueada": False},
+        fecha_inicio=date(2026, 1, 1),
+        fecha_fin=date(2026, 2, 1),
+    )
     session.flush()
 
-    session.add(
-        FeatureReport(
-            id=uuid4(),
-            feature_id=completed.id,
-            reported_by=pm_id,
-            tipo="bug",
-            descripcion="Bug pendiente",
-            estado="pendiente",
-        )
+    create_record(
+        session,
+        project,
+        entity_type="report",
+        titulo="Bug pendiente",
+        created_by=pm_id,
+        parent_id=completed.id,
+        descripcion="Bug pendiente",
+        estado="pendiente",
+        data={"tipo": "bug", "reported_by": str(pm_id)},
     )
-    session.add(
-        FeatureQuery(
-            id=uuid4(),
-            feature_id=in_progress.id,
-            titulo="Consulta",
-            descripcion="Pendiente PM",
-            estado="esperando_pm",
-            created_by=pm_id,
-        )
+    create_record(
+        session,
+        project,
+        entity_type="query",
+        titulo="Consulta",
+        created_by=pm_id,
+        parent_id=in_progress.id,
+        descripcion="Pendiente PM",
+        estado="esperando_pm",
     )
     session.flush()
     return milestone
@@ -335,19 +329,15 @@ def test_pm_portfolio_critical_milestones(api_client: TestClient, db_session: Se
     org = create_organization(db_session, owner_id=pm.id)
     project = create_project_for_org(db_session, pm.id, org, nombre="Hitos")
     soon = date.today() + timedelta(days=5)
-    db_session.add(
-        Milestone(
-            id=uuid4(),
-            project_id=project.id,
-            nombre="H critico",
-            tipo="entrega",
-            orden=1,
-            fecha_inicio=date.today(),
-            fecha_fin=soon,
-            estado="en_progreso",
-            created_by=pm.id,
-        )
+    milestone = create_milestone_record(
+        db_session,
+        project,
+        created_by=pm.id,
+        nombre="H critico",
     )
+    milestone.fecha_inicio = date.today()
+    milestone.fecha_fin = soon
+    milestone.estado = "en_progreso"
     db_session.commit()
 
     res = api_client.get(

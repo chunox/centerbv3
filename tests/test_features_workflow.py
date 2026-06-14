@@ -1,6 +1,5 @@
 """Tests sync dev, gate UAT y acciones de feature (§5.4–§5.6)."""
 
-from datetime import date
 from uuid import uuid4
 
 import pytest
@@ -9,22 +8,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.models.entities import (
-    Feature,
-    Milestone,
-    Project,
-    ProjectMember,
-    Task,
-    User,
-)
 from app.services.features import (
     apply_feature_action,
-    ensure_default_task,
     load_active_tasks,
     uat_gate_status,
 )
 from app.services.tasks import move_task
-from tests.org_helpers import add_member_with_slug, create_organization
+from tests.record_helpers import seed_milestone_feature, seed_project_with_roles
 
 
 @pytest.fixture
@@ -40,55 +30,8 @@ def db_session():
 
 
 def _seed_project(session: Session):
-    pm_id = uuid4()
-    dev_id = uuid4()
-    qa_id = uuid4()
-    session.add_all(
-        [
-            User(id=pm_id, nombre="PM", email="pm@wf.test", password_hash="x"),
-            User(id=dev_id, nombre="Dev", email="dev@wf.test", password_hash="x"),
-            User(id=qa_id, nombre="QA", email="qa@wf.test", password_hash="x"),
-        ]
-    )
-    org = create_organization(session, owner_id=pm_id)
-    project = Project(
-        organization_id=org.id,
-        id=uuid4(),
-        nombre="WF",
-        tipo="interno",
-        estado="activo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 12, 31),
-        created_by=pm_id,
-    )
-    session.add(project)
-    add_member_with_slug(session, project, pm_id, 'pm')
-    add_member_with_slug(session, project, dev_id, 'dev')
-    add_member_with_slug(session, project, qa_id, 'qa')
-    milestone = Milestone(
-        id=uuid4(),
-        project_id=project.id,
-        nombre="H1",
-        tipo="entrega",
-        orden=1,
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 6, 30),
-        created_by=pm_id,
-    )
-    session.add(milestone)
-    feature = Feature(
-        id=uuid4(),
-        milestone_id=milestone.id,
-        project_id=project.id,
-        nombre="Login",
-        tipo="desarrollo",
-        fecha_inicio=date(2026, 1, 1),
-        fecha_fin=date(2026, 3, 31),
-        created_by=pm_id,
-    )
-    session.add(feature)
-    ensure_default_task(session, feature, created_by=pm_id)
-    session.commit()
+    project, pm_id, dev_id, qa_id = seed_project_with_roles(session)
+    milestone, feature = seed_milestone_feature(session, project, pm_id)
     return project, feature, milestone, pm_id, dev_id, qa_id
 
 

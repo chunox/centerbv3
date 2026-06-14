@@ -25,9 +25,6 @@ from app.api.v1 import audit_logs as audit_logs_routes
 from app.api.v1 import document_exposures as document_exposures_routes
 from app.api.v1 import hub_entries as hub_entries_routes
 from app.api.v1 import documents as documents_routes
-from app.api.v1 import feature_queries as feature_queries_routes
-from app.api.v1 import feature_reports as feature_reports_routes
-from app.api.v1 import milestones as milestones_routes
 from app.api.v1 import timeline as timeline_routes
 from app.database import get_db
 from app.models.entities import Organization, Project, ProjectMember, User
@@ -37,8 +34,12 @@ from app.services.organizations import (
     require_org_admin,
     user_has_project_access,
 )
+from app.domain.capabilities import WORKBENCH_TEAM
+from app.schemas.inbox_summary import ProjectInboxSummaryRead
 from app.schemas.pm_portfolio import PmPortfolioRead
+from app.schemas.portfolio_team_workload import PortfolioTeamWorkloadRead
 from app.schemas.project_bundle import ProjectBundleRead
+from app.schemas.team_board import TeamBoardRead
 from app.schemas.projects import (
     MemberRol,
     ProjectCreate,
@@ -49,8 +50,12 @@ from app.schemas.projects import (
     ProjectRead,
     ProjectUpdate,
 )
+from app.services.inbox_summary import build_inbox_summary
 from app.services.pm_portfolio import build_pm_portfolio
+from app.services.portfolio_team_workload import build_portfolio_team_workload
 from app.services.project_bundle import build_project_bundle
+from app.services.team_board import build_team_board
+from app.services.workflow.authorize import assert_capability
 from app.services.deletions import delete_project
 from app.services.project_members import (
     add_project_member,
@@ -58,18 +63,20 @@ from app.services.project_members import (
     remove_project_member,
     update_project_member_role,
 )
-from app.domain.project_templates import get_template, resolve_project_tipo
+from app.domain.project_profiles import (
+    PROFILE_DEFAULT,
+    legacy_tipo_from_profile,
+    resolve_profile_slug,
+)
+from app.domain.project_templates import get_template
 from app.services.project_roles import seed_project_from_template
 from app.services.projects import apply_project_estado_action, update_project
 
 router = APIRouter(prefix="/projects", tags=["projects"])
-router.include_router(milestones_routes.router)
 router.include_router(documents_routes.router)
 router.include_router(hub_entries_routes.router)
 router.include_router(document_exposures_routes.router)
 router.include_router(audit_logs_routes.router)
-router.include_router(feature_queries_routes.inbox_router)
-router.include_router(feature_reports_routes.inbox_router)
 router.include_router(timeline_routes.router)
 
 
@@ -137,6 +144,16 @@ def get_pm_portfolio(
     return build_pm_portfolio(db, organization_id, user_id)
 
 
+@router.get("/pm-portfolio/team-workload", response_model=PortfolioTeamWorkloadRead)
+def get_pm_portfolio_team_workload(
+    organization_id: UUID,
+    auth: AuthContext | None = Depends(get_optional_auth),
+    db: Session = Depends(get_db),
+):
+    user_id = _resolve_list_user_id(None, auth)
+    return build_portfolio_team_workload(db, organization_id, user_id)
+
+
 @router.post("", response_model=ProjectRead, status_code=201)
 def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
     creator = db.get(User, payload.created_by)
@@ -152,30 +169,51 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
     if pack_slug == "software":
         template_slug = payload.template_slug or "t1_cliente_clasico"
         tpl = get_template(template_slug)
-        tipo = resolve_project_tipo(template_slug, payload.tipo)
+        profile_slug = resolve_profile_slug(
+            pack_slug=pack_slug,
+            template_profile=tpl.profile_slug,
+            legacy_tipo=payload.tipo,
+            profile_override=payload.profile_slug,
+        )
     else:
         template_slug = payload.template_slug or "t5_freestyle"
-        tipo = payload.tipo or "freestyle"
         tpl = get_template(template_slug)
-    fields = payload.model_dump(exclude={"template_slug", "tipo", "pack_slug"})
+        profile_slug = resolve_profile_slug(
+            pack_slug=pack_slug,
+            profile_override=payload.profile_slug or PROFILE_DEFAULT,
+            legacy_tipo=payload.tipo,
+        )
+    fields = payload.model_dump(
+        exclude={"template_slug", "tipo", "pack_slug", "profile_slug", "project_structure"}
+    )
+    project_structure = payload.project_structure
     project = Project(
         **fields,
         template_slug=template_slug,
         pack_slug=pack_slug,
-        tipo=tipo,
+        profile_slug=profile_slug,
     )
     db.add(project)
     db.flush()
-    if pack_slug == "software":
-        roles = seed_project_from_template(db, project, template_slug)
-        creator_key = tpl.creator_role
-    else:
-        from app.domain.packs.catalog import get_pack_manifest
-        from app.services.packs import seed_project_from_pack
+    from app.domain.packs.catalog import get_pack_manifest
+    from app.services.packs import seed_project_from_pack
 
-        roles = seed_project_from_pack(db, project, pack_slug)
-        manifest = get_pack_manifest(pack_slug)
-        creator_key = manifest.roles[0].slug if manifest and manifest.roles else "owner"
+    try:
+        roles = seed_project_from_pack(
+            db,
+            project,
+            pack_slug,
+            template_slug=template_slug,
+            project_structure=project_structure,
+            initial_created_by=payload.created_by if project_structure else None,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    manifest = get_pack_manifest(pack_slug)
+    creator_key = tpl.creator_role if pack_slug == "software" else (
+        manifest.roles[0].slug if manifest and manifest.roles else "owner"
+    )
     creator_role = roles.get(creator_key)
     if not creator_role:
         raise HTTPException(
@@ -206,7 +244,22 @@ def get_project(
     return project
 
 
-@router.get("/{project_id}/bundle", response_model=ProjectBundleRead)
+@router.get("/{project_id}/inbox-summary", response_model=ProjectInboxSummaryRead)
+def get_project_inbox_summary(
+    project_id: UUID,
+    viewer_user_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    project = get_project_or_404(project_id, db)
+    return build_inbox_summary(db, project, viewer_user_id=viewer_user_id)
+
+
+@router.get(
+    "/{project_id}/bundle",
+    response_model=ProjectBundleRead,
+    deprecated=True,
+    summary="[Deprecated] Usar /records, /record-dependencies, inbox-summary y audit-logs",
+)
 def get_project_bundle(
     project_id: UUID,
     viewer_user_id: UUID | None = Query(default=None),
@@ -218,6 +271,19 @@ def get_project_bundle(
         project,
         viewer_user_id=viewer_user_id,
     )
+
+
+@router.get("/{project_id}/team-board", response_model=TeamBoardRead)
+def get_project_team_board(
+    project_id: UUID,
+    viewer_user_id: UUID = Query(...),
+    db: Session = Depends(get_db),
+):
+    project = get_project_or_404(project_id, db)
+    if not user_has_project_access(db, project, viewer_user_id):
+        raise HTTPException(status_code=403, detail="Sin acceso al proyecto")
+    assert_capability(db, project.id, viewer_user_id, WORKBENCH_TEAM)
+    return build_team_board(db, project)
 
 
 @router.patch("/{project_id}", response_model=ProjectRead)

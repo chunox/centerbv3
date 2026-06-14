@@ -15,15 +15,11 @@ from app.models.entities import (
     Comment,
     Document,
     DocumentExposure,
-    Feature,
-    FeatureQuery,
-    FeatureReport,
     HubEntry,
-    Milestone,
     Project,
     ProjectMember,
+    ProjectRecord,
     ProjectRole,
-    Task,
 )
 
 MemberRol = Literal["pm", "dev", "qa", "cliente"]
@@ -124,18 +120,13 @@ def assert_member_of_project(
         )
 
 
-def assert_not_pm_for_task_ops(
-    db: Session,
-    project_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> None:
-    """PM no crea ni mueve tareas (§4.6)."""
-    is_pm = _member_role_exists(db, project_id, user_id, ("pm",))
-    if is_pm:
-        raise HTTPException(
-            status_code=403,
-            detail="El PM no puede crear ni editar tareas",
-        )
+def _project_id_for_record(
+    db: Session, record_id: uuid.UUID, *, record_type: str, label: str
+) -> uuid.UUID:
+    row = db.get(ProjectRecord, record_id)
+    if not row or row.record_type != record_type:
+        raise HTTPException(status_code=404, detail=label)
+    return row.project_id
 
 
 def get_project_id_for_comment_entity(
@@ -144,31 +135,26 @@ def get_project_id_for_comment_entity(
     entidad_id: uuid.UUID,
 ) -> uuid.UUID:
     if entidad_tipo == "feature":
-        row = db.get(Feature, entidad_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="Feature no encontrada")
-        return row.project_id
+        return _project_id_for_record(
+            db, entidad_id, record_type="feature", label="Feature no encontrada"
+        )
     if entidad_tipo == "tarea":
-        row = db.get(Task, entidad_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="Tarea no encontrada")
-        return row.project_id
+        return _project_id_for_record(
+            db, entidad_id, record_type="task", label="Tarea no encontrada"
+        )
     if entidad_tipo == "feature_query":
-        row = db.get(FeatureQuery, entidad_id)
-        if not row:
+        row = db.get(ProjectRecord, entidad_id)
+        if row is None or row.record_type != "query":
             raise HTTPException(status_code=404, detail="Consulta no encontrada")
-        feature = db.get(Feature, row.feature_id)
-        if not feature:
-            raise HTTPException(status_code=404, detail="Feature no encontrada")
-        return feature.project_id
+        return row.project_id
     if entidad_tipo == "feature_report":
-        row = db.get(FeatureReport, entidad_id)
-        if not row:
+        row = db.get(ProjectRecord, entidad_id)
+        if row is None or row.record_type != "report":
             raise HTTPException(status_code=404, detail="Reporte no encontrado")
-        feature = db.get(Feature, row.feature_id)
-        if not feature:
-            raise HTTPException(status_code=404, detail="Feature no encontrada")
-        return feature.project_id
+        return row.project_id
+    row = db.get(ProjectRecord, entidad_id)
+    if row is not None and row.record_type == entidad_tipo:
+        return row.project_id
     raise HTTPException(status_code=400, detail="Tipo de entidad no soportado")
 
 

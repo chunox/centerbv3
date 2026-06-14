@@ -12,22 +12,12 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
-from app.models.entities import (
-    AuditLog,
-    Comment,
-    Document,
-    Feature,
-    FeatureQuery,
-    FeatureReport,
-    HubEntry,
-    Milestone,
-    Task,
-    User,
-)
+from app.models.entities import AuditLog, Comment, Document, HubEntry, User
 from app.schemas.audit_logs import AuditLogCreate, AuditLogRead
 from app.services.audit_display import audit_log_to_read, audit_logs_to_read
 from app.services.access import resolve_audit_logs_for_user
 from app.services.audit import AuditEntidadTipo, record_audit_log
+from app.services.record_validation import AUDIT_RECORD_TYPE, assert_project_record
 
 router = APIRouter(tags=["audit-logs"])
 
@@ -38,20 +28,15 @@ def _validate_entidad_in_project(
     project_id: UUID,
     db: Session,
 ) -> None:
-    if entidad_tipo == "feature":
-        row = db.get(Feature, entidad_id)
-        if not row or row.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Feature no encontrada en el proyecto")
-        return
-    if entidad_tipo == "tarea":
-        row = db.get(Task, entidad_id)
-        if not row or row.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Tarea no encontrada en el proyecto")
-        return
-    if entidad_tipo == "milestone":
-        row = db.get(Milestone, entidad_id)
-        if not row or row.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Milestone no encontrado en el proyecto")
+    record_type = AUDIT_RECORD_TYPE.get(entidad_tipo)
+    if record_type is not None:
+        assert_project_record(
+            db,
+            record_id=entidad_id,
+            project_id=project_id,
+            record_type=record_type,
+            detail=f"Entidad {entidad_tipo} no encontrada en el proyecto",
+        )
         return
     if entidad_tipo == "document":
         row = db.get(Document, entidad_id)
@@ -62,22 +47,6 @@ def _validate_entidad_in_project(
         row = db.get(HubEntry, entidad_id)
         if not row or row.project_id != project_id:
             raise HTTPException(status_code=404, detail="Publicación no encontrada en el proyecto")
-        return
-    if entidad_tipo == "feature_query":
-        row = db.get(FeatureQuery, entidad_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="Consulta no encontrada")
-        feature = db.get(Feature, row.feature_id)
-        if not feature or feature.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Consulta no pertenece al proyecto")
-        return
-    if entidad_tipo == "feature_report":
-        row = db.get(FeatureReport, entidad_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="Reporte no encontrado")
-        feature = db.get(Feature, row.feature_id)
-        if not feature or feature.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Reporte no pertenece al proyecto")
         return
     if entidad_tipo == "comment":
         if not db.get(Comment, entidad_id):
