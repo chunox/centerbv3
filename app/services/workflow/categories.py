@@ -1,7 +1,6 @@
 """Resolución de categorías y metadatos de estado desde workflows por proyecto."""
 from __future__ import annotations
 
-import json
 from typing import Any
 from uuid import UUID
 
@@ -181,7 +180,7 @@ def batch_load_workflows(
         if key in seen:
             continue
         seen.add(key)
-        result[key] = json.loads(row.definition)
+        result[key] = row.definition
 
     for project in projects:
         for entity_type in WORKFLOW_ENTITY_TYPES:

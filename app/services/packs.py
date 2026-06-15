@@ -1,7 +1,6 @@
 """Seed y aplicación de project packs."""
 from __future__ import annotations
 
-import json
 import uuid
 
 from sqlalchemy import select
@@ -73,8 +72,8 @@ def _blocks_from_manifest(manifest: PackManifest) -> list[BlockDef]:
     return blocks
 
 
-def _manifest_to_db(manifest: PackManifest) -> str:
-    return manifest.model_dump_json()
+def _manifest_to_db(manifest: PackManifest) -> dict:
+    return manifest.model_dump()
 
 
 def ensure_system_packs(db: Session) -> None:
@@ -101,7 +100,7 @@ def get_project_pack_manifest(db: Session, project: Project) -> PackManifest | N
     row = db.scalar(select(ProjectPack).where(ProjectPack.slug == project.pack_slug))
     if row is None:
         return get_pack_manifest(project.pack_slug)
-    return PackManifest.model_validate_json(row.manifest)
+    return PackManifest.model_validate(row.manifest)
 
 
 def list_record_types(db: Session, project_id: uuid.UUID) -> list[ProjectRecordType]:
@@ -140,17 +139,13 @@ def _seed_record_types_from_manifest(
             )
         )
         parent_keys = et.parent_type_keys or ([et.parent_type] if et.parent_type else [])
-        parent_json = json.dumps(parent_keys, ensure_ascii=False)
-        field_schema = json.dumps(
-            [f.model_dump() for f in et.fields], ensure_ascii=False
-        )
+        field_schema = [f.model_dump() for f in et.fields]
         if existing:
             row = db.get(ProjectRecordType, existing)
             if row:
                 row.label = et.label
-                row.storage = et.storage
                 row.field_schema = field_schema
-                row.parent_types = parent_json
+                row.parent_types = parent_keys or None
                 row.icon = et.icon
                 row.traits = et.traits
                 row.is_system = et.is_system
@@ -161,9 +156,8 @@ def _seed_record_types_from_manifest(
                 project_id=project.id,
                 key=et.key,
                 label=et.label,
-                storage=et.storage,
                 field_schema=field_schema,
-                parent_types=parent_json,
+                parent_types=parent_keys or None,
                 icon=et.icon,
                 traits=et.traits,
                 is_system=et.is_system,
@@ -274,7 +268,7 @@ def _seed_pack_workflows(
                 entity_type=entity_type,
                 version=1,
                 is_active=True,
-                definition=json.dumps(definition, ensure_ascii=False),
+                definition=definition,
             )
         )
     db.flush()
@@ -306,11 +300,10 @@ def _seed_workbenches_from_manifest(
             ProjectWorkbenchDefinition.project_id == project.id
         )
     )
-    encoded = json.dumps(payload, ensure_ascii=False)
     if row:
-        row.definition = encoded
+        row.definition = payload
     else:
-        db.add(ProjectWorkbenchDefinition(project_id=project.id, definition=encoded))
+        db.add(ProjectWorkbenchDefinition(project_id=project.id, definition=payload))
     db.flush()
 
 
@@ -350,11 +343,10 @@ def _seed_pack_workbenches_from_views(db: Session, project: Project) -> None:
             ProjectWorkbenchDefinition.project_id == project.id
         )
     )
-    encoded = json.dumps(payload, ensure_ascii=False)
     if row:
-        row.definition = encoded
+        row.definition = payload
     else:
-        db.add(ProjectWorkbenchDefinition(project_id=project.id, definition=encoded))
+        db.add(ProjectWorkbenchDefinition(project_id=project.id, definition=payload))
     db.flush()
 
 
@@ -516,18 +508,16 @@ def import_project_pack_config(
         parent_types = rt.get("parent_types") or []
         if existing:
             existing.label = str(rt.get("label") or existing.label)
-            existing.storage = str(rt.get("storage") or existing.storage)
-            existing.field_schema = json.dumps(field_schema, ensure_ascii=False)
-            existing.parent_types = json.dumps(parent_types, ensure_ascii=False)
+            existing.field_schema = field_schema
+            existing.parent_types = parent_types or None
         else:
             db.add(
                 ProjectRecordType(
                     project_id=project.id,
                     key=key,
                     label=str(rt.get("label") or key),
-                    storage=str(rt.get("storage") or "generic"),
-                    field_schema=json.dumps(field_schema, ensure_ascii=False),
-                    parent_types=json.dumps(parent_types, ensure_ascii=False),
+                    field_schema=field_schema,
+                    parent_types=parent_types or None,
                     orden=int(rt.get("orden") or 0),
                 )
             )

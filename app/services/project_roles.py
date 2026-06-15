@@ -1,7 +1,6 @@
 """CRUD de roles, capacidades y seed de acceso por proyecto."""
 from __future__ import annotations
 
-import json
 import uuid
 
 from fastapi import HTTPException
@@ -63,13 +62,13 @@ def seed_project_from_template(
                 entity_type=entity_type,
                 version=1,
                 is_active=True,
-                definition=json.dumps(wf, ensure_ascii=False),
+                definition=wf,
             )
         )
     db.add(
         ProjectWorkbenchDefinition(
             project_id=project.id,
-            definition=json.dumps(DEFAULT_WORKBENCHES, ensure_ascii=False),
+            definition=DEFAULT_WORKBENCHES,
         )
     )
     from app.domain.packs.catalog import pack_software_manifest
@@ -266,7 +265,7 @@ def update_workflow_definition(
         entity_type=entity_type,
         version=int(latest) + 1,
         is_active=True,
-        definition=json.dumps(definition, ensure_ascii=False),
+        definition=definition,
     )
     db.add(wf)
     return wf, capabilities_added
@@ -280,11 +279,10 @@ def update_workbench_definition(
             ProjectWorkbenchDefinition.project_id == project.id
         )
     )
-    payload = json.dumps(workbenches, ensure_ascii=False)
     if row:
-        row.definition = payload
+        row.definition = workbenches
         return row
-    row = ProjectWorkbenchDefinition(project_id=project.id, definition=payload)
+    row = ProjectWorkbenchDefinition(project_id=project.id, definition=workbenches)
     db.add(row)
     return row
 

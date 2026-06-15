@@ -1,7 +1,6 @@
 """API de contexto de acceso, roles y workflows por proyecto."""
 from __future__ import annotations
 
-import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -173,21 +172,12 @@ def get_access_context(
 
     record_types: list[RecordTypeRead] = []
     for rt in list_record_types(db, project.id):
-        try:
-            fields = json.loads(rt.field_schema) if rt.field_schema else []
-        except json.JSONDecodeError:
-            fields = []
-        try:
-            parents = json.loads(rt.parent_types) if rt.parent_types else []
-        except json.JSONDecodeError:
-            parents = []
         record_types.append(
             RecordTypeRead(
                 key=rt.key,
                 label=rt.label,
-                storage=rt.storage,
-                field_schema=fields,
-                parent_types=parents,
+                field_schema=rt.field_schema or [],
+                parent_types=rt.parent_types or [],
                 icon=rt.icon,
                 traits=rt.traits or {},
                 is_system=rt.is_system,
@@ -294,9 +284,8 @@ def export_project_pack(
             {
                 "key": rt.key,
                 "label": rt.label,
-                "storage": rt.storage,
-                "field_schema": json.loads(rt.field_schema or "[]"),
-                "parent_types": json.loads(rt.parent_types or "[]"),
+                "field_schema": rt.field_schema or [],
+                "parent_types": rt.parent_types or [],
             }
             for rt in record_types
         ],
@@ -394,9 +383,8 @@ def put_workflow(
         raise HTTPException(status_code=422, detail="entity_type inválido")
     wf, capabilities_added = update_workflow_definition(db, project, entity_type, payload.definition)
     db.commit()
-    defn = json.loads(wf.definition)
     return workflow_summary_from_definition(
-        entity_type, wf.version, defn, capabilities_added=capabilities_added
+        entity_type, wf.version, wf.definition, capabilities_added=capabilities_added
     )
 
 
@@ -544,9 +532,7 @@ def restore_config_snapshot(
     row = db.get(ProjectConfigSnapshot, snapshot_id)
     if row is None or row.project_id != project.id:
         raise HTTPException(status_code=404, detail="Snapshot no encontrado")
-    import json as json_lib
-
-    payload = json_lib.loads(row.payload)
+    payload = row.payload
     if row.kind == "communication":
         rules = [CommunicationRule.model_validate(r) for r in payload]
         update_communication_rules(db, project, rules, actor_user_id=actor_user_id)
@@ -610,9 +596,8 @@ def apply_workflow_template(
     definition = workflow_for_profile(profile, entity_type)
     wf, _capabilities_added = update_workflow_definition(db, project, entity_type, definition)
     db.commit()
-    defn = json.loads(wf.definition)
     return workflow_summary_from_definition(
-        entity_type, wf.version, defn, capabilities_added=_capabilities_added
+        entity_type, wf.version, wf.definition, capabilities_added=_capabilities_added
     )
 
 

@@ -371,7 +371,6 @@ def apply_feature_action(
         record_ref=RecordRef(
             id=feature.id,
             record_type="feature",
-            storage="generic",
             project_id=project.id,
         ),
         action_id=action,

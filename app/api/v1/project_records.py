@@ -49,7 +49,6 @@ def _dto_to_read(dto) -> RecordRead:
         id=dto.id,
         project_id=dto.project_id,
         record_type=dto.record_type,
-        storage=dto.storage,
         titulo=dto.titulo,
         descripcion=dto.descripcion,
         estado=dto.estado,

@@ -6,13 +6,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-DocumentExposureAmbito = Literal["proyecto", "milestone", "feature"]
+DocumentExposureAmbito = Literal["proyecto", "milestone", "feature", "record"]
 
 
 class DocumentExposureCreate(BaseModel):
     ambito: DocumentExposureAmbito
-    milestone_id: UUID | None = None
-    feature_id: UUID | None = None
+    record_id: UUID | None = None
     document_id: UUID | None = None
     attachment_id: UUID | None = None
     hub_entry_id: UUID | None = None
@@ -30,16 +29,10 @@ class DocumentExposureCreate(BaseModel):
             raise ValueError(
                 "Debe indicar exactamente uno de document_id, attachment_id o hub_entry_id"
             )
-        if self.ambito == "proyecto" and (
-            self.milestone_id is not None or self.feature_id is not None
-        ):
-            raise ValueError("ambito proyecto no admite milestone_id ni feature_id")
-        if self.ambito == "milestone" and (
-            self.milestone_id is None or self.feature_id is not None
-        ):
-            raise ValueError("ambito milestone requiere milestone_id sin feature_id")
-        if self.ambito == "feature" and self.feature_id is None:
-            raise ValueError("ambito feature requiere feature_id")
+        if self.ambito == "proyecto" and self.record_id is not None:
+            raise ValueError("ambito 'proyecto' no admite record_id")
+        if self.ambito != "proyecto" and self.record_id is None:
+            raise ValueError(f"ambito '{self.ambito}' requiere record_id")
         return self
 
 
@@ -52,8 +45,7 @@ class DocumentExposureRead(BaseModel):
     id: UUID
     project_id: UUID
     ambito: DocumentExposureAmbito
-    milestone_id: UUID | None
-    feature_id: UUID | None
+    record_id: UUID | None
     document_id: UUID | None
     attachment_id: UUID | None
     hub_entry_id: UUID | None

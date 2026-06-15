@@ -30,7 +30,6 @@ from app.schemas.pm_portfolio import (
 from app.services.audit_display import audit_log_to_read
 from app.services.project_profile import legacy_tipo_for_project
 from app.services.organizations import get_org_member
-from app.services.project_bundle import _PENDING_QUERY_STATES
 from app.services.records.repository import _data, list_records
 from app.services.workflow.categories import (
     batch_load_workflows,
@@ -46,6 +45,9 @@ ACTIVITY_LIMIT = 10
 CRITICAL_MILESTONES_LIMIT = 8
 
 _PM_PENDING_QUERY_CATEGORIES = frozenset({"inbox_pm", "draft", "active"})
+_PENDING_QUERY_STATES = frozenset(
+    {"borrador", "pendiente_aprobacion_pm", "esperando_pm", "respuesta_cliente"}
+)
 
 
 def _empty_totals() -> PmPortfolioTotalsRead:

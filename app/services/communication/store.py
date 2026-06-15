@@ -1,7 +1,6 @@
 """Persistencia de reglas de comunicación por proyecto."""
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any
 
@@ -15,12 +14,10 @@ from app.services.communication.validate import validate_communication_rules
 from app.services.config_snapshots import save_config_snapshot
 
 
-def _parse_rules(raw: str) -> list[dict[str, Any]]:
-    try:
-        data = json.loads(raw) if raw else []
-    except (json.JSONDecodeError, TypeError):
+def _parse_rules(raw: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not raw or not isinstance(raw, list):
         return []
-    return data if isinstance(data, list) else []
+    return raw
 
 
 def get_communication_rules(db: Session, project_id: uuid.UUID) -> list[CommunicationRule]:
@@ -58,16 +55,16 @@ def update_communication_rules(
             payload=[r.model_dump() for r in existing],
             created_by=actor_user_id,
         )
-    payload = json.dumps([r.model_dump() for r in rules], ensure_ascii=False)
+    definition = [r.model_dump() for r in rules]
     row = db.scalar(
         select(ProjectCommunicationRules).where(
             ProjectCommunicationRules.project_id == project.id
         )
     )
     if row is None:
-        row = ProjectCommunicationRules(project_id=project.id, definition=payload)
+        row = ProjectCommunicationRules(project_id=project.id, definition=definition)
         db.add(row)
     else:
-        row.definition = payload
+        row.definition = definition
     db.flush()
     return rules

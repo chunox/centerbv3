@@ -22,7 +22,6 @@ def _software_entity_types() -> list[EntityTypeDef]:
         EntityTypeDef(
             key="milestone",
             label="Hito",
-            storage="generic",
             hierarchy="root",
             icon="flag",
             traits={"schedulable": True, "comments": True, "scope_chain": True},
@@ -31,7 +30,6 @@ def _software_entity_types() -> list[EntityTypeDef]:
         EntityTypeDef(
             key="feature",
             label="Feature",
-            storage="generic",
             hierarchy="child",
             parent_type="milestone",
             parent_type_keys=["milestone"],
@@ -42,7 +40,6 @@ def _software_entity_types() -> list[EntityTypeDef]:
         EntityTypeDef(
             key="task",
             label="Tarea",
-            storage="generic",
             hierarchy="child",
             parent_type="feature",
             parent_type_keys=["feature"],
@@ -61,7 +58,6 @@ def _software_entity_types() -> list[EntityTypeDef]:
         EntityTypeDef(
             key="query",
             label="Consulta",
-            storage="generic",
             hierarchy="child",
             parent_type="feature",
             parent_type_keys=["feature"],
@@ -72,7 +68,6 @@ def _software_entity_types() -> list[EntityTypeDef]:
         EntityTypeDef(
             key="report",
             label="Reporte",
-            storage="generic",
             hierarchy="child",
             parent_type="feature",
             parent_type_keys=["feature"],

@@ -635,7 +635,7 @@ def seed_portal_cliente(
         f"/projects/{portal['id']}/document-exposures",
         {
             "ambito": "milestone",
-            "milestone_id": milestones[0]["id"],
+            "record_id": milestones[0]["id"],
             "document_id": doc["id"],
             "titulo_visible": "Alcance Entrega 1 — MVP",
             "expuesto_por": pm["id"],
@@ -646,8 +646,7 @@ def seed_portal_cliente(
         f"/projects/{portal['id']}/document-exposures",
         {
             "ambito": "feature",
-            "milestone_id": milestones[1]["id"],
-            "feature_id": webhooks["id"],
+            "record_id": webhooks["id"],
             "document_id": doc["id"],
             "titulo_visible": "Webhooks — anexo técnico",
             "expuesto_por": pm["id"],

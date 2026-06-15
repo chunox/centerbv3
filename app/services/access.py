@@ -219,17 +219,14 @@ def list_exposures_for_viewer(
     project_id: uuid.UUID,
     *,
     viewer_user_id: uuid.UUID | None,
-    milestone_id: uuid.UUID | None = None,
-    feature_id: uuid.UUID | None = None,
+    record_id: uuid.UUID | None = None,
 ) -> list[DocumentExposure]:
     from app.domain.capabilities import DOCUMENT_VIEW_INTERNAL
     from app.services.workflow.capabilities import user_has_capability
 
     stmt = select(DocumentExposure).where(DocumentExposure.project_id == project_id)
-    if milestone_id is not None:
-        stmt = stmt.where(DocumentExposure.milestone_id == milestone_id)
-    if feature_id is not None:
-        stmt = stmt.where(DocumentExposure.feature_id == feature_id)
+    if record_id is not None:
+        stmt = stmt.where(DocumentExposure.record_id == record_id)
     exposures = list(db.scalars(stmt.order_by(DocumentExposure.created_at.desc())))
     if viewer_user_id is None or user_has_capability(
         db, project_id, viewer_user_id, DOCUMENT_VIEW_INTERNAL

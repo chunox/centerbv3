@@ -4,16 +4,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Literal
-
-StorageKind = Literal["generic", "legacy"]
-
+from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class RecordRef:
     id: uuid.UUID
     record_type: str
-    storage: StorageKind
     project_id: uuid.UUID
 
 
@@ -22,7 +18,6 @@ class RecordDTO:
     id: uuid.UUID
     project_id: uuid.UUID
     record_type: str
-    storage: StorageKind
     titulo: str
     descripcion: str | None
     estado: str

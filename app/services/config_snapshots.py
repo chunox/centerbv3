@@ -1,7 +1,6 @@
 """Snapshots de configuración Studio."""
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any, Literal
 
@@ -24,7 +23,7 @@ def save_config_snapshot(
     row = ProjectConfigSnapshot(
         project_id=project.id,
         kind=kind,
-        payload=json.dumps(payload, ensure_ascii=False),
+        payload=payload,
         created_by=created_by,
     )
     db.add(row)

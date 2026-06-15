@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import uuid
 from datetime import date
 from typing import Any
@@ -108,7 +107,7 @@ def ensure_workflow(db: Session, project: Project, entity_type: str, definition:
             entity_type=entity_type,
             version=1,
             is_active=True,
-            definition=json.dumps(definition, ensure_ascii=False),
+            definition=definition,
         )
     )
     db.flush()

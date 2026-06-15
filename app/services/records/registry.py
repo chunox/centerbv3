@@ -56,7 +56,6 @@ class RecordTypeRegistry:
         return RecordRef(
             id=row.id,
             record_type=row.record_type,
-            storage="generic",
             project_id=row.project_id,
         )
 

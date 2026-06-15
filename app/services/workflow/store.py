@@ -1,7 +1,6 @@
 """Lectura de workflows y workbenches almacenados por proyecto."""
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any
 
@@ -17,8 +16,8 @@ from app.models.entities import (
 )
 
 
-def _parse_json(raw: str) -> dict[str, Any] | list[Any]:
-    return json.loads(raw)
+def _parse_json(raw: dict | list | None) -> dict[str, Any] | list[Any]:
+    return raw if raw is not None else {}
 
 
 WORKFLOW_ENTITY_TYPES = ("feature", "task", "query", "report", "milestone")

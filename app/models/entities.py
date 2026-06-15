@@ -365,7 +365,7 @@ class ProjectPack(Base):
     slug: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
     nombre: Mapped[str] = mapped_column(String(120), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    manifest: Mapped[str] = mapped_column(Text, nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
@@ -386,9 +386,8 @@ class ProjectRecordType(Base):
     )
     key: Mapped[str] = mapped_column(String(40), nullable=False)
     label: Mapped[str] = mapped_column(String(80), nullable=False)
-    storage: Mapped[str] = mapped_column(String(10), nullable=False, default="generic")
-    field_schema: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    parent_types: Mapped[str | None] = mapped_column(Text, nullable=True)
+    field_schema: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    parent_types: Mapped[list | None] = mapped_column(JSON, nullable=True)
     icon: Mapped[str | None] = mapped_column(String(40), nullable=True)
     traits: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -548,7 +547,7 @@ class ProjectWorkflowDefinition(Base):
     entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    definition: Mapped[str] = mapped_column(Text, nullable=False)
+    definition: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     project: Mapped[Project] = relationship(back_populates="workflow_definitions")
@@ -567,7 +566,7 @@ class ProjectWorkbenchDefinition(Base):
         nullable=False,
         unique=True,
     )
-    definition: Mapped[str] = mapped_column(Text, nullable=False)
+    definition: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow
     )
@@ -588,7 +587,7 @@ class ProjectCommunicationRules(Base):
         nullable=False,
         unique=True,
     )
-    definition: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    definition: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow
     )
@@ -609,7 +608,7 @@ class ProjectConfigSnapshot(Base):
         nullable=False,
     )
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -735,10 +734,8 @@ class DocumentExposure(Base):
             name="chk_exposure_target",
         ),
         CheckConstraint(
-            "(ambito = 'proyecto' AND milestone_id IS NULL AND feature_id IS NULL) "
-            "OR (ambito = 'milestone' AND milestone_id IS NOT NULL "
-            "AND feature_id IS NULL) "
-            "OR (ambito = 'feature' AND feature_id IS NOT NULL)",
+            "(ambito = 'proyecto' AND record_id IS NULL) "
+            "OR (ambito IN ('milestone', 'feature', 'record') AND record_id IS NOT NULL)",
             name="chk_exposure_ambito",
         ),
     )
@@ -752,12 +749,7 @@ class DocumentExposure(Base):
         nullable=False,
     )
     ambito: Mapped[str] = mapped_column(String(20), nullable=False)
-    milestone_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("project_records.id", ondelete="CASCADE"),
-        nullable=True,
-    )
-    feature_id: Mapped[uuid.UUID | None] = mapped_column(
+    record_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("project_records.id", ondelete="CASCADE"),
         nullable=True,
@@ -784,10 +776,7 @@ class DocumentExposure(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     project: Mapped[Project] = relationship(back_populates="document_exposures")
-    milestone: Mapped["ProjectRecord | None"] = relationship(
-        foreign_keys=[milestone_id]
-    )
-    feature: Mapped["ProjectRecord | None"] = relationship(foreign_keys=[feature_id])
+    record: Mapped["ProjectRecord | None"] = relationship(foreign_keys=[record_id])
     document: Mapped[Document | None] = relationship(back_populates="exposures")
     attachment: Mapped[Attachment | None] = relationship(
         back_populates="exposures"

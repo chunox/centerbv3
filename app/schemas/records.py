@@ -11,7 +11,6 @@ class RecordRead(BaseModel):
     id: UUID
     project_id: UUID
     record_type: str
-    storage: str
     titulo: str
     descripcion: str | None = None
     estado: str

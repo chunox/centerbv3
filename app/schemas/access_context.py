@@ -74,7 +74,6 @@ def workflow_summary_from_definition(
 class RecordTypeRead(BaseModel):
     key: str
     label: str
-    storage: str
     field_schema: list[dict[str, Any]] = Field(default_factory=list)
     parent_types: list[str] = Field(default_factory=list)
     icon: str | None = None

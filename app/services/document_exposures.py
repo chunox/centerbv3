@@ -27,16 +27,13 @@ def list_document_exposures(
     project_id: uuid.UUID,
     *,
     ambito: DocumentExposureAmbito | None = None,
-    milestone_id: uuid.UUID | None = None,
-    feature_id: uuid.UUID | None = None,
+    record_id: uuid.UUID | None = None,
 ) -> list[DocumentExposure]:
     stmt = select(DocumentExposure).where(DocumentExposure.project_id == project_id)
     if ambito is not None:
         stmt = stmt.where(DocumentExposure.ambito == ambito)
-    if milestone_id is not None:
-        stmt = stmt.where(DocumentExposure.milestone_id == milestone_id)
-    if feature_id is not None:
-        stmt = stmt.where(DocumentExposure.feature_id == feature_id)
+    if record_id is not None:
+        stmt = stmt.where(DocumentExposure.record_id == record_id)
     return list(db.scalars(stmt.order_by(DocumentExposure.created_at.desc())))
 
 

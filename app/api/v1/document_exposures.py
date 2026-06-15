@@ -29,8 +29,7 @@ router = APIRouter(tags=["document-exposures"])
 def list_project_document_exposures(
     project_id: UUID,
     ambito: DocumentExposureAmbito | None = Query(default=None),
-    milestone_id: UUID | None = Query(default=None),
-    feature_id: UUID | None = Query(default=None),
+    record_id: UUID | None = Query(default=None),
     viewer_user_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
@@ -41,8 +40,7 @@ def list_project_document_exposures(
         db,
         project_id,
         viewer_user_id=viewer_user_id,
-        milestone_id=milestone_id,
-        feature_id=feature_id,
+        record_id=record_id,
     )
     if ambito is not None:
         exposures = [e for e in exposures if e.ambito == ambito]

@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-StorageKind = Literal["generic", "legacy"]
 ViewType = Literal[
     "board",
     "gantt",
@@ -59,7 +58,6 @@ class FieldDefinitionDef(BaseModel):
 class EntityTypeDef(BaseModel):
     key: str
     label: str
-    storage: StorageKind = "generic"
     hierarchy: Literal["root", "child"] = "root"
     parent_of: list[str] = Field(default_factory=list)
     parent_type: str | None = None

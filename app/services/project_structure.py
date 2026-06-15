@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import uuid
 from typing import Any
 
@@ -82,7 +81,6 @@ def _structure_entity_to_def(entity: ProjectStructureEntity) -> EntityTypeDef:
     return EntityTypeDef(
         key=entity.key,
         label=entity.label,
-        storage="generic",
         hierarchy=hierarchy,  # type: ignore[arg-type]
         parent_type=parent_type,
         parent_type_keys=list(entity.parent_type_keys),
@@ -347,7 +345,7 @@ def sync_entity_capabilities(
             .order_by(ProjectRecordType.orden.asc())
         )
     ):
-        parents = json.loads(rt.parent_types) if rt.parent_types else []
+        parents = rt.parent_types or []
         if not parents and root_key is None:
             root_key = rt.key
         elif root_key and rt.key != root_key and child_key is None:
@@ -434,14 +432,8 @@ def structure_from_record_types(
 ) -> list[ProjectStructureEntity]:
     entities: list[ProjectStructureEntity] = []
     for rt in rows:
-        try:
-            parents = json.loads(rt.parent_types) if rt.parent_types else []
-        except json.JSONDecodeError:
-            parents = []
-        try:
-            fields_raw = json.loads(rt.field_schema) if rt.field_schema else []
-        except json.JSONDecodeError:
-            fields_raw = []
+        parents = rt.parent_types or []
+        fields_raw = rt.field_schema or []
         entities.append(
             ProjectStructureEntity(
                 key=rt.key,
@@ -561,7 +553,7 @@ def update_entity_type_on_project(
             else:
                 updated.append(entity)
         validate_structure_entities(updated)
-        rt.parent_types = json.dumps(parent_type_keys, ensure_ascii=False)
+        rt.parent_types = parent_type_keys or None
 
     if label is not None:
         rt.label = label
@@ -570,7 +562,7 @@ def update_entity_type_on_project(
     if traits is not None:
         rt.traits = traits
     if field_schema is not None:
-        rt.field_schema = json.dumps(field_schema, ensure_ascii=False)
+        rt.field_schema = field_schema
     if orden is not None:
         rt.orden = orden
     db.flush()

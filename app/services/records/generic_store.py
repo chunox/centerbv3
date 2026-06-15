@@ -37,7 +37,6 @@ def _to_dto(row: ProjectRecord) -> RecordDTO:
         id=row.id,
         project_id=row.project_id,
         record_type=row.record_type,
-        storage="generic",
         titulo=row.titulo,
         descripcion=row.descripcion,
         estado=row.estado,
@@ -111,7 +110,7 @@ def create_record(
     assert_project_active(project)
     rt = _get_record_type(db, project.id, record_type)
     if parent_id and rt.parent_types:
-        parents = json.loads(rt.parent_types)
+        parents = rt.parent_types
         parent_row = db.get(ProjectRecord, parent_id)
         if parent_row is None or parent_row.project_id != project.id:
             raise HTTPException(status_code=404, detail="Registro padre no encontrado")
@@ -183,12 +182,12 @@ def update_record(
         rt = _get_record_type(db, record.project_id, record.record_type)
         if parent_id is None:
             if rt.parent_types:
-                parents = json.loads(rt.parent_types)
+                parents = rt.parent_types
                 if parents:
                     raise HTTPException(status_code=422, detail="Tipo de padre requerido")
             record.parent_id = None
         else:
-            parents = json.loads(rt.parent_types) if rt.parent_types else []
+            parents = rt.parent_types or []
             parent_row = db.get(ProjectRecord, parent_id)
             if parent_row is None or parent_row.project_id != record.project_id:
                 raise HTTPException(status_code=404, detail="Registro padre no encontrado")
@@ -293,7 +292,6 @@ def transition_record(
         record_ref=RecordRef(
             id=record.id,
             record_type=record.record_type,
-            storage="generic",
             project_id=project.id,
         ),
         action_id=action_id,

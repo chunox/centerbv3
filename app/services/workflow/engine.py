@@ -298,12 +298,10 @@ def apply_entity_transition(
     side_effect_context: dict[str, Any] | None = None,
 ) -> str:
     ref = registry.resolve_ref(db, entity_type, entity.id)
-    storage = "legacy" if registry.is_legacy(entity_type) else "generic"
     if ref is None:
         ref = RecordRef(
             id=entity.id,
             record_type=entity_type,
-            storage=storage,
             project_id=project.id,
         )
     return apply_record_transition(

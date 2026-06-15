@@ -38,7 +38,6 @@ from app.domain.capabilities import WORKBENCH_TEAM
 from app.schemas.inbox_summary import ProjectInboxSummaryRead
 from app.schemas.pm_portfolio import PmPortfolioRead
 from app.schemas.portfolio_team_workload import PortfolioTeamWorkloadRead
-from app.schemas.project_bundle import ProjectBundleRead
 from app.schemas.team_board import TeamBoardRead
 from app.schemas.projects import (
     MemberRol,
@@ -53,7 +52,6 @@ from app.schemas.projects import (
 from app.services.inbox_summary import build_inbox_summary
 from app.services.pm_portfolio import build_pm_portfolio
 from app.services.portfolio_team_workload import build_portfolio_team_workload
-from app.services.project_bundle import build_project_bundle
 from app.services.team_board import build_team_board
 from app.services.workflow.authorize import assert_capability
 from app.services.deletions import delete_project
@@ -252,25 +250,6 @@ def get_project_inbox_summary(
 ):
     project = get_project_or_404(project_id, db)
     return build_inbox_summary(db, project, viewer_user_id=viewer_user_id)
-
-
-@router.get(
-    "/{project_id}/bundle",
-    response_model=ProjectBundleRead,
-    deprecated=True,
-    summary="[Deprecated] Usar /records, /record-dependencies, inbox-summary y audit-logs",
-)
-def get_project_bundle(
-    project_id: UUID,
-    viewer_user_id: UUID | None = Query(default=None),
-    db: Session = Depends(get_db),
-):
-    project = get_project_or_404(project_id, db)
-    return build_project_bundle(
-        db,
-        project,
-        viewer_user_id=viewer_user_id,
-    )
 
 
 @router.get("/{project_id}/team-board", response_model=TeamBoardRead)

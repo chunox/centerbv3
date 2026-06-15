@@ -94,9 +94,7 @@ def create_record(
         parent = get_record_or_404(db, parent_id)
         if parent.project_id != project.id:
             raise HTTPException(status_code=404, detail="Padre no encontrado")
-        import json
-
-        parents = json.loads(rt.parent_types or "[]") if rt.parent_types else []
+        parents = rt.parent_types or []
         if parents and parent.record_type not in parents:
             raise HTTPException(status_code=422, detail="Tipo de padre inválido")
 

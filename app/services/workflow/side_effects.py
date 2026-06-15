@@ -371,7 +371,6 @@ def _cancel_record_cascade(
             record_ref=RecordRef(
                 id=record.id,
                 record_type=record.record_type,
-                storage="generic",
                 project_id=project.id,
             ),
             action_id=action,

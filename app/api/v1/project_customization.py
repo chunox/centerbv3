@@ -70,25 +70,14 @@ class ViewCreate(BaseModel):
 @router.get("/{project_id}/entity-types", response_model=list[EntityTypeRead])
 def list_entity_types(project_id: UUID, db: Session = Depends(get_db)):
     project = get_project_or_404(project_id, db)
-    import json
-
     result: list[EntityTypeRead] = []
     for rt in list_record_types(db, project.id):
-        try:
-            fields = json.loads(rt.field_schema) if rt.field_schema else []
-        except json.JSONDecodeError:
-            fields = []
-        try:
-            parents = json.loads(rt.parent_types) if rt.parent_types else []
-        except json.JSONDecodeError:
-            parents = []
         result.append(
             EntityTypeRead(
                 key=rt.key,
                 label=rt.label,
-                storage=rt.storage,
-                field_schema=fields,
-                parent_types=parents,
+                field_schema=rt.field_schema or [],
+                parent_types=rt.parent_types or [],
                 icon=rt.icon,
                 traits=rt.traits or {},
                 is_system=rt.is_system,
@@ -99,20 +88,11 @@ def list_entity_types(project_id: UUID, db: Session = Depends(get_db)):
 
 
 def _entity_type_to_read(rt: ProjectRecordType) -> EntityTypeRead:
-    try:
-        fields = json.loads(rt.field_schema) if rt.field_schema else []
-    except json.JSONDecodeError:
-        fields = []
-    try:
-        parents = json.loads(rt.parent_types) if rt.parent_types else []
-    except json.JSONDecodeError:
-        parents = []
     return EntityTypeRead(
         key=rt.key,
         label=rt.label,
-        storage=rt.storage,
-        field_schema=fields,
-        parent_types=parents,
+        field_schema=rt.field_schema or [],
+        parent_types=rt.parent_types or [],
         icon=rt.icon,
         traits=rt.traits or {},
         is_system=rt.is_system,

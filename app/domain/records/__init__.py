@@ -1,3 +1,3 @@
-from app.domain.records.types import RecordDTO, RecordRef, StorageKind
+from app.domain.records.types import RecordDTO, RecordRef
 
-__all__ = ["RecordDTO", "RecordRef", "StorageKind"]
+__all__ = ["RecordDTO", "RecordRef"]
