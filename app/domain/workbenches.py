@@ -28,11 +28,12 @@ from app.domain.capabilities import (
 )
 
 DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
+    # ── PM ───────────────────────────────────────────────────────────────────
     {
         "key": "overview",
         "label": "Resumen",
         "route": "overview",
-        "icon": "layout-dashboard",
+        "icon": "home",
         "section": "pm",
         "required_capabilities": [WORKBENCH_OVERVIEW],
         "orden": 10,
@@ -54,16 +55,17 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         "key": "team",
         "label": "Equipo",
         "route": "team",
-        "icon": "users",
+        "icon": "users-round",
         "section": "pm",
         "required_capabilities": [WORKBENCH_TEAM],
-        "orden": 25,
+        "orden": 30,
     },
+    # ── Desarrollo ────────────────────────────────────────────────────────────
     {
         "key": "inbox_dev",
         "label": "Bandeja",
         "route": "dev/inbox",
-        "icon": "inbox",
+        "icon": "terminal",
         "section": "dev",
         "required_capabilities": [WORKBENCH_INBOX_DEV],
         "queue_filter": {
@@ -71,7 +73,7 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
             "state_categories": ["active", "pending", "inbox_pm", "inbox_client"],
             "created_by_actor": True,
         },
-        "orden": 30,
+        "orden": 40,
     },
     {
         "key": "kanban",
@@ -80,22 +82,23 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         "icon": "columns-3",
         "section": "dev",
         "required_capabilities": [WORKBENCH_KANBAN],
-        "orden": 40,
+        "orden": 50,
     },
     {
         "key": "my_tasks",
         "label": "Mis tareas",
         "route": "dev/my-tasks",
-        "icon": "list-checks",
+        "icon": "circle-check-big",
         "section": "dev",
         "required_capabilities": [WORKBENCH_MY_TASKS],
-        "orden": 50,
+        "orden": 60,
     },
+    # ── Calidad ──────────────────────────────────────────────────────────────
     {
         "key": "inbox_qa",
         "label": "Bandeja",
         "route": "qa/inbox",
-        "icon": "inbox",
+        "icon": "flask-conical",
         "section": "qa",
         "required_capabilities": [WORKBENCH_INBOX_QA],
         "queue_filter": {
@@ -115,11 +118,12 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         "queue_filter": {"entity_types": ["feature"], "state_categories": ["uat"]},
         "orden": 80,
     },
+    # ── Cliente ───────────────────────────────────────────────────────────────
     {
         "key": "inbox_client",
         "label": "Bandeja",
         "route": "client/inbox",
-        "icon": "inbox",
+        "icon": "message-circle",
         "section": "client",
         "required_capabilities": [WORKBENCH_INBOX_CLIENT],
         "queue_filter": {
@@ -129,50 +133,53 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         },
         "orden": 90,
     },
+    # ── Planificación ─────────────────────────────────────────────────────────
+    # Órdenes 100–120 reservados para ítems Scrum (sprint_board, product_backlog, sprint_planning).
     {
         "key": "scope",
         "label": "Alcance",
         "route": "scope",
-        "icon": "target",
+        "icon": "layers",
         "section": "plan",
         "required_capabilities": [WORKBENCH_SCOPE],
-        "orden": 100,
+        "orden": 130,
     },
     {
         "key": "hub",
         "label": "Centro del proyecto",
         "route": "hub",
-        "icon": "book-open",
+        "icon": "book-open-text",
         "section": "plan",
         "required_capabilities": [WORKBENCH_HUB],
-        "orden": 120,
+        "orden": 140,
     },
     {
         "key": "timeline",
         "label": "Cronograma",
         "route": "timeline",
-        "icon": "calendar-range",
+        "icon": "gantt-chart",
         "section": "plan",
         "required_capabilities": [WORKBENCH_TIMELINE],
-        "orden": 130,
+        "orden": 150,
     },
     {
         "key": "activity",
         "label": "Actividad",
         "route": "activity",
-        "icon": "activity",
-        "section": "track",
+        "icon": "trending-up",
+        "section": "plan",
         "required_capabilities": [WORKBENCH_ACTIVITY],
-        "orden": 140,
+        "orden": 160,
     },
+    # ── Administración ────────────────────────────────────────────────────────
     {
         "key": "studio",
         "label": "Studio",
         "route": "studio",
-        "icon": "layout-grid",
+        "icon": "sliders-horizontal",
         "section": "admin",
         "required_capabilities": [WORKBENCH_STUDIO],
-        "orden": 145,
+        "orden": 170,
     },
     {
         "key": "settings",
@@ -181,7 +188,7 @@ DEFAULT_WORKBENCHES: list[dict[str, Any]] = [
         "icon": "settings",
         "section": "admin",
         "required_capabilities": [WORKBENCH_SETTINGS],
-        "orden": 150,
+        "orden": 180,
     },
 ]
 
@@ -191,6 +198,5 @@ SECTION_LABELS: dict[str, str] = {
     "qa": "Calidad",
     "client": "Cliente",
     "plan": "Planificación",
-    "track": "Seguimiento",
     "admin": "Administración",
 }

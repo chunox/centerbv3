@@ -19,6 +19,8 @@ ProjectTemplateSlug = Literal[
     "t3_interno_clasico",
     "t4_interno_pm_tecnico",
     "t5_freestyle",
+    "t6_scrum_interno",
+    "t7_scrum_cliente",
 ]
 
 

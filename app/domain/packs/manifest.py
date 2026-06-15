@@ -53,6 +53,7 @@ class FieldDefinitionDef(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     orden: int = 0
     is_system: bool = True
+    template_slugs: list[str] = Field(default_factory=list)
 
 
 class EntityTypeDef(BaseModel):
@@ -75,6 +76,8 @@ class BlockDef(BaseModel):
     label: str
     config: dict[str, Any] = Field(default_factory=dict)
     orden: int = 0
+    template_slugs: list[str] = Field(default_factory=list)
+    exclude_template_slugs: list[str] = Field(default_factory=list)
 
 
 class ViewDef(BaseModel):
@@ -86,6 +89,8 @@ class ViewDef(BaseModel):
     layout: dict[str, Any] = Field(default_factory=dict)
     required_capabilities: list[str] = Field(default_factory=list)
     orden: int = 0
+    template_slugs: list[str] = Field(default_factory=list)
+    exclude_template_slugs: list[str] = Field(default_factory=list)
     # Legacy compat for workbench derivation
     view_type: ViewType = "custom"
     entity_type: str | None = None

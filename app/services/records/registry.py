@@ -78,9 +78,10 @@ class RecordTypeRegistry:
         *,
         record_type: str,
         parent_id: uuid.UUID | None = None,
+        estado: str | None = None,
     ) -> list[RecordDTO]:
         return generic_store.list_records(
-            db, project_id, record_type=record_type, parent_id=parent_id
+            db, project_id, record_type=record_type, parent_id=parent_id, estado=estado
         )
 
 

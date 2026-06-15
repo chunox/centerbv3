@@ -19,6 +19,8 @@ ProjectTemplateSlug = Literal[
     "t3_interno_clasico",
     "t4_interno_pm_tecnico",
     "t5_freestyle",
+    "t6_scrum_interno",
+    "t7_scrum_cliente",
 ]
 
 ProjectTipoFromTemplate = Literal["con_cliente", "interno", "freestyle"]
@@ -87,6 +89,26 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         roles=("pm", "pm_tecnico", "dev", "tech_lead", "qa", "cliente"),
         creator_role="pm",
         orden=5,
+    ),
+    "t6_scrum_interno": ProjectTemplateDef(
+        slug="t6_scrum_interno",
+        nombre="Scrum Interno",
+        descripcion="PM (PO), Tech Líder, Dev y QA. Sprints con Product Backlog. Sin cliente.",
+        profile_slug=PROFILE_INTERNAL,
+        tipo="interno",
+        roles=("pm", "tech_lead", "dev", "qa"),
+        creator_role="pm",
+        orden=6,
+    ),
+    "t7_scrum_cliente": ProjectTemplateDef(
+        slug="t7_scrum_cliente",
+        nombre="Scrum con Cliente",
+        descripcion="PM (PO), Tech Líder, Dev, QA y Cliente. Sprints con validación externa.",
+        profile_slug=PROFILE_WITH_CLIENT,
+        tipo="con_cliente",
+        roles=("pm", "tech_lead", "dev", "qa", "cliente"),
+        creator_role="pm",
+        orden=7,
     ),
 }
 

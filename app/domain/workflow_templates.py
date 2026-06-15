@@ -11,6 +11,7 @@ from app.domain.capabilities import (
     SCOPE_MILESTONE_CANCEL,
     FEATURE_TRANSITION_CANCELAR,
     FEATURE_TRANSITION_COMPLETAR,
+    FEATURE_TRANSITION_COMPROMETER_SPRINT,
     FEATURE_TRANSITION_CONFIRMAR,
     FEATURE_TRANSITION_DEVOLVER_REWORK,
     FEATURE_TRANSITION_ENVIAR_AL_PM,
@@ -18,6 +19,7 @@ from app.domain.capabilities import (
     FEATURE_TRANSITION_NO_FUNCIONA,
     FEATURE_TRANSITION_PASAR_A_UAT,
     FEATURE_TRANSITION_RECHAZAR_LIBERACION,
+    FEATURE_TRANSITION_VOLVER_BACKLOG,
     KANBAN_TASK_MOVE,
 )
 
@@ -197,6 +199,64 @@ def default_feature_workflow_interno() -> dict[str, Any]:
         }
     )
     return wf
+
+
+def default_feature_workflow_scrum_base() -> dict[str, Any]:
+    """Scrum: igual que con_cliente pero con product_backlog como estado inicial."""
+    wf = copy.deepcopy(default_feature_workflow_con_cliente())
+    wf["states"] = [
+        _state("product_backlog", "Product Backlog", category="draft", badge="muted"),
+        *wf["states"],
+    ]
+    wf["initial_state"] = "product_backlog"
+    transitions = []
+    for t in wf["transitions"]:
+        if t["id"] == "cancelar":
+            t = {**t, "from": ["product_backlog", *t["from"]]}
+        transitions.append(t)
+    transitions = [
+        {
+            "id": "comprometer_sprint",
+            "label": "Comprometer al Sprint",
+            "from": ["product_backlog"],
+            "to": "pendiente",
+            "required_capabilities": [FEATURE_TRANSITION_COMPROMETER_SPRINT],
+        },
+        *transitions,
+        {
+            "id": "volver_al_backlog",
+            "label": "Volver al Product Backlog",
+            "from": ["pendiente"],
+            "to": "product_backlog",
+            "required_capabilities": [FEATURE_TRANSITION_VOLVER_BACKLOG],
+        },
+    ]
+    wf["transitions"] = transitions
+    return wf
+
+
+def default_feature_workflow_scrum_interno() -> dict[str, Any]:
+    wf = default_feature_workflow_scrum_base()
+    wf["transitions"] = [
+        t for t in wf["transitions"]
+        if t["id"] not in ("liberar_cliente", "confirmar", "no_funciona")
+    ]
+    wf["transitions"].append(
+        {
+            "id": "completar",
+            "label": "Completar",
+            "from": ["esperando_liberacion_pm"],
+            "to": "completado",
+            "required_capabilities": [FEATURE_TRANSITION_COMPLETAR],
+            "conditions": [_COND_NO_CLIENTE],
+            "gates": [_QUERY_BLOCK_GATE],
+        }
+    )
+    return wf
+
+
+def default_feature_workflow_scrum_cliente() -> dict[str, Any]:
+    return default_feature_workflow_scrum_base()
 
 
 def default_task_workflow() -> dict[str, Any]:
@@ -537,6 +597,26 @@ def default_report_workflow_freestyle() -> dict[str, Any]:
         },
     ]
     return wf
+
+
+_TEMPLATE_TO_TIPO: dict[str, str] = {
+    "t1_cliente_clasico": "con_cliente",
+    "t2_cliente_pm_tecnico": "con_cliente",
+    "t3_interno_clasico": "interno",
+    "t4_interno_pm_tecnico": "interno",
+    "t5_freestyle": "freestyle",
+}
+
+
+def workflow_for_template(template_slug: str, entity_type: str) -> dict[str, Any]:
+    """Resuelve el workflow por template_slug directamente, sin pasar por profile_slug."""
+    if entity_type == "feature":
+        if template_slug == "t6_scrum_interno":
+            return default_feature_workflow_scrum_interno()
+        if template_slug == "t7_scrum_cliente":
+            return default_feature_workflow_scrum_cliente()
+    tipo = _TEMPLATE_TO_TIPO.get(template_slug, "interno")
+    return workflow_for_project_tipo(tipo, entity_type)
 
 
 def workflow_for_profile(profile_slug: str, entity_type: str) -> dict[str, Any]:

@@ -70,12 +70,15 @@ def list_records(
     *,
     record_type: str | None = None,
     parent_id: uuid.UUID | None = None,
+    estado: str | None = None,
 ) -> list[RecordDTO]:
     stmt = select(ProjectRecord).where(ProjectRecord.project_id == project_id)
     if record_type:
         stmt = stmt.where(ProjectRecord.record_type == record_type)
     if parent_id is not None:
         stmt = stmt.where(ProjectRecord.parent_id == parent_id)
+    if estado is not None:
+        stmt = stmt.where(ProjectRecord.estado == estado)
     stmt = stmt.order_by(ProjectRecord.orden.asc(), ProjectRecord.created_at.asc())
     return [_to_dto(r) for r in db.scalars(stmt)]
 

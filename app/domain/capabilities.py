@@ -69,6 +69,8 @@ FEATURE_TRANSITION_RECHAZAR_LIBERACION = "feature.transition.rechazar_liberacion
 FEATURE_TRANSITION_CONFIRMAR = "feature.transition.confirmar"
 FEATURE_TRANSITION_NO_FUNCIONA = "feature.transition.no_funciona"
 FEATURE_TRANSITION_COMPLETAR = "feature.transition.completar"
+FEATURE_TRANSITION_COMPROMETER_SPRINT = "feature.transition.comprometer_sprint"
+FEATURE_TRANSITION_VOLVER_BACKLOG = "feature.transition.volver_backlog"
 
 FEATURE_TRANSITION_KEYS = frozenset(
     {
@@ -81,6 +83,8 @@ FEATURE_TRANSITION_KEYS = frozenset(
         FEATURE_TRANSITION_CONFIRMAR,
         FEATURE_TRANSITION_NO_FUNCIONA,
         FEATURE_TRANSITION_COMPLETAR,
+        FEATURE_TRANSITION_COMPROMETER_SPRINT,
+        FEATURE_TRANSITION_VOLVER_BACKLOG,
     }
 )
 
@@ -124,6 +128,9 @@ WORKBENCH_SETTINGS = "workbench.settings"
 WORKBENCH_STUDIO = "workbench.studio"
 WORKBENCH_PORTFOLIO = "workbench.portfolio"
 WORKBENCH_TEAM = "workbench.team"
+WORKBENCH_SPRINT_BOARD    = "workbench.sprint_board"
+WORKBENCH_PRODUCT_BACKLOG = "workbench.product_backlog"
+WORKBENCH_SPRINT_PLANNING = "workbench.sprint_planning"
 
 # ── Auditoría ─────────────────────────────────────────────────────────────
 
@@ -167,6 +174,8 @@ CAPABILITY_CATALOG: tuple[CapabilityDef, ...] = (
     CapabilityDef(FEATURE_TRANSITION_CONFIRMAR, "Confirmar entrega", "feature"),
     CapabilityDef(FEATURE_TRANSITION_NO_FUNCIONA, "Rechazar entrega", "feature"),
     CapabilityDef(FEATURE_TRANSITION_COMPLETAR, "Completar feature", "feature"),
+    CapabilityDef(FEATURE_TRANSITION_COMPROMETER_SPRINT, "Comprometer historia al sprint", "feature"),
+    CapabilityDef(FEATURE_TRANSITION_VOLVER_BACKLOG, "Devolver historia al backlog", "feature"),
     CapabilityDef(QUERY_CREATE, "Crear consultas", "query"),
     CapabilityDef(QUERY_SEND, "Enviar consultas", "query"),
     CapabilityDef(QUERY_APPROVE, "Aprobar envío consulta", "query"),
@@ -196,6 +205,9 @@ CAPABILITY_CATALOG: tuple[CapabilityDef, ...] = (
     CapabilityDef(WORKBENCH_STUDIO, "Studio", "workbench"),
     CapabilityDef(WORKBENCH_PORTFOLIO, "Portfolio PM", "workbench"),
     CapabilityDef(WORKBENCH_TEAM, "Vista Equipo PM", "workbench"),
+    CapabilityDef(WORKBENCH_SPRINT_BOARD, "Sprint Board (Scrum)", "workbench"),
+    CapabilityDef(WORKBENCH_PRODUCT_BACKLOG, "Product Backlog (Scrum)", "workbench"),
+    CapabilityDef(WORKBENCH_SPRINT_PLANNING, "Sprint Planning (Scrum)", "workbench"),
     CapabilityDef(AUDIT_VIEW_ALL, "Ver toda la auditoría", "audit"),
     CapabilityDef(AUDIT_VIEW_SCOPED, "Ver auditoría acotada", "audit"),
     CapabilityDef(TIMELINE_VIEW, "Ver cronograma", "audit"),
@@ -229,6 +241,8 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             FEATURE_TRANSITION_LIBERAR_CLIENTE,
             FEATURE_TRANSITION_RECHAZAR_LIBERACION,
             FEATURE_TRANSITION_COMPLETAR,
+            FEATURE_TRANSITION_COMPROMETER_SPRINT,
+            FEATURE_TRANSITION_VOLVER_BACKLOG,
             QUERY_CREATE,
             QUERY_SEND,
             QUERY_APPROVE,
@@ -249,6 +263,9 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             WORKBENCH_STUDIO,
             WORKBENCH_PORTFOLIO,
             WORKBENCH_TEAM,
+            WORKBENCH_SPRINT_BOARD,
+            WORKBENCH_PRODUCT_BACKLOG,
+            WORKBENCH_SPRINT_PLANNING,
             AUDIT_VIEW_ALL,
             TIMELINE_VIEW,
             COMMENT_CREATE,
@@ -273,6 +290,8 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             WORKBENCH_SCOPE,
             WORKBENCH_KANBAN,
             WORKBENCH_MY_TASKS,
+            WORKBENCH_SPRINT_BOARD,
+            WORKBENCH_PRODUCT_BACKLOG,
             WORKBENCH_ACTIVITY,
             WORKBENCH_HUB,
             WORKBENCH_TIMELINE,
@@ -292,6 +311,7 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             WORKBENCH_INBOX_QA,
             WORKBENCH_UAT,
             WORKBENCH_SCOPE,
+            WORKBENCH_SPRINT_BOARD,
             WORKBENCH_ACTIVITY,
             WORKBENCH_HUB,
             WORKBENCH_TIMELINE,
@@ -331,6 +351,9 @@ TECH_LEAD_CAPABILITIES: frozenset[str] = (
         SCOPE_FEATURE_EDIT,
         SCOPE_FEATURE_MIGRATE,
         FEATURE_TRANSITION_CANCELAR,
+        FEATURE_TRANSITION_COMPROMETER_SPRINT,
+        WORKBENCH_PRODUCT_BACKLOG,
+        WORKBENCH_SPRINT_PLANNING,
     }
 )
 

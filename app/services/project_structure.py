@@ -104,7 +104,7 @@ def _structure_entity_to_def(entity: ProjectStructureEntity) -> EntityTypeDef:
 def _default_workflow_for_entity(
     entity_key: str,
     base: PackManifest,
-    profile_slug: str,
+    template_slug: str,
     user_workflow: dict[str, Any] | None,
 ) -> dict[str, Any]:
     if user_workflow and user_workflow.get("states"):
@@ -112,7 +112,7 @@ def _default_workflow_for_entity(
     resolved = base.workflows or {}
     if base.workflow_profiles:
         resolved = base.workflow_profiles.get(
-            profile_slug,
+            template_slug,
             base.workflow_profiles.get("default", {}),
         )
     if entity_key in resolved:
@@ -130,7 +130,7 @@ def merge_pack_with_structure(
     base: PackManifest,
     structure: ProjectStructureDef,
     *,
-    profile_slug: str = "default",
+    template_slug: str = "default",
 ) -> PackManifest:
     validate_structure_entities(structure.entity_types)
     merged = base.model_copy(deep=True)
@@ -145,15 +145,15 @@ def merge_pack_with_structure(
     workflows: dict[str, dict[str, Any]] = {}
     for entity in structure.entity_types:
         workflows[entity.key] = _default_workflow_for_entity(
-            entity.key, base, profile_slug, entity.workflow
+            entity.key, base, template_slug, entity.workflow
         )
     merged.workflows = workflows
     if merged.workflow_profiles:
         merged.workflow_profiles = {
-            profile: {k: v for k, v in prof.items() if k in structure_keys}
-            for profile, prof in merged.workflow_profiles.items()
+            tmpl: {k: v for k, v in prof.items() if k in structure_keys}
+            for tmpl, prof in merged.workflow_profiles.items()
         }
-        merged.workflow_profiles.setdefault(profile_slug, workflows)
+        merged.workflow_profiles.setdefault(template_slug, workflows)
 
     merged = _apply_derived_views(merged, entity_defs)
     return merged
@@ -479,8 +479,8 @@ def add_entity_type_to_project(
     manifest = get_project_pack_manifest(db, project) or PackManifest(
         slug=project.pack_slug or "custom", nombre=""
     )
-    profile = getattr(project, "profile_slug", None) or "default"
-    wf = _default_workflow_for_entity(entity.key, manifest, profile, entity.workflow)
+    template_slug = project.template_slug or "default"
+    wf = _default_workflow_for_entity(entity.key, manifest, template_slug, entity.workflow)
 
     _seed_record_types_from_manifest(
         db,

@@ -3,7 +3,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.domain.capabilities import TEMPLATE_ROLE_CAPABILITIES, TEMPLATE_ROLE_LABELS
+from app.domain.capabilities import (
+    TEMPLATE_ROLE_CAPABILITIES,
+    TEMPLATE_ROLE_LABELS,
+    WORKBENCH_KANBAN,
+    WORKBENCH_SPRINT_BOARD,
+    WORKBENCH_PRODUCT_BACKLOG,
+    WORKBENCH_SPRINT_PLANNING,
+)
 from app.domain.packs.manifest import (
     BlockDef,
     EntityTypeDef,
@@ -13,7 +20,6 @@ from app.domain.packs.manifest import (
     ViewDef,
 )
 from app.domain.project_templates import PROJECT_TEMPLATES
-from app.domain.workflow_templates import workflow_for_project_tipo
 from app.domain.workbenches import DEFAULT_WORKBENCHES
 
 
@@ -160,6 +166,43 @@ def _software_field_definitions() -> list[FieldDefinitionDef]:
             config={"relation_entity_type": "feature"},
             orden=3,
         ),
+        # ── Scrum (solo t6/t7) ──────────────────────────────────────────────
+        FieldDefinitionDef(
+            entity_type_key="feature",
+            field_key="story_points",
+            label="Story Points",
+            field_type="select",
+            config={"options": ["?", "1", "2", "3", "5", "8", "13", "21"]},
+            orden=10,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="milestone",
+            field_key="sprint_goal",
+            label="Objetivo del Sprint",
+            field_type="textarea",
+            config={},
+            orden=10,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="milestone",
+            field_key="velocidad_planeada",
+            label="Velocidad planeada (SP)",
+            field_type="number",
+            config={},
+            orden=11,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="milestone",
+            field_key="velocidad_real",
+            label="Velocidad real (SP)",
+            field_type="number",
+            config={},
+            orden=12,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
     ]
 
 
@@ -174,6 +217,9 @@ def _software_custom_view_key(wb_key: str) -> str | None:
         "my_tasks": "software.kanban",
         "uat": "software.uat",
         "scope": "software.scope",
+        "sprint_board": "software.sprint_board",
+        "product_backlog": "software.product_backlog",
+        "sprint_planning": "software.sprint_planning",
     }
     return mapping.get(wb_key)
 
@@ -185,6 +231,10 @@ def _software_entity_type(wb_key: str) -> str | None:
         "uat": "feature",
     }
     return mapping.get(wb_key)
+
+
+_SCRUM_SLUGS = ["t6_scrum_interno", "t7_scrum_cliente"]
+_INTERNO_SLUGS = ["t3_interno_clasico", "t4_interno_pm_tecnico", "t6_scrum_interno"]
 
 
 def _software_blocks() -> list[BlockDef]:
@@ -236,6 +286,12 @@ def _software_blocks() -> list[BlockDef]:
                 "show_summary": True,
                 "allow_reparent": True,
             }
+        exclude: list[str] = []
+        if wb["key"] == "inbox_client":
+            exclude = _INTERNO_SLUGS
+        elif wb["key"] == "kanban":
+            # En Scrum se seedea el kanban con label "Tareas" (ver abajo)
+            exclude = _SCRUM_SLUGS
         blocks.append(
             BlockDef(
                 block_slug=slug,
@@ -243,6 +299,47 @@ def _software_blocks() -> list[BlockDef]:
                 label=wb["label"],
                 config=config,
                 orden=wb.get("orden", 0),
+                exclude_template_slugs=exclude,
+            )
+        )
+
+    # Kanban con label "Tareas" para proyectos Scrum
+    kanban_config: dict[str, Any] = {
+        "entity_type_key": "task",
+        "view_type": "custom",
+        "custom_view_key": _software_custom_view_key("kanban"),
+        "board_config": {
+            "variant": "editorial",
+            "filters": {"search": True, "parent_chain": True, "group_by_parent": True},
+            "column_picker": True,
+            "card": {"show_assignees": True, "show_parent": True},
+        },
+    }
+    blocks.append(
+        BlockDef(
+            block_slug="custom",
+            key="kanban",
+            label="Tareas",
+            config=kanban_config,
+            orden=50,
+            template_slugs=_SCRUM_SLUGS,
+        )
+    )
+
+    # Workbenches Scrum exclusivos
+    for i, (wb_key, label, icon) in enumerate([
+        ("sprint_board", "Sprint Board", "layout-kanban"),
+        ("product_backlog", "Product Backlog", "list-ordered"),
+        ("sprint_planning", "Sprint Planning", "calendar-clock"),
+    ]):
+        blocks.append(
+            BlockDef(
+                block_slug="custom",
+                key=wb_key,
+                label=label,
+                config={"custom_view_key": f"software.{wb_key}", "view_type": "custom"},
+                orden=100 + i * 10,
+                template_slugs=_SCRUM_SLUGS,
             )
         )
     return blocks
@@ -252,10 +349,16 @@ def _software_views() -> list[ViewDef]:
     views: list[ViewDef] = []
     for wb in DEFAULT_WORKBENCHES:
         custom_key = _software_custom_view_key(wb["key"])
+        exclude: list[str] = []
+        label = wb["label"]
+        if wb["key"] == "inbox_client":
+            exclude = _INTERNO_SLUGS
+        elif wb["key"] == "kanban":
+            exclude = _SCRUM_SLUGS
         views.append(
             ViewDef(
                 key=wb["key"],
-                label=wb["label"],
+                label=label,
                 route=wb["route"],
                 icon=wb.get("icon", "circle"),
                 section=wb.get("section", "plan"),
@@ -265,6 +368,44 @@ def _software_views() -> list[ViewDef]:
                 view_type="custom" if custom_key else wb.get("view_type", "custom"),  # type: ignore[arg-type]
                 entity_type=wb.get("entity_type") or _software_entity_type(wb["key"]),
                 queue_filter=wb.get("queue_filter"),
+                exclude_template_slugs=exclude,
+            )
+        )
+
+    # Vista de Kanban con label "Tareas" para Scrum
+    views.append(
+        ViewDef(
+            key="kanban",
+            label="Tareas",
+            route="kanban",
+            icon="columns-3",
+            section="dev",
+            layout={"blocks": [{"project_block_key": "kanban", "width": "full"}]},
+            required_capabilities=[WORKBENCH_KANBAN],
+            orden=50,
+            template_slugs=_SCRUM_SLUGS,
+            view_type="custom",
+        )
+    )
+
+    # Vistas Scrum exclusivas
+    for i, (wb_key, label, icon, cap) in enumerate([
+        ("sprint_board", "Sprint Board", "layout-kanban", WORKBENCH_SPRINT_BOARD),
+        ("product_backlog", "Product Backlog", "list-ordered", WORKBENCH_PRODUCT_BACKLOG),
+        ("sprint_planning", "Sprint Planning", "calendar-clock", WORKBENCH_SPRINT_PLANNING),
+    ]):
+        views.append(
+            ViewDef(
+                key=wb_key,
+                label=label,
+                route=wb_key,
+                icon=icon,
+                section="plan",
+                layout={"blocks": [{"project_block_key": wb_key, "width": "full"}]},
+                required_capabilities=[cap],
+                orden=100 + i * 10,
+                template_slugs=_SCRUM_SLUGS,
+                view_type="custom",
             )
         )
     return views
@@ -296,14 +437,17 @@ def _software_roles() -> list[PackRoleDef]:
 
 
 def _software_workflow_profiles() -> dict[str, dict[str, dict[str, Any]]]:
-    from app.domain.workflow_templates import workflow_for_profile
+    from app.domain.workflow_templates import workflow_for_template
+    from app.domain.project_templates import PROJECT_TEMPLATES
 
-    profiles: dict[str, dict[str, dict[str, Any]]] = {}
-    for profile in ("with_client", "internal", "flexible"):
-        profiles[profile] = {}
-        for entity_type in ("feature", "task", "query", "report", "milestone"):
-            profiles[profile][entity_type] = workflow_for_profile(profile, entity_type)
-    return profiles
+    entity_types = ("feature", "task", "query", "report", "milestone")
+    return {
+        template_slug: {
+            et: workflow_for_template(template_slug, et)
+            for et in entity_types
+        }
+        for template_slug in PROJECT_TEMPLATES
+    }
 
 
 def pack_software_manifest() -> PackManifest:

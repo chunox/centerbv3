@@ -16,6 +16,8 @@ _TEMPLATE_SLUG_TO_PROFILE: dict[str, str] = {
     "t3_interno_clasico": PROFILE_INTERNAL,
     "t4_interno_pm_tecnico": PROFILE_INTERNAL,
     "t5_freestyle": PROFILE_FLEXIBLE,
+    "t6_scrum_interno": PROFILE_INTERNAL,
+    "t7_scrum_cliente": PROFILE_WITH_CLIENT,
 }
 
 

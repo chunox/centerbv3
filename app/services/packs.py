@@ -170,7 +170,10 @@ def _seed_record_types_from_manifest(
 def _seed_field_definitions_from_manifest(
     db: Session, project: Project, manifest: PackManifest
 ) -> None:
+    project_template = project.template_slug or "default"
     for fd in manifest.field_definitions:
+        if fd.template_slugs and project_template not in fd.template_slugs:
+            continue
         existing = db.scalar(
             select(ProjectFieldDefinition.id).where(
                 ProjectFieldDefinition.project_id == project.id,
@@ -232,26 +235,23 @@ def _seed_pack_roles(
 
 
 def _resolve_workflows(
-    manifest: PackManifest, profile_slug: str
+    manifest: PackManifest, template_slug: str
 ) -> dict[str, dict]:
     if manifest.workflow_profiles:
         return manifest.workflow_profiles.get(
-            profile_slug,
+            template_slug,
             manifest.workflow_profiles.get("default", {}),
         )
     if manifest.workflow_variants:
-        from app.domain.project_profiles import PROFILE_TO_LEGACY_TIPO
-
-        legacy = PROFILE_TO_LEGACY_TIPO.get(profile_slug, profile_slug)
-        return manifest.workflow_variants.get(legacy, {})
+        return manifest.workflow_variants.get(template_slug, {})
     return manifest.workflows
 
 
 def _seed_pack_workflows(
     db: Session, project: Project, manifest: PackManifest
 ) -> None:
-    profile = getattr(project, "profile_slug", None) or "default"
-    workflows = _resolve_workflows(manifest, profile)
+    template_slug = project.template_slug or "default"
+    workflows = _resolve_workflows(manifest, template_slug)
     for entity_type, definition in workflows.items():
         existing = db.scalar(
             select(ProjectWorkflowDefinition.id).where(
@@ -384,22 +384,32 @@ def seed_project_from_manifest(
         sync_entity_capabilities,
     )
 
-    profile = getattr(project, "profile_slug", None) or "default"
+    template_slug = project.template_slug or "default"
     if project_structure is not None:
         if isinstance(project_structure, dict):
             project_structure = ProjectStructureDef.model_validate(project_structure)
         manifest = merge_pack_with_structure(
-            manifest, project_structure, profile_slug=profile
+            manifest, project_structure, template_slug=template_slug
         )
 
     _seed_record_types_from_manifest(db, project, manifest)
     _seed_field_definitions_from_manifest(db, project, manifest)
 
+    def _passes_filter(item: BlockDef, ts: str) -> bool:
+        if item.template_slugs and ts not in item.template_slugs:
+            return False
+        if item.exclude_template_slugs and ts in item.exclude_template_slugs:
+            return False
+        return True
+
     block_defs = _blocks_from_manifest(manifest)
     if block_defs:
-        seed_project_blocks(db, project, block_defs)
+        filtered_blocks = [b for b in block_defs if _passes_filter(b, template_slug)]
+        seed_project_blocks(db, project, filtered_blocks)
     if manifest.project_views:
-        seed_project_views(db, project, manifest.project_views)
+        from app.domain.packs.manifest import ViewDef as _VD
+        filtered_views = [v for v in manifest.project_views if _passes_filter(v, template_slug)]  # type: ignore[arg-type]
+        seed_project_views(db, project, filtered_views)
     elif manifest.workbenches:
         from app.domain.packs.manifest import ViewDef
 
@@ -432,7 +442,7 @@ def seed_project_from_manifest(
         entity_keys = [et.key for et in manifest.entity_types]
         workflows = manifest.workflows or {}
         if manifest.workflow_profiles:
-            workflows = manifest.workflow_profiles.get(profile, workflows)
+            workflows = manifest.workflow_profiles.get(template_slug, workflows)
         sync_entity_capabilities(
             db, project, entity_keys, roles, workflows=workflows
         )

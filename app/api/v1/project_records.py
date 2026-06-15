@@ -119,6 +119,7 @@ def list_project_records(
     project_id: UUID,
     record_type: str = Query(...),
     parent_id: UUID | None = None,
+    estado: str | None = Query(default=None),
     actor_user_id: UUID = Query(...),
     db: Session = Depends(get_db),
 ):
@@ -127,7 +128,7 @@ def list_project_records(
         db, project.id, actor_user_id, f"record.{record_type}.read"
     )
     rows = registry.list_records(
-        db, project.id, record_type=record_type, parent_id=parent_id
+        db, project.id, record_type=record_type, parent_id=parent_id, estado=estado
     )
     return [_dto_to_read(r) for r in rows]
 
