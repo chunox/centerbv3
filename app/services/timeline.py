@@ -25,7 +25,6 @@ _ENTIDAD_LABELS = {
     "milestone": "Hito",
     "feature_query": "Consulta",
     "feature_report": "Reporte",
-    "document": "Documento",
     "project": "Proyecto",
     "hub_entry": "Publicación",
     "comment": "Comentario",

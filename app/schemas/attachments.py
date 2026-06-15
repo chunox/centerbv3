@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 AttachmentEntidadTipo = Literal[
     "comment",
-    "document",
     "tarea",
     "feature",
     "feature_query",

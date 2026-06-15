@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from app.domain.capabilities import (
     AUDIT_VIEW_ALL,
     AUDIT_VIEW_SCOPED,
-    DOCUMENT_VIEW_INTERNAL,
     KANBAN_VIEW,
     REPORT_CREATE,
     WORKBENCH_INBOX_CLIENT,
@@ -128,19 +127,6 @@ def _audit_entity_types_for_capabilities(caps: frozenset[str]) -> frozenset[str]
     return frozenset(types)
 
 
-def hub_entry_visible_to_capabilities(
-    db: Session,
-    project_id: uuid.UUID,
-    viewer_user_id: uuid.UUID | None,
-    visibilidad: str,
-) -> bool:
-    if visibilidad == "publico":
-        return True
-    if viewer_user_id is None:
-        return True
-    return user_has_capability(db, project_id, viewer_user_id, DOCUMENT_VIEW_INTERNAL)
-
-
 def comment_visible_for_capabilities(
     db: Session,
     project_id: uuid.UUID,
@@ -164,14 +150,3 @@ def comment_visible_for_capabilities(
     return entidad_tipo in allowed
 
 
-def document_visible_to_capabilities(
-    db: Session,
-    project_id: uuid.UUID,
-    viewer_user_id: uuid.UUID | None,
-    visibilidad: str,
-) -> bool:
-    if visibilidad == "publico":
-        return True
-    if viewer_user_id is None:
-        return True
-    return user_has_capability(db, project_id, viewer_user_id, DOCUMENT_VIEW_INTERNAL)

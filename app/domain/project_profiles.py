@@ -10,6 +10,18 @@ PROFILE_INTERNAL: ProjectProfileSlug = "internal"
 PROFILE_FLEXIBLE: ProjectProfileSlug = "flexible"
 PROFILE_DEFAULT: ProjectProfileSlug = "default"
 
+_TEMPLATE_SLUG_TO_PROFILE: dict[str, str] = {
+    "t1_cliente_clasico": PROFILE_WITH_CLIENT,
+    "t2_cliente_pm_tecnico": PROFILE_WITH_CLIENT,
+    "t3_interno_clasico": PROFILE_INTERNAL,
+    "t4_interno_pm_tecnico": PROFILE_INTERNAL,
+    "t5_freestyle": PROFILE_FLEXIBLE,
+}
+
+
+def template_slug_to_profile(template_slug: str) -> str:
+    return _TEMPLATE_SLUG_TO_PROFILE.get(template_slug, PROFILE_DEFAULT)
+
 LEGACY_TIPO_TO_PROFILE: dict[str, ProjectProfileSlug] = {
     "con_cliente": "with_client",
     "interno": "internal",

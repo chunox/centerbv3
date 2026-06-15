@@ -12,7 +12,7 @@ AuditEntidadTipo = Literal[
     "feature_query",
     "feature_report",
     "comment",
-    "document",
+    "attachment",
     "project",
     "hub_entry",
     "communication_dispatch",

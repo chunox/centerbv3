@@ -103,9 +103,6 @@ REPORT_REJECT = "report.reject"
 HUB_VIEW = "hub.view"
 HUB_PUBLISH = "hub.publish"
 HUB_DOCUMENT_EDIT = "hub.document.edit"
-HUB_EXPOSURE_MANAGE = "hub.exposure.manage"
-DOCUMENT_VIEW_INTERNAL = "document.view.internal"
-DOCUMENT_VIEW_PUBLIC = "document.view.public"
 
 # ── Workbenches ───────────────────────────────────────────────────────────
 
@@ -180,10 +177,7 @@ CAPABILITY_CATALOG: tuple[CapabilityDef, ...] = (
     CapabilityDef(REPORT_REJECT, "Rechazar reportes", "report"),
     CapabilityDef(HUB_VIEW, "Ver hub", "hub"),
     CapabilityDef(HUB_PUBLISH, "Publicar en hub", "hub"),
-    CapabilityDef(HUB_DOCUMENT_EDIT, "Editar documento", "hub"),
-    CapabilityDef(HUB_EXPOSURE_MANAGE, "Gestionar exposiciones", "hub"),
-    CapabilityDef(DOCUMENT_VIEW_INTERNAL, "Ver docs internos", "hub"),
-    CapabilityDef(DOCUMENT_VIEW_PUBLIC, "Ver docs públicos", "hub"),
+    CapabilityDef(HUB_DOCUMENT_EDIT, "Editar contenido hub", "hub"),
     CapabilityDef(WORKBENCH_INBOX_PM, "Bandeja PM", "workbench"),
     CapabilityDef(WORKBENCH_INBOX_DEV, "Bandeja Dev", "workbench"),
     CapabilityDef(WORKBENCH_INBOX_QA, "Bandeja QA", "workbench"),
@@ -244,9 +238,6 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             HUB_VIEW,
             HUB_PUBLISH,
             HUB_DOCUMENT_EDIT,
-            HUB_EXPOSURE_MANAGE,
-            DOCUMENT_VIEW_INTERNAL,
-            DOCUMENT_VIEW_PUBLIC,
             WORKBENCH_INBOX_PM,
             WORKBENCH_OVERVIEW,
             WORKBENCH_SCOPE,
@@ -278,8 +269,6 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             QUERY_SEND,
             HUB_VIEW,
             HUB_PUBLISH,
-            DOCUMENT_VIEW_INTERNAL,
-            DOCUMENT_VIEW_PUBLIC,
             WORKBENCH_INBOX_DEV,
             WORKBENCH_SCOPE,
             WORKBENCH_KANBAN,
@@ -300,8 +289,6 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             QUERY_CREATE,
             QUERY_SEND,
             HUB_VIEW,
-            DOCUMENT_VIEW_INTERNAL,
-            DOCUMENT_VIEW_PUBLIC,
             WORKBENCH_INBOX_QA,
             WORKBENCH_UAT,
             WORKBENCH_SCOPE,
@@ -321,7 +308,6 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             QUERY_RESPOND,
             REPORT_CREATE,
             HUB_VIEW,
-            DOCUMENT_VIEW_PUBLIC,
             WORKBENCH_INBOX_CLIENT,
             WORKBENCH_SCOPE,
             WORKBENCH_ACTIVITY,

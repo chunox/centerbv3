@@ -8,6 +8,7 @@ from app.database import get_db
 from app.schemas.hub_entries import HubEntryCreate, HubEntryRead, HubEntryUpdate
 from app.services.access import assert_member_of_project, hub_entry_visible_for_user
 from app.services.hub_entries import (
+    _viewer_role_slug,
     create_hub_entry,
     delete_hub_entry,
     enrich_hub_entries_with_authors,
@@ -17,6 +18,8 @@ from app.services.hub_entries import (
 )
 
 router = APIRouter(tags=["hub-entries"])
+
+VALID_TIPOS = {"update", "note", "shortcut", "page", "canvas"}
 
 
 @router.get("/{project_id}/hub-entries", response_model=list[HubEntryRead])
@@ -32,9 +35,7 @@ def list_project_hub_entries(
     if viewer_user_id is not None:
         assert_member_of_project(db, project.id, viewer_user_id)
 
-    tipo_filter = None
-    if tipo in ("update", "note"):
-        tipo_filter = tipo  # type: ignore[assignment]
+    tipo_filter = tipo if tipo in VALID_TIPOS else None
 
     entries = list_hub_entries(
         db,
@@ -101,8 +102,13 @@ def get_project_hub_entry(
     if viewer_user_id is not None:
         assert_member_of_project(db, project.id, viewer_user_id)
     entry = get_hub_entry_or_404(db, project_id, entry_id)
+    role_slug = (
+        _viewer_role_slug(db, project.id, viewer_user_id)
+        if viewer_user_id is not None
+        else None
+    )
     if not hub_entry_visible_for_user(
-        db, entry, viewer_user_id=viewer_user_id
+        db, entry, viewer_user_id=viewer_user_id, viewer_role_slug=role_slug
     ):
         raise HTTPException(status_code=403, detail="No tienes permiso para ver esta entrada")
     enriched = enrich_hub_entries_with_authors(db, [entry])

@@ -1,15 +1,15 @@
-"""Entradas del centro del proyecto — updates y notas."""
+"""Entradas del hub del proyecto — updates, notas, shortcuts, páginas y canvas."""
 
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.entities import HubEntry, Project, User
+from app.models.entities import HubEntry, Project, ProjectMember, ProjectRecord, ProjectRole, User
 from app.schemas.hub_entries import HubEntryCreate, HubEntryUpdate
 from app.domain.capabilities import HUB_PUBLISH
 from app.services.access import (
@@ -20,7 +20,24 @@ from app.services.access import (
 from app.services.workflow.authorize import assert_capability
 from app.services.audit import record_audit_log
 
-HubEntryTipoFilter = Literal["update", "note"]
+HubEntryTipoFilter = str | None
+
+
+def _viewer_role_slug(
+    db: Session,
+    project_id: uuid.UUID,
+    viewer_user_id: uuid.UUID,
+) -> str | None:
+    row = db.scalar(
+        select(ProjectRole.slug)
+        .join(ProjectMember, ProjectMember.role_id == ProjectRole.id)
+        .where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == viewer_user_id,
+        )
+        .limit(1)
+    )
+    return row
 
 
 def list_hub_entries(
@@ -28,7 +45,7 @@ def list_hub_entries(
     project_id: uuid.UUID,
     *,
     viewer_user_id: uuid.UUID | None = None,
-    tipo: HubEntryTipoFilter | None = None,
+    tipo: HubEntryTipoFilter = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[HubEntry]:
@@ -44,10 +61,13 @@ def list_hub_entries(
     entries = list(db.scalars(stmt))
     if viewer_user_id is None:
         return entries
+    role_slug = _viewer_role_slug(db, project_id, viewer_user_id)
     return [
         e
         for e in entries
-        if hub_entry_visible_for_user(db, e, viewer_user_id=viewer_user_id)
+        if hub_entry_visible_for_user(
+            db, e, viewer_user_id=viewer_user_id, viewer_role_slug=role_slug
+        )
     ]
 
 
@@ -74,13 +94,19 @@ def create_hub_entry(
     if not author:
         raise HTTPException(status_code=404, detail="Autor no encontrado")
 
+    if payload.record_id is not None:
+        record = db.get(ProjectRecord, payload.record_id)
+        if not record or record.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Record no encontrado")
+
     entry = HubEntry(
         project_id=project.id,
         author_id=payload.author_id,
         tipo=payload.tipo,
         titulo=payload.titulo.strip() if payload.titulo else None,
-        contenido=payload.contenido.strip(),
-        visibilidad=payload.visibilidad,
+        contenido=payload.contenido.strip() if payload.contenido else "",
+        visible_roles=payload.visible_roles or [],
+        record_id=payload.record_id,
     )
     db.add(entry)
     db.flush()
@@ -163,6 +189,20 @@ def delete_hub_entry(
     db.delete(entry)
 
 
+def _enrich_shortcut(db: Session, entry: HubEntry) -> dict[str, Any] | None:
+    if entry.record_id is None:
+        return None
+    record = db.get(ProjectRecord, entry.record_id)
+    if record is None:
+        return None
+    return {
+        "id": str(record.id),
+        "record_type": record.record_type,
+        "estado": record.estado,
+        "titulo": record.data.get("titulo") if isinstance(record.data, dict) else None,
+    }
+
+
 def enrich_hub_entries_with_authors(
     db: Session,
     entries: list[HubEntry],
@@ -176,7 +216,7 @@ def enrich_hub_entries_with_authors(
     }
     result: list[dict] = []
     for entry in entries:
-        data = {
+        data: dict[str, Any] = {
             "id": entry.id,
             "project_id": entry.project_id,
             "author_id": entry.author_id,
@@ -184,9 +224,12 @@ def enrich_hub_entries_with_authors(
             "tipo": entry.tipo,
             "titulo": entry.titulo,
             "contenido": entry.contenido,
-            "visibilidad": entry.visibilidad,
+            "visible_roles": entry.visible_roles or [],
+            "record_id": entry.record_id,
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,
         }
+        if entry.tipo == "shortcut":
+            data["shortcut_record"] = _enrich_shortcut(db, entry)
         result.append(data)
     return result

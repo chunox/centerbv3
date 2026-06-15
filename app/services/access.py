@@ -13,8 +13,6 @@ from sqlalchemy.orm import Session
 from app.models.entities import (
     AuditLog,
     Comment,
-    Document,
-    DocumentExposure,
     HubEntry,
     Project,
     ProjectMember,
@@ -163,11 +161,6 @@ def get_project_id_for_attachment_entity(
     entidad_tipo: str,
     entidad_id: uuid.UUID,
 ) -> uuid.UUID:
-    if entidad_tipo == "document":
-        row = db.get(Document, entidad_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="Documento no encontrado")
-        return row.project_id
     if entidad_tipo == "hub_entry":
         row = db.get(HubEntry, entidad_id)
         if not row:
@@ -214,34 +207,6 @@ def assert_attachment_author_or_pm(
     )
 
 
-def list_exposures_for_viewer(
-    db: Session,
-    project_id: uuid.UUID,
-    *,
-    viewer_user_id: uuid.UUID | None,
-    record_id: uuid.UUID | None = None,
-) -> list[DocumentExposure]:
-    from app.domain.capabilities import DOCUMENT_VIEW_INTERNAL
-    from app.services.workflow.capabilities import user_has_capability
-
-    stmt = select(DocumentExposure).where(DocumentExposure.project_id == project_id)
-    if record_id is not None:
-        stmt = stmt.where(DocumentExposure.record_id == record_id)
-    exposures = list(db.scalars(stmt.order_by(DocumentExposure.created_at.desc())))
-    if viewer_user_id is None or user_has_capability(
-        db, project_id, viewer_user_id, DOCUMENT_VIEW_INTERNAL
-    ):
-        return exposures
-    filtered: list[DocumentExposure] = []
-    for exp in exposures:
-        if exp.document_id is not None:
-            doc = db.get(Document, exp.document_id)
-            if doc and doc.visibilidad == "interno":
-                continue
-        filtered.append(exp)
-    return filtered
-
-
 def resolve_audit_logs_for_user(
     db: Session,
     logs: list[AuditLog],
@@ -259,33 +224,16 @@ def resolve_audit_logs_for_user(
     )
 
 
-def document_visible_for_user(
-    db: Session,
-    document: Document,
-    *,
-    viewer_user_id: uuid.UUID | None,
-) -> bool:
-    from app.services.workflow.visibility import document_visible_to_capabilities
-
-    return document_visible_to_capabilities(
-        db,
-        document.project_id,
-        viewer_user_id,
-        document.visibilidad,
-    )
-
-
 def hub_entry_visible_for_user(
     db: Session,
     entry: HubEntry,
     *,
     viewer_user_id: uuid.UUID | None,
+    viewer_role_slug: str | None = None,
 ) -> bool:
-    from app.services.workflow.visibility import hub_entry_visible_to_capabilities
-
-    return hub_entry_visible_to_capabilities(
-        db,
-        entry.project_id,
-        viewer_user_id,
-        entry.visibilidad,
-    )
+    visible_roles: list = entry.visible_roles or []
+    if not visible_roles:
+        return True
+    if viewer_role_slug is None:
+        return viewer_user_id is None
+    return viewer_role_slug in visible_roles

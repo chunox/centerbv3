@@ -1,34 +1,39 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-HubEntryTipo = Literal["update", "note"]
-HubEntryVisibilidad = Literal["publico", "interno"]
+HubEntryTipo = Literal["update", "note", "shortcut", "page", "canvas"]
 
 
 class HubEntryCreate(BaseModel):
     author_id: UUID
     tipo: HubEntryTipo
     titulo: str | None = Field(default=None, max_length=255)
-    contenido: str = Field(min_length=1)
-    visibilidad: HubEntryVisibilidad = "publico"
+    contenido: str = Field(default="", min_length=0)
+    visible_roles: list[str] = Field(default_factory=list)
+    record_id: UUID | None = None
 
     @model_validator(mode="after")
-    def validar_nota_titulo(self) -> HubEntryCreate:
+    def validar_tipo(self) -> HubEntryCreate:
         if self.tipo == "note" and not (self.titulo and self.titulo.strip()):
             raise ValueError("Las notas requieren título")
+        if self.tipo == "shortcut" and self.record_id is None:
+            raise ValueError("Los shortcuts requieren record_id")
+        if self.tipo in ("page", "canvas") and not (self.titulo and self.titulo.strip()):
+            raise ValueError("Las páginas y canvas requieren título")
         return self
 
 
 class HubEntryUpdate(BaseModel):
     actor_user_id: UUID
     titulo: str | None = Field(default=None, max_length=255)
-    contenido: str | None = Field(default=None, min_length=1)
-    visibilidad: HubEntryVisibilidad | None = None
+    contenido: str | None = Field(default=None, min_length=0)
+    visible_roles: list[str] | None = None
+    record_id: UUID | None = None
 
 
 class HubEntryRead(BaseModel):
@@ -39,7 +44,8 @@ class HubEntryRead(BaseModel):
     tipo: HubEntryTipo
     titulo: str | None
     contenido: str
-    visibilidad: HubEntryVisibilidad
+    visible_roles: list[Any] = Field(default_factory=list)
+    record_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
 

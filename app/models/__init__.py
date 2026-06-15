@@ -4,8 +4,7 @@ from app.models.entities import (
     AuditLog,
     BlockCatalog,
     Comment,
-    Document,
-    DocumentExposure,
+    HubEntry,
     Notification,
     Project,
     ProjectBlock,
@@ -48,6 +47,5 @@ __all__ = [
     "Attachment",
     "AttachmentRelation",
     "AuditLog",
-    "Document",
-    "DocumentExposure",
+    "HubEntry",
 ]

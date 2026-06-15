@@ -22,9 +22,7 @@ from app.api.v1.auth_deps import (
 )
 from app.api.v1.deps import get_project_or_404
 from app.api.v1 import audit_logs as audit_logs_routes
-from app.api.v1 import document_exposures as document_exposures_routes
 from app.api.v1 import hub_entries as hub_entries_routes
-from app.api.v1 import documents as documents_routes
 from app.api.v1 import timeline as timeline_routes
 from app.database import get_db
 from app.models.entities import Organization, Project, ProjectMember, User
@@ -61,19 +59,12 @@ from app.services.project_members import (
     remove_project_member,
     update_project_member_role,
 )
-from app.domain.project_profiles import (
-    PROFILE_DEFAULT,
-    legacy_tipo_from_profile,
-    resolve_profile_slug,
-)
 from app.domain.project_templates import get_template
 from app.services.project_roles import seed_project_from_template
 from app.services.projects import apply_project_estado_action, update_project
 
 router = APIRouter(prefix="/projects", tags=["projects"])
-router.include_router(documents_routes.router)
 router.include_router(hub_entries_routes.router)
-router.include_router(document_exposures_routes.router)
 router.include_router(audit_logs_routes.router)
 router.include_router(timeline_routes.router)
 
@@ -167,29 +158,17 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
     if pack_slug == "software":
         template_slug = payload.template_slug or "t1_cliente_clasico"
         tpl = get_template(template_slug)
-        profile_slug = resolve_profile_slug(
-            pack_slug=pack_slug,
-            template_profile=tpl.profile_slug,
-            legacy_tipo=payload.tipo,
-            profile_override=payload.profile_slug,
-        )
     else:
         template_slug = payload.template_slug or "t5_freestyle"
         tpl = get_template(template_slug)
-        profile_slug = resolve_profile_slug(
-            pack_slug=pack_slug,
-            profile_override=payload.profile_slug or PROFILE_DEFAULT,
-            legacy_tipo=payload.tipo,
-        )
     fields = payload.model_dump(
-        exclude={"template_slug", "tipo", "pack_slug", "profile_slug", "project_structure"}
+        exclude={"template_slug", "tipo", "pack_slug", "project_structure"}
     )
     project_structure = payload.project_structure
     project = Project(
         **fields,
         template_slug=template_slug,
         pack_slug=pack_slug,
-        profile_slug=profile_slug,
     )
     db.add(project)
     db.flush()

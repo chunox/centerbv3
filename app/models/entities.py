@@ -28,6 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.domain.project_profiles import template_slug_to_profile
 
 
 def _utcnow() -> datetime:
@@ -54,14 +55,8 @@ class User(Base):
         back_populates="user"
     )
     comments: Mapped[list[Comment]] = relationship(back_populates="author")
-    documents_created: Mapped[list[Document]] = relationship(
-        back_populates="creator"
-    )
     hub_entries_authored: Mapped[list[HubEntry]] = relationship(
         back_populates="author"
-    )
-    document_exposures_created: Mapped[list[DocumentExposure]] = relationship(
-        back_populates="exposer"
     )
     attachments_uploaded: Mapped[list[Attachment]] = relationship(
         back_populates="uploader"
@@ -194,9 +189,6 @@ class Project(Base):
     )
     nombre: Mapped[str] = mapped_column(String(150), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    profile_slug: Mapped[str] = mapped_column(
-        String(40), nullable=False, default="default"
-    )
     template_slug: Mapped[str] = mapped_column(
         String(40), nullable=False, default="t1_cliente_clasico"
     )
@@ -218,19 +210,17 @@ class Project(Base):
         DateTime, default=_utcnow, onupdate=_utcnow
     )
 
+    @property
+    def profile_slug(self) -> str:
+        return template_slug_to_profile(self.template_slug)
+
     organization: Mapped[Organization] = relationship(back_populates="projects")
     creator: Mapped[User] = relationship(back_populates="projects_created")
     members: Mapped[list[ProjectMember]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
-    document: Mapped[Document | None] = relationship(
-        back_populates="project", uselist=False, cascade="all, delete-orphan"
-    )
     audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="project")
     notifications: Mapped[list[Notification]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    document_exposures: Mapped[list[DocumentExposure]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
     hub_entries: Mapped[list[HubEntry]] = relationship(
@@ -659,43 +649,12 @@ class Comment(Base):
     author: Mapped[User] = relationship(back_populates="comments")
 
 
-class Document(Base):
-    __tablename__ = "documents"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        unique=True,
-        nullable=False,
-    )
-    titulo: Mapped[str] = mapped_column(String(255), nullable=False)
-    contenido: Mapped[str | None] = mapped_column(Text, nullable=True)
-    archivo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    visibilidad: Mapped[str] = mapped_column(String(10), nullable=False, default="publico")
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
-
-    project: Mapped[Project] = relationship(back_populates="document")
-    creator: Mapped[User] = relationship(back_populates="documents_created")
-    exposures: Mapped[list[DocumentExposure]] = relationship(
-        back_populates="document"
-    )
-
-
 class HubEntry(Base):
     __tablename__ = "hub_entries"
     __table_args__ = (
-        CheckConstraint("tipo IN ('update', 'note')", name="chk_hub_entry_tipo"),
         CheckConstraint(
-            "visibilidad IN ('publico', 'interno')", name="chk_hub_entry_visibilidad"
+            "tipo IN ('update', 'note', 'shortcut', 'page', 'canvas')",
+            name="chk_hub_entry_tipo",
         ),
     )
 
@@ -712,8 +671,13 @@ class HubEntry(Base):
     )
     tipo: Mapped[str] = mapped_column(String(10), nullable=False)
     titulo: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    contenido: Mapped[str] = mapped_column(Text, nullable=False)
-    visibilidad: Mapped[str] = mapped_column(String(10), nullable=False, default="publico")
+    contenido: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    visible_roles: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    record_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("project_records.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow
@@ -721,68 +685,9 @@ class HubEntry(Base):
 
     project: Mapped[Project] = relationship(back_populates="hub_entries")
     author: Mapped[User] = relationship(back_populates="hub_entries_authored")
-    exposures: Mapped[list[DocumentExposure]] = relationship(back_populates="hub_entry")
-
-
-class DocumentExposure(Base):
-    __tablename__ = "document_exposures"
-    __table_args__ = (
-        CheckConstraint(
-            "(document_id IS NOT NULL AND attachment_id IS NULL AND hub_entry_id IS NULL) "
-            "OR (document_id IS NULL AND attachment_id IS NOT NULL AND hub_entry_id IS NULL) "
-            "OR (document_id IS NULL AND attachment_id IS NULL AND hub_entry_id IS NOT NULL)",
-            name="chk_exposure_target",
-        ),
-        CheckConstraint(
-            "(ambito = 'proyecto' AND record_id IS NULL) "
-            "OR (ambito IN ('milestone', 'feature', 'record') AND record_id IS NOT NULL)",
-            name="chk_exposure_ambito",
-        ),
+    linked_record: Mapped["ProjectRecord | None"] = relationship(
+        foreign_keys=[record_id]
     )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    ambito: Mapped[str] = mapped_column(String(20), nullable=False)
-    record_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("project_records.id", ondelete="CASCADE"),
-        nullable=True,
-    )
-    document_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("documents.id", ondelete="CASCADE"),
-        nullable=True,
-    )
-    attachment_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("attachments.id", ondelete="CASCADE"),
-        nullable=True,
-    )
-    hub_entry_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("hub_entries.id", ondelete="CASCADE"),
-        nullable=True,
-    )
-    titulo_visible: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    expuesto_por: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    project: Mapped[Project] = relationship(back_populates="document_exposures")
-    record: Mapped["ProjectRecord | None"] = relationship(foreign_keys=[record_id])
-    document: Mapped[Document | None] = relationship(back_populates="exposures")
-    attachment: Mapped[Attachment | None] = relationship(
-        back_populates="exposures"
-    )
-    hub_entry: Mapped[HubEntry | None] = relationship(back_populates="exposures")
-    exposer: Mapped[User] = relationship(back_populates="document_exposures_created")
 
 
 class Attachment(Base):
@@ -803,9 +708,6 @@ class Attachment(Base):
     uploader: Mapped[User] = relationship(back_populates="attachments_uploaded")
     relations: Mapped[list[AttachmentRelation]] = relationship(
         back_populates="attachment", cascade="all, delete-orphan"
-    )
-    exposures: Mapped[list[DocumentExposure]] = relationship(
-        back_populates="attachment"
     )
 
 

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
-from app.models.entities import AuditLog, Comment, Document, HubEntry, User
+from app.models.entities import AuditLog, Comment, HubEntry, User
 from app.schemas.audit_logs import AuditLogCreate, AuditLogRead
 from app.services.audit_display import audit_log_to_read, audit_logs_to_read
 from app.services.access import resolve_audit_logs_for_user
@@ -37,11 +37,6 @@ def _validate_entidad_in_project(
             record_type=record_type,
             detail=f"Entidad {entidad_tipo} no encontrada en el proyecto",
         )
-        return
-    if entidad_tipo == "document":
-        row = db.get(Document, entidad_id)
-        if not row or row.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Documento no encontrado en el proyecto")
         return
     if entidad_tipo == "hub_entry":
         row = db.get(HubEntry, entidad_id)

@@ -11,7 +11,6 @@ from app.models.entities import (
     Attachment,
     AttachmentRelation,
     Comment,
-    Document,
     HubEntry,
     ProjectRecord,
     User,
@@ -34,7 +33,6 @@ from app.services.file_storage import (
 
 _ENTITY_GETTERS: dict[AttachmentEntidadTipo, type] = {
     "comment": Comment,
-    "document": Document,
     "hub_entry": HubEntry,
     "project": Project,
 }
@@ -192,7 +190,7 @@ def create_attachment_for_entity(
         db,
         project_id=project.id,
         user_id=uploaded_by,
-        entidad_tipo="document",
+        entidad_tipo="attachment",
         entidad_id=attachment.id,
         accion="created",
     )
@@ -227,7 +225,7 @@ def update_attachment(
             db,
             project_id=project.id,
             user_id=payload.actor_user_id,
-            entidad_tipo="document",
+            entidad_tipo="attachment",
             entidad_id=attachment.id,
             accion="updated",
             campo=field,
@@ -258,7 +256,7 @@ def delete_attachment(
             db,
             project_id=project.id,
             user_id=actor_user_id,
-            entidad_tipo="document",
+            entidad_tipo="attachment",
             entidad_id=attachment.id,
             accion="deleted",
         )

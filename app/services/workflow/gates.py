@@ -90,7 +90,7 @@ def _gate_uat_tasks_complete(db: Session, entity: Any, entity_type: str) -> None
             db,
             project.id,
             "task",
-            getattr(project, "profile_slug", None) or "default",
+            "default",
         )
     test_keys = task_test_state_keys(task_wf) if task_wf else task_test_state_keys({})
     active = [t for t in tasks if not is_task_cancel_state(task_wf or {}, t.estado)]
@@ -210,10 +210,6 @@ def check_transition_conditions(
             allowed = cond.get("in", [])
             legacy = legacy_tipo_for_project(project)
             if legacy not in allowed and getattr(project, "tipo", None) not in allowed:
-                return False
-        elif ctype == "profile":
-            profile = getattr(project, "profile_slug", None) or "default"
-            if profile not in cond.get("in", []):
                 return False
         elif ctype == "has_role":
             if db is None:

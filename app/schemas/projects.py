@@ -28,7 +28,6 @@ class ProjectCreate(BaseModel):
     descripcion: str | None = None
     pack_slug: str | None = None
     template_slug: ProjectTemplateSlug | None = None
-    profile_slug: ProjectProfileSlug | None = None
     tipo: ProjectTipo | None = None
     estado: ProjectEstado = "activo"
     fecha_inicio: date
