@@ -379,7 +379,7 @@ def _build_attention_items(
                     project_id=project_id,
                     project_nombre=project_names[project_id],
                     title=feature.titulo,
-                    subtitle="Esperando liberación PM",
+                    subtitle="Espera PM",
                     created_at=feature.updated_at,
                 )
             )

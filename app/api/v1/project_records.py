@@ -44,7 +44,7 @@ _INBOX_QUEUE_CAPS: dict[InboxQueue, str] = {
 }
 
 
-def _dto_to_read(dto) -> RecordRead:
+def _dto_to_read(dto, *, esfuerzo_horas: float | None = None) -> RecordRead:
     return RecordRead(
         id=dto.id,
         project_id=dto.project_id,
@@ -61,6 +61,7 @@ def _dto_to_read(dto) -> RecordRead:
         created_by=dto.created_by,
         created_at=dto.created_at,
         updated_at=dto.updated_at,
+        esfuerzo_horas=esfuerzo_horas,
     )
 
 
@@ -130,7 +131,20 @@ def list_project_records(
     rows = registry.list_records(
         db, project.id, record_type=record_type, parent_id=parent_id, estado=estado
     )
-    return [_dto_to_read(r) for r in rows]
+    effort_map: dict = {}
+    if record_type == "feature":
+        from app.services.scrum_effort import batch_feature_effort_hours, is_scrum_project
+
+        if is_scrum_project(project):
+            feature_ids = [r.id for r in rows]
+            effort_map = batch_feature_effort_hours(db, project.id, feature_ids)
+    return [
+        _dto_to_read(
+            r,
+            esfuerzo_horas=effort_map.get(r.id) if effort_map else None,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/{project_id}/inbox-records", response_model=list[RecordRead])

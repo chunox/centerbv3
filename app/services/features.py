@@ -23,6 +23,7 @@ from app.services.records.repository import (
     set_field,
     update_record_fields,
 )
+from app.services.scrum_effort import is_scrum_project
 from app.services.workflow.authorize import assert_capability
 from app.services.workflow.categories import (
     is_task_cancel_state,
@@ -443,7 +444,7 @@ def update_feature(
             detail="fecha_fin debe ser mayor o igual que fecha_inicio",
         )
 
-    if _feature_tipo(feature) == "mejora":
+    if _feature_tipo(feature) == "mejora" and not is_scrum_project(project):
         duracion = changes.get("duracion_estimada", get_field(feature, "duracion_estimada"))
         if duracion is None:
             raise HTTPException(

@@ -82,12 +82,12 @@ def default_feature_workflow_con_cliente() -> dict[str, Any]:
             _state("uat", "UAT", category="uat"),
             _state(
                 "esperando_liberacion_pm",
-                "Esperando liberación PM",
+                "Espera PM",
                 category="inbox_pm",
             ),
             _state(
                 "esperando_validacion_cliente",
-                "Esperando validación cliente",
+                "Espera cliente",
                 category="inbox_client",
             ),
             _state("completado", "Completado", category="terminal", badge="success", is_terminal=True),

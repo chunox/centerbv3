@@ -12,6 +12,7 @@ from app.models.entities import Project, ProjectRecord
 from app.schemas.features import FeatureCreate
 from app.services.milestones import sync_milestone_state
 from app.services.records.repository import _data, get_record, update_record_fields
+from app.services.scrum_effort import is_scrum_project
 
 
 def validate_and_prepare_feature_create(
@@ -45,7 +46,7 @@ def validate_and_prepare_feature_create(
                 status_code=409,
                 detail="La feature origen debe estar en completado",
             )
-        if payload.tipo == "mejora" and payload.duracion_estimada is None:
+        if payload.tipo == "mejora" and payload.duracion_estimada is None and not is_scrum_project(project):
             raise HTTPException(
                 status_code=422,
                 detail="duracion_estimada es obligatoria para tipo mejora",

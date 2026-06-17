@@ -13,6 +13,7 @@ from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.domain.capabilities import WORKBENCH_SPRINT_BOARD
 from app.models.entities import AuditLog, ProjectRecord
+from app.services.scrum_metrics import list_sprint_velocity, sync_sprint_velocidad_real
 from app.services.workflow.authorize import assert_capability
 
 router = APIRouter(prefix="/projects", tags=["scrum"])
@@ -143,4 +144,38 @@ def get_sprint_burndown(
         "total_sp": total_sp,
         "completed_sp": completed_sp,
         "days": days,
+    }
+
+
+@router.get("/{project_id}/scrum/velocity")
+def get_scrum_velocity(
+    project_id: uuid.UUID,
+    actor_user_id: uuid.UUID = Query(...),
+    limit: int = Query(6, ge=1, le=24),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    project = get_project_or_404(project_id, db)
+    assert_capability(db, project.id, actor_user_id, WORKBENCH_SPRINT_BOARD)
+    return list_sprint_velocity(db, project.id, limit=limit)
+
+
+@router.post("/{project_id}/scrum/sprints/{sprint_id}/sync-velocity")
+def post_sync_sprint_velocity(
+    project_id: uuid.UUID,
+    sprint_id: uuid.UUID,
+    actor_user_id: uuid.UUID = Query(...),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    project = get_project_or_404(project_id, db)
+    assert_capability(db, project.id, actor_user_id, WORKBENCH_SPRINT_BOARD)
+
+    sprint = db.get(ProjectRecord, sprint_id)
+    if sprint is None or sprint.project_id != project.id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Sprint no encontrado")
+
+    total = sync_sprint_velocidad_real(db, sprint)
+    return {
+        "sprint_id": str(sprint_id),
+        "velocidad_real": total,
     }

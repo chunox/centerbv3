@@ -7,6 +7,7 @@ from app.domain.capabilities import (
     TEMPLATE_ROLE_CAPABILITIES,
     TEMPLATE_ROLE_LABELS,
     WORKBENCH_KANBAN,
+    WORKBENCH_INBOX_QA,
     WORKBENCH_SPRINT_BOARD,
     WORKBENCH_PRODUCT_BACKLOG,
     WORKBENCH_SPRINT_PLANNING,
@@ -166,16 +167,15 @@ def _software_field_definitions() -> list[FieldDefinitionDef]:
             config={"relation_entity_type": "feature"},
             orden=3,
         ),
-        # ── Scrum (solo t6/t7) ──────────────────────────────────────────────
         FieldDefinitionDef(
-            entity_type_key="feature",
-            field_key="story_points",
-            label="Story Points",
-            field_type="select",
-            config={"options": ["?", "1", "2", "3", "5", "8", "13", "21"]},
-            orden=10,
-            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+            entity_type_key="task",
+            field_key="estimacion_horas",
+            label="Estimación (h)",
+            field_type="number",
+            config={"allow_decimal": True, "step": 0.5, "min": 0},
+            orden=1,
         ),
+        # ── Scrum (solo t6/t7) ──────────────────────────────────────────────
         FieldDefinitionDef(
             entity_type_key="milestone",
             field_key="sprint_goal",
@@ -183,24 +183,6 @@ def _software_field_definitions() -> list[FieldDefinitionDef]:
             field_type="textarea",
             config={},
             orden=10,
-            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
-        ),
-        FieldDefinitionDef(
-            entity_type_key="milestone",
-            field_key="velocidad_planeada",
-            label="Velocidad planeada (SP)",
-            field_type="number",
-            config={},
-            orden=11,
-            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
-        ),
-        FieldDefinitionDef(
-            entity_type_key="milestone",
-            field_key="velocidad_real",
-            label="Velocidad real (SP)",
-            field_type="number",
-            config={},
-            orden=12,
             template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
         ),
     ]
@@ -292,6 +274,8 @@ def _software_blocks() -> list[BlockDef]:
         elif wb["key"] == "kanban":
             # En Scrum se seedea el kanban con label "Tareas" (ver abajo)
             exclude = _SCRUM_SLUGS
+        elif wb["key"] == "inbox_qa":
+            exclude = _SCRUM_SLUGS
         blocks.append(
             BlockDef(
                 block_slug=slug,
@@ -326,11 +310,26 @@ def _software_blocks() -> list[BlockDef]:
         )
     )
 
+    # Bandeja QA Scrum (UAT + consultas)
+    blocks.append(
+        BlockDef(
+            block_slug="custom",
+            key="inbox_qa",
+            label="Bandeja",
+            config={
+                "view_type": "custom",
+                "custom_view_key": "software.inbox_qa_scrum",
+            },
+            orden=70,
+            template_slugs=_SCRUM_SLUGS,
+        )
+    )
+
     # Workbenches Scrum exclusivos
     for i, (wb_key, label, icon) in enumerate([
-        ("sprint_board", "Sprint Board", "layout-kanban"),
         ("product_backlog", "Product Backlog", "list-ordered"),
         ("sprint_planning", "Sprint Planning", "calendar-clock"),
+        ("sprint_board", "Sprint Board", "layout-kanban"),
     ]):
         blocks.append(
             BlockDef(
@@ -354,6 +353,8 @@ def _software_views() -> list[ViewDef]:
         if wb["key"] == "inbox_client":
             exclude = _INTERNO_SLUGS
         elif wb["key"] == "kanban":
+            exclude = _SCRUM_SLUGS
+        elif wb["key"] == "inbox_qa":
             exclude = _SCRUM_SLUGS
         views.append(
             ViewDef(
@@ -388,12 +389,35 @@ def _software_views() -> list[ViewDef]:
         )
     )
 
-    # Vistas Scrum exclusivas
-    for i, (wb_key, label, icon, cap) in enumerate([
-        ("sprint_board", "Sprint Board", "layout-kanban", WORKBENCH_SPRINT_BOARD),
-        ("product_backlog", "Product Backlog", "list-ordered", WORKBENCH_PRODUCT_BACKLOG),
-        ("sprint_planning", "Sprint Planning", "calendar-clock", WORKBENCH_SPRINT_PLANNING),
-    ]):
+    views.append(
+        ViewDef(
+            key="inbox_qa",
+            label="Bandeja",
+            route="qa/inbox",
+            icon="flask-conical",
+            section="qa",
+            layout={"blocks": [{"project_block_key": "inbox_qa", "width": "full"}]},
+            required_capabilities=[WORKBENCH_INBOX_QA],
+            orden=70,
+            template_slugs=_SCRUM_SLUGS,
+            view_type="custom",
+        )
+    )
+
+    # Vistas Scrum exclusivas (agrupadas en sidebar como tabs bajo «Scrum»)
+    scrum_views = [
+        ("product_backlog", "Product Backlog", "list-ordered", WORKBENCH_PRODUCT_BACKLOG, 0, True),
+        ("sprint_planning", "Sprint Planning", "calendar-clock", WORKBENCH_SPRINT_PLANNING, 1, False),
+        ("sprint_board", "Sprint Board", "layout-kanban", WORKBENCH_SPRINT_BOARD, 2, False),
+    ]
+    for i, (wb_key, label, icon, cap, group_order, is_primary) in enumerate(scrum_views):
+        nav: dict[str, Any] = {
+            "group": "scrum",
+            "group_order": group_order,
+            "primary": is_primary,
+        }
+        if is_primary:
+            nav["group_label"] = "Scrum"
         views.append(
             ViewDef(
                 key=wb_key,
@@ -401,7 +425,10 @@ def _software_views() -> list[ViewDef]:
                 route=wb_key,
                 icon=icon,
                 section="plan",
-                layout={"blocks": [{"project_block_key": wb_key, "width": "full"}]},
+                layout={
+                    "blocks": [{"project_block_key": wb_key, "width": "full"}],
+                    "nav": nav,
+                },
                 required_capabilities=[cap],
                 orden=100 + i * 10,
                 template_slugs=_SCRUM_SLUGS,

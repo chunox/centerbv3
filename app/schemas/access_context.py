@@ -39,6 +39,10 @@ class WorkbenchRead(BaseModel):
     required_capabilities: list[str] = Field(default_factory=list)
     queue_filter: dict[str, Any] | None = None
     orden: int = 0
+    nav_group: str | None = None
+    nav_group_label: str | None = None
+    nav_group_order: int = 0
+    nav_primary: bool = True
 
 
 class WorkflowSummaryRead(BaseModel):

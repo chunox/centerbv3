@@ -74,7 +74,26 @@ def validate_record_data(
                     )
         if fd.field_type == "number" and value is not None:
             try:
-                out[key] = int(value)
+                if config.get("allow_decimal"):
+                    parsed = float(value)
+                    step = float(config.get("step") or 0.5)
+                    min_val = float(config.get("min") or 0)
+                    if parsed < min_val:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"{fd.label} debe ser >= {min_val}",
+                        )
+                    remainder = round(parsed / step) * step - parsed
+                    if abs(remainder) > 1e-9:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"{fd.label} debe ser múltiplo de {step}",
+                        )
+                    out[key] = round(parsed * 2) / 2 if step == 0.5 else parsed
+                else:
+                    out[key] = int(value)
+            except HTTPException:
+                raise
             except (TypeError, ValueError) as exc:
                 raise HTTPException(
                     status_code=422, detail=f"{fd.label} debe ser numérico"

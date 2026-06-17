@@ -85,20 +85,20 @@ def add_member(token, pid, pm_id, user_id, rol):
         pass
 
 
-def mk_sprint(token, pid, pm_id, *, nombre, orden, fi, ff, goal, vel):
+def mk_sprint(token, pid, pm_id, *, nombre, orden, fi, ff, goal):
     return post(token, f"/projects/{pid}/records", {
         "actor_user_id": pm_id,
         "record_type": "milestone",
         "titulo": nombre,
         "descripcion": goal,
-        "data": {"tipo": "entrega", "sprint_goal": goal, "velocidad_planeada": vel},
+        "data": {"tipo": "entrega", "sprint_goal": goal},
         "orden": orden,
         "fecha_inicio": fi,
         "fecha_fin": ff,
     })
 
 
-def mk_historia(token, pid, pm_id, *, nombre, sprint_id, sp, prio, fi, ff, desc=""):
+def mk_historia(token, pid, pm_id, *, nombre, sprint_id, prio, desc=""):
     return post(token, f"/projects/{pid}/records", {
         "actor_user_id": pm_id,
         "record_type": "feature",
@@ -106,17 +106,15 @@ def mk_historia(token, pid, pm_id, *, nombre, sprint_id, sp, prio, fi, ff, desc=
         "descripcion": desc,
         "parent_id": sprint_id,
         "initial_state": "product_backlog",
-        "data": {"tipo": "desarrollo", "prioridad": prio, "bloqueada": False, "story_points": sp},
-        "fecha_inicio": fi,
-        "fecha_fin": ff,
+        "data": {"tipo": "desarrollo", "prioridad": prio, "bloqueada": False},
     })
 
 
-def mk_backlog(token, pid, pm_id, *, nombre, sp, prio, fi, ff, desc=""):
-    return mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=None, sp=sp, prio=prio, fi=fi, ff=ff, desc=desc)
+def mk_backlog(token, pid, pm_id, *, nombre, prio, desc=""):
+    return mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=None, prio=prio, desc=desc)
 
 
-def mk_tarea(token, pid, feature_id, actor_id, *, titulo, estado, asignee=None):
+def mk_tarea(token, pid, feature_id, actor_id, *, titulo, estado, asignee=None, horas=None):
     body = {
         "actor_user_id": actor_id,
         "record_type": "task",
@@ -124,9 +122,23 @@ def mk_tarea(token, pid, feature_id, actor_id, *, titulo, estado, asignee=None):
         "parent_id": feature_id,
         "initial_state": estado,
     }
+    if horas is not None:
+        body["data"] = {"estimacion_horas": horas}
     if asignee:
         body["assignee_ids"] = [asignee]
     return post(token, f"/projects/{pid}/records", body)
+
+
+def seed_tareas(token, pid, feature_id, actor_id, horas_list, *, asignee=None, estado=None):
+    estados = ["to_do", "in_progress", "completed", "ready_for_test"]
+    for i, horas in enumerate(horas_list):
+        mk_tarea(
+            token, pid, feature_id, actor_id,
+            titulo=f"Tarea {i + 1}",
+            estado=estado or estados[i % len(estados)],
+            asignee=asignee,
+            horas=horas,
+        )
 
 
 def tr(token, pid, rid, *, actor, action, target=None, silent=True):
@@ -188,23 +200,22 @@ def seed_crm(token, users, org_id, today):
         fi=add_days(today, -56),
         ff=add_days(today, -43),
         goal="Modelo de datos, API REST, y CRUD completo de contactos.",
-        vel=32,
     )
     s1_spec = [
-        ("Modelo de datos + migraciones Alembic",   "8",  "alta"),
-        ("API REST: CRUD de contactos",              "8",  "alta"),
-        ("UI: lista de contactos con filtros",       "5",  "alta"),
-        ("UI: formulario de contacto con validacion","5",  "media"),
-        ("Tests unitarios capa de servicio",         "3",  "media"),
+        ("Modelo de datos + migraciones Alembic",   "alta",   [4, 4]),
+        ("API REST: CRUD de contactos",              "alta",   [4, 4]),
+        ("UI: lista de contactos con filtros",       "alta",   [3, 2]),
+        ("UI: formulario de contacto con validacion","media",  [3, 2]),
+        ("Tests unitarios capa de servicio",         "media",  [2, 1]),
     ]
-    for nombre, sp, prio in s1_spec:
-        h = mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=s1["id"], sp=sp, prio=prio,
-                        fi=add_days(today, -56), ff=add_days(today, -43))
+    for nombre, prio, horas_list in s1_spec:
+        h = mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=s1["id"], prio=prio)
+        patch(token, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s1["id"]})
         tr(token, pid, h["id"], actor=pm_id, action="comprometer_sprint")
+        seed_tareas(token, pid, h["id"], tech["id"], horas_list, asignee=tech["id"], estado="completed")
         tr(token, pid, h["id"], actor=tech["id"], action="pasar_a_uat")
         tr(token, pid, h["id"], actor=qa["id"], action="enviar_al_pm")
         tr(token, pid, h["id"], actor=pm_id, action="completar")
-        mk_tarea(token, pid, h["id"], tech["id"], titulo=f"Impl {nombre[:35]}", estado="completed", asignee=tech["id"])
     tr(token, pid, s1["id"], actor=pm_id, action="sync", target="completado")
 
     # Sprint 2 — en progreso
@@ -214,34 +225,24 @@ def seed_crm(token, users, org_id, today):
         fi=add_days(today, -14),
         ff=add_days(today, -1),
         goal="Kanban de oportunidades con etapas configurables y valor estimado por deal.",
-        vel=30,
     )
     tr(token, pid, s2["id"], actor=pm_id, action="sync", target="en_progreso")
 
     s2_spec = [
-        ("Modelo de oportunidades y pipeline",   "8",  "alta",   "uat"),
-        ("Kanban de deals con drag & drop",      "8",  "alta",   "en_progreso"),
-        ("Valor estimado y probabilidad por etapa","5","media",  "en_progreso"),
-        ("Vista de oportunidades ganadas/perdidas","3","media",  "pendiente"),
+        ("Modelo de oportunidades y pipeline",    "alta",   "uat",              [4, 4]),
+        ("Kanban de deals con drag & drop",       "alta",   "en_progreso",      [4, 4]),
+        ("Valor estimado y probabilidad por etapa","media",  "en_progreso",      [2.5, 2.5]),
+        ("Vista de oportunidades ganadas/perdidas","media",  "pendiente",       [1.5, 1.5]),
     ]
-    s2_historias = []
-    for nombre, sp, prio, estado_final in s2_spec:
-        h = mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=s2["id"], sp=sp, prio=prio,
-                        fi=add_days(today, -14), ff=add_days(today, -1))
+    for nombre, prio, estado_final, horas_list in s2_spec:
+        h = mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=s2["id"], prio=prio)
+        patch(token, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s2["id"]})
         tr(token, pid, h["id"], actor=pm_id, action="comprometer_sprint")
+        seed_tareas(token, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
         if estado_final in ("uat", "esperando_liberacion_pm"):
             tr(token, pid, h["id"], actor=tech["id"], action="pasar_a_uat")
         if estado_final == "esperando_liberacion_pm":
             tr(token, pid, h["id"], actor=qa["id"], action="enviar_al_pm")
-        s2_historias.append((h, nombre))
-
-    for i, (h, nombre) in enumerate(s2_historias):
-        estados = ["in_progress", "completed", "to_do", "in_progress"]
-        for j in range(3):
-            mk_tarea(token, pid, h["id"], tech["id"],
-                titulo=f"Tarea {j+1} — {nombre[:30]}",
-                estado=estados[(i + j) % len(estados)],
-                asignee=dev["id"] if j % 2 == 0 else tech["id"])
 
     # Sprint 3 — pendiente (planning)
     s3 = mk_sprint(token, pid, pm_id,
@@ -250,34 +251,35 @@ def seed_crm(token, users, org_id, today):
         fi=add_days(today, 0),
         ff=add_days(today, 13),
         goal="Dashboard de rendimiento de ventas con gráficos y exportacion CSV.",
-        vel=26,
     )
     s3_spec = [
-        ("Dashboard con metricas clave de ventas", "8",  "alta"),
-        ("Graficos de conversion por etapa",       "5",  "media"),
-        ("Exportacion CSV de contactos y deals",   "3",  "media"),
+        ("Dashboard con metricas clave de ventas", "alta",   [4, 4]),
+        ("Graficos de conversion por etapa",       "media",  [2.5, 2.5]),
+        ("Exportacion CSV de contactos y deals",   "media",  [1.5, 1.5]),
     ]
-    for nombre, sp, prio in s3_spec:
-        h = mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=s3["id"], sp=sp, prio=prio,
-                        fi=add_days(today, 0), ff=add_days(today, 13))
+    for nombre, prio, horas_list in s3_spec:
+        h = mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=s3["id"], prio=prio)
+        patch(token, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s3["id"]})
         tr(token, pid, h["id"], actor=pm_id, action="comprometer_sprint")
+        seed_tareas(token, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
 
     # Product Backlog
     backlog_crm = [
-        ("Integracion con Gmail/Outlook",          "13", "alta"),
-        ("App movil: vista de contactos",          "13", "media"),
-        ("Automatizacion: recordatorios de deals", "8",  "media"),
-        ("Roles y permisos granulares",            "5",  "alta"),
-        ("Historial de interacciones por contacto","5",  "media"),
-        ("Busqueda avanzada full-text",            "8",  "baja"),
-        ("Notificaciones en tiempo real (WS)",     "?",  "baja"),
+        ("Integracion con Gmail/Outlook",          "alta",   [6, 4]),
+        ("App movil: vista de contactos",          "media",  [8]),
+        ("Automatizacion: recordatorios de deals", "media",  [4, 4]),
+        ("Roles y permisos granulares",            "alta",   [3, 2]),
+        ("Historial de interacciones por contacto","media",  [2.5, 2.5]),
+        ("Busqueda avanzada full-text",            "baja",   [4, 4]),
+        ("Notificaciones en tiempo real (WS)",     "baja",   None),
     ]
-    for nombre, sp, prio in backlog_crm:
-        mk_backlog(token, pid, pm_id, nombre=nombre, sp=sp, prio=prio,
-                   fi=add_days(today, 14), ff=add_days(today, 84))
+    for nombre, prio, horas_list in backlog_crm:
+        h = mk_backlog(token, pid, pm_id, nombre=nombre, prio=prio)
+        if horas_list:
+            seed_tareas(token, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
 
     # Hub
-    hub_update(token, pid, pm_id, contenido="Sprint 1 completado: 29/32 SP. CRUD de contactos en produccion.")
+    hub_update(token, pid, pm_id, contenido="Sprint 1 completado. CRUD de contactos en produccion.")
     hub_note(token, pid, pm_id,
         titulo="Retro Sprint 1",
         contenido=(
@@ -297,7 +299,7 @@ def seed_crm(token, users, org_id, today):
         ),
     )
     hub_update(token, pid, tech["id"], contenido="Kanban de deals: back-end listo, front en progreso. ETA: 2 dias.")
-    hub_update(token, pid, dev["id"], contenido="Inicio de Sprint 3 planning. Velocidad objetivo: 26 SP.")
+    hub_update(token, pid, dev["id"], contenido="Inicio de Sprint 3 planning. Estimar tareas en grooming.")
 
     print(f"  [OK] CRM Platform — id: {pid}")
     return pid
@@ -340,23 +342,22 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         fi=add_days(today, -42),
         ff=add_days(today, -29),
         goal="Catalogo publico con filtros, busqueda y detalle de producto.",
-        vel=34,
     )
     s1_spec = [
-        ("Pagina de catalogo con grilla de productos", "8",  "alta"),
-        ("Filtros por categoria, precio y disponibilidad","5","alta"),
-        ("Pagina de detalle de producto con galeria",  "8",  "alta"),
-        ("Busqueda por nombre y descripcion",          "5",  "media"),
+        ("Pagina de catalogo con grilla de productos", "alta",   [4, 4]),
+        ("Filtros por categoria, precio y disponibilidad","alta", [2.5, 2.5]),
+        ("Pagina de detalle de producto con galeria",  "alta",   [4, 4]),
+        ("Busqueda por nombre y descripcion",          "media",  [2.5, 2.5]),
     ]
-    for nombre, sp, prio in s1_spec:
-        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, sprint_id=s1["id"], sp=sp, prio=prio,
-                        fi=add_days(today, -42), ff=add_days(today, -29))
+    for nombre, prio, horas_list in s1_spec:
+        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, sprint_id=s1["id"], prio=prio)
+        patch(token_pm, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s1["id"]})
         tr(token_pm, pid, h["id"], actor=pm_id, action="comprometer_sprint")
+        seed_tareas(token_pm, pid, h["id"], tech["id"], horas_list, asignee=tech["id"], estado="completed")
         tr(token_pm, pid, h["id"], actor=tech["id"], action="pasar_a_uat")
         tr(token_pm, pid, h["id"], actor=qa["id"], action="enviar_al_pm")
         tr(token_pm, pid, h["id"], actor=pm_id, action="liberar_cliente")
         tr(token_cliente, pid, h["id"], actor=cliente["id"], action="confirmar")
-        mk_tarea(token_pm, pid, h["id"], tech["id"], titulo=f"Dev {nombre[:35]}", estado="completed", asignee=tech["id"])
     tr(token_pm, pid, s1["id"], actor=pm_id, action="sync", target="completado")
 
     # Sprint 2 — en progreso (con historias en distintos estados del flujo con cliente)
@@ -366,75 +367,62 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         fi=add_days(today, -14),
         ff=add_days(today, -1),
         goal="Flujo completo de compra: agregar al carrito, checkout, pago y confirmacion de pedido.",
-        vel=36,
     )
     tr(token_pm, pid, s2["id"], actor=pm_id, action="sync", target="en_progreso")
 
     s2_spec = [
-        # (nombre, sp, prio, estado_final)
-        ("Carrito persistente (localStorage + API)",     "5",  "alta",   "esperando_validacion_cliente"),
-        ("Checkout: datos de envio y resumen",           "8",  "alta",   "esperando_liberacion_pm"),
-        ("Integracion con pasarela de pago (Stripe)",    "8",  "alta",   "uat"),
-        ("Pagina de confirmacion y email transaccional", "5",  "media",  "en_progreso"),
-        ("Validaciones de stock en checkout",            "3",  "media",  "pendiente"),
+        ("Carrito persistente (localStorage + API)",     "alta",   "esperando_validacion_cliente", [2.5, 2.5]),
+        ("Checkout: datos de envio y resumen",           "alta",   "esperando_liberacion_pm",     [4, 4]),
+        ("Integracion con pasarela de pago (Stripe)",    "alta",   "uat",                          [4, 4]),
+        ("Pagina de confirmacion y email transaccional", "media",  "en_progreso",                  [2.5, 2.5]),
+        ("Validaciones de stock en checkout",            "media",  "pendiente",                    [1.5, 1.5]),
     ]
-    s2_historias = []
-    for nombre, sp, prio, estado_final in s2_spec:
-        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, sprint_id=s2["id"], sp=sp, prio=prio,
-                        fi=add_days(today, -14), ff=add_days(today, -1))
+    for nombre, prio, estado_final, horas_list in s2_spec:
+        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, sprint_id=s2["id"], prio=prio)
+        patch(token_pm, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s2["id"]})
         tr(token_pm, pid, h["id"], actor=pm_id, action="comprometer_sprint")
+        seed_tareas(token_pm, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
         if estado_final in ("uat", "esperando_liberacion_pm", "esperando_validacion_cliente"):
             tr(token_pm, pid, h["id"], actor=tech["id"], action="pasar_a_uat")
         if estado_final in ("esperando_liberacion_pm", "esperando_validacion_cliente"):
             tr(token_pm, pid, h["id"], actor=qa["id"], action="enviar_al_pm")
         if estado_final == "esperando_validacion_cliente":
             tr(token_pm, pid, h["id"], actor=pm_id, action="liberar_cliente")
-        s2_historias.append((h, nombre))
 
-    for i, (h, nombre) in enumerate(s2_historias):
-        for j in range(3):
-            estados = ["in_progress", "completed", "to_do"]
-            mk_tarea(token_pm, pid, h["id"], tech["id"],
-                titulo=f"Tarea {j+1} — {nombre[:30]}",
-                estado=estados[(i + j) % len(estados)],
-                asignee=dev["id"] if j % 2 == 0 else tech["id"])
-
-    # Sprint 3 — pendiente (en planning)
     s3 = mk_sprint(token_pm, pid, pm_id,
         nombre="Sprint 3 — Panel de cliente",
         orden=3,
         fi=add_days(today, 0),
         ff=add_days(today, 13),
         goal="Historial de pedidos, estado en tiempo real y gestion de direcciones del cliente.",
-        vel=30,
     )
     s3_spec = [
-        ("Historial de pedidos con filtros",           "8",  "alta"),
-        ("Estado de pedido en tiempo real (polling)",  "5",  "alta"),
-        ("Gestion de direcciones de envio",            "5",  "media"),
-        ("Descarga de factura en PDF",                 "3",  "baja"),
+        ("Historial de pedidos con filtros",           "alta",   [4, 4]),
+        ("Estado de pedido en tiempo real (polling)",  "alta",   [2.5, 2.5]),
+        ("Gestion de direcciones de envio",            "media",  [2.5, 2.5]),
+        ("Descarga de factura en PDF",                 "baja",   [1.5, 1.5]),
     ]
-    for nombre, sp, prio in s3_spec:
-        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, sprint_id=s3["id"], sp=sp, prio=prio,
-                        fi=add_days(today, 0), ff=add_days(today, 13))
+    for nombre, prio, horas_list in s3_spec:
+        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, sprint_id=s3["id"], prio=prio)
+        patch(token_pm, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s3["id"]})
         tr(token_pm, pid, h["id"], actor=pm_id, action="comprometer_sprint")
+        seed_tareas(token_pm, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
 
-    # Product Backlog
     backlog_ec = [
-        ("Panel de administracion de productos",       "13", "alta"),
-        ("Wishlist / lista de deseos",                 "5",  "media"),
-        ("Reviews y valoraciones de productos",        "8",  "media"),
-        ("Programa de puntos y fidelizacion",          "13", "baja"),
-        ("Integracion con ERP de inventario",          "?",  "alta"),
-        ("App movil con React Native",                 "?",  "baja"),
+        ("Panel de administracion de productos",       "alta",   [6, 4]),
+        ("Wishlist / lista de deseos",                 "media",  [3, 2]),
+        ("Reviews y valoraciones de productos",        "media",  [4, 4]),
+        ("Programa de puntos y fidelizacion",          "baja",   [8]),
+        ("Integracion con ERP de inventario",          "alta",   None),
+        ("App movil con React Native",                 "baja",   None),
     ]
-    for nombre, sp, prio in backlog_ec:
-        mk_backlog(token_pm, pid, pm_id, nombre=nombre, sp=sp, prio=prio,
-                   fi=add_days(today, 14), ff=add_days(today, 98))
+    for nombre, prio, horas_list in backlog_ec:
+        h = mk_backlog(token_pm, pid, pm_id, nombre=nombre, prio=prio)
+        if horas_list:
+            seed_tareas(token_pm, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
 
-    # Hub
     hub_update(token_pm, pid, pm_id,
-        contenido="Sprint 1 cerrado: 26/34 SP. Catalogo live en staging, aprobado por cliente.")
+        contenido="Sprint 1 cerrado. Catalogo live en staging, aprobado por cliente.")
     hub_note(token_pm, pid, pm_id,
         titulo="Feedback cliente — Sprint 1",
         contenido=(
@@ -447,8 +435,8 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
     hub_note(token_pm, pid, pm_id,
         titulo="Sprint 2 — Riesgos",
         contenido=(
-            "**Integracion Stripe (8 SP):** Primera vez que el equipo trabaja con esta API. "
-            "Tech Lead investigara docs 1 dia antes de estimar definitivo.\n\n"
+            "**Integracion Stripe:** Primera vez que el equipo trabaja con esta API. "
+            "Tech Lead investigara docs 1 dia antes de estimar tareas.\n\n"
             "**Buffer de QA:** Checkout requiere pruebas E2E en distintos browsers. "
             "Reservar 2 dias extra para QA en la segunda semana del sprint."
         ),

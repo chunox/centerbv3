@@ -327,6 +327,12 @@ def _seed_pack_workbenches_from_views(db: Session, project: Project) -> None:
         }
         layout = v.layout or {}
         block_refs = layout.get("blocks") or []
+        nav = layout.get("nav") or {}
+        if nav.get("group"):
+            wb["nav_group"] = nav["group"]
+            wb["nav_group_label"] = nav.get("group_label")
+            wb["nav_group_order"] = nav.get("group_order", 0)
+            wb["nav_primary"] = nav.get("primary", True)
         if block_refs:
             bk = block_refs[0].get("project_block_key")
             block = blocks_by_key.get(bk) if bk else None

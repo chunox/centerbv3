@@ -150,6 +150,14 @@ def create_record(
     if assignee_ids:
         sync_assignees(db, row, assignee_ids)
 
+    if record_type == "feature" and parent_id is not None:
+        from app.services.scrum_effort import is_scrum_project, maybe_sync_scrum_on_feature_reparent
+
+        if is_scrum_project(project):
+            maybe_sync_scrum_on_feature_reparent(
+                db, project, row, new_parent_id=parent_id
+            )
+
     from app.config import settings
     from app.services.communication.engine import dispatch_record_created_rules
 
@@ -177,6 +185,17 @@ def update_record(
     orden: int | None = None,
     reparent: bool = False,
 ) -> RecordDTO:
+    from app.models.entities import Project
+    from app.services.scrum_effort import (
+        maybe_propagate_scrum_sprint_dates,
+        maybe_sync_scrum_on_feature_reparent,
+    )
+
+    project = db.get(Project, record.project_id)
+    old_parent_id = record.parent_id
+    old_fecha_inicio = record.fecha_inicio
+    old_fecha_fin = record.fecha_fin
+
     if titulo is not None:
         record.titulo = titulo.strip()
     if descripcion is not None:
@@ -205,6 +224,21 @@ def update_record(
         record.fecha_fin = fecha_fin
     if orden is not None:
         record.orden = orden
+
+    if project is not None:
+        if reparent and record.record_type == "feature" and record.parent_id != old_parent_id:
+            maybe_sync_scrum_on_feature_reparent(
+                db, project, record, new_parent_id=record.parent_id
+            )
+        if record.record_type == "milestone":
+            fecha_changed = (
+                record.fecha_inicio != old_fecha_inicio
+                or record.fecha_fin != old_fecha_fin
+            )
+            maybe_propagate_scrum_sprint_dates(
+                db, project, record, fecha_changed=fecha_changed
+            )
+
     return _to_dto(record)
 
 

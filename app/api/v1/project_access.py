@@ -152,6 +152,10 @@ def get_access_context(
                     required_capabilities=required,
                     queue_filter=wb.get("queue_filter"),
                     orden=wb.get("orden", 0),
+                    nav_group=wb.get("nav_group"),
+                    nav_group_label=wb.get("nav_group_label"),
+                    nav_group_order=wb.get("nav_group_order", 0),
+                    nav_primary=wb.get("nav_primary", True),
                 )
             )
 

@@ -154,6 +154,10 @@ def sync_milestone_state(
         actor_user_id=actor_user_id,
         target_state=nuevo,
     )
+    if nuevo == "completado":
+        from app.services.scrum_metrics import sync_sprint_velocidad_real
+
+        sync_sprint_velocidad_real(db, milestone, commit=False)
     return True
 
 
@@ -233,6 +237,11 @@ def update_milestone(
     if fecha_changed:
         sync_milestone_state(
             db, milestone, project, actor_user_id=payload.actor_user_id
+        )
+        from app.services.scrum_effort import maybe_propagate_scrum_sprint_dates
+
+        maybe_propagate_scrum_sprint_dates(
+            db, project, milestone, fecha_changed=True
         )
 
 

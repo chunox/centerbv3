@@ -23,6 +23,7 @@ class RecordRead(BaseModel):
     created_by: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    esfuerzo_horas: float | None = None
 
 
 class RecordCreate(BaseModel):
