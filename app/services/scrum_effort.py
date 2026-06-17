@@ -1,4 +1,4 @@
-"""Esfuerzo Scrum: rollup de horas por tarea y sync de fechas feature ← sprint."""
+"""Esfuerzo Scrum: rollup horas (story tasks + dev tasks)."""
 from __future__ import annotations
 
 import uuid
@@ -9,8 +9,14 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import Project, ProjectRecord
 from app.services.records.repository import list_children, update_record_fields
+from app.services.scrum_v2_structure import (
+    SCRUM_TEMPLATE_SLUGS,
+    get_product_backlog_milestone,
+    is_scrum_story,
+    is_sprint_milestone,
+    list_stories_for_sprint,
+)
 
-SCRUM_TEMPLATE_SLUGS = frozenset({"t6_scrum_interno", "t7_scrum_cliente"})
 TASK_CANCEL_STATE = "cancel"
 
 
@@ -28,8 +34,40 @@ def _hours_value(raw: Any) -> float:
     return max(0.0, val)
 
 
-def compute_feature_effort_hours(db: Session, feature_id: uuid.UUID) -> float:
-    tasks = list_children(db, feature_id, "task")
+def get_scrum_item_sprint_id(db: Session, record: ProjectRecord) -> uuid.UUID | None:
+    """Sprint milestone id si el item está comprometido."""
+    if is_scrum_story(record) and record.parent_id:
+        parent = db.get(ProjectRecord, record.parent_id)
+        if parent is not None and is_sprint_milestone(parent):
+            return parent.id
+        return None
+    raw = (record.data or {}).get("sprint_id")
+    if raw is None or raw == "":
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def get_feature_sprint_id(record: ProjectRecord) -> uuid.UUID | None:
+    """Legacy: sprint_id en data (features). Preferir get_scrum_item_sprint_id con db."""
+    raw = (record.data or {}).get("sprint_id")
+    if raw is None or raw == "":
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def compute_feature_effort_hours(db: Session, record_id: uuid.UUID) -> float:
+    from app.services.scrum_tasks import batch_story_effort_hours
+
+    row = db.get(ProjectRecord, record_id)
+    if row is not None and is_scrum_story(row):
+        return batch_story_effort_hours(db, row.project_id, [record_id]).get(record_id, 0.0)
+    tasks = list_children(db, record_id, "task")
     total = 0.0
     for task in tasks:
         if task.estado == TASK_CANCEL_STATE:
@@ -46,6 +84,13 @@ def batch_feature_effort_hours(
 ) -> dict[uuid.UUID, float]:
     if not feature_ids:
         return {}
+    from app.services.scrum_tasks import batch_story_effort_hours
+
+    rows = [db.get(ProjectRecord, fid) for fid in feature_ids]
+    story_ids = [r.id for r in rows if r is not None and is_scrum_story(r)]
+    if story_ids and len(story_ids) == len(feature_ids):
+        return batch_story_effort_hours(db, project_id, story_ids)
+
     tasks = list(
         db.scalars(
             select(ProjectRecord).where(
@@ -69,20 +114,21 @@ def batch_feature_effort_hours(
 
 def sync_feature_dates_from_sprint(
     db: Session,
-    feature: ProjectRecord,
+    record: ProjectRecord,
     sprint: ProjectRecord,
 ) -> bool:
-    """Copia fechas del sprint a la feature. Devuelve True si hubo cambio."""
-    if feature.record_type != "feature" or sprint.record_type != "milestone":
+    if sprint.record_type != "milestone" or not is_sprint_milestone(sprint):
+        return False
+    if record.record_type not in ("feature", "task"):
         return False
     if (
-        feature.fecha_inicio == sprint.fecha_inicio
-        and feature.fecha_fin == sprint.fecha_fin
+        record.fecha_inicio == sprint.fecha_inicio
+        and record.fecha_fin == sprint.fecha_fin
     ):
         return False
     update_record_fields(
         db,
-        feature,
+        record,
         fecha_inicio=sprint.fecha_inicio,
         fecha_fin=sprint.fecha_fin,
     )
@@ -90,31 +136,40 @@ def sync_feature_dates_from_sprint(
 
 
 def propagate_sprint_dates_to_features(db: Session, sprint: ProjectRecord) -> int:
-    """Propaga fechas del sprint a todas las features hijas."""
     if sprint.record_type != "milestone":
         return 0
     updated = 0
-    for feature in list_children(db, sprint.id, "feature"):
-        if sync_feature_dates_from_sprint(db, feature, sprint):
+    for story in list_stories_for_sprint(db, sprint.project_id, sprint.id):
+        if sync_feature_dates_from_sprint(db, story, sprint):
             updated += 1
     return updated
 
 
-def maybe_sync_scrum_on_feature_reparent(
+def maybe_sync_scrum_on_sprint_assignment(
     db: Session,
     project: Project,
-    feature: ProjectRecord,
-    *,
-    new_parent_id: uuid.UUID | None,
+    record: ProjectRecord,
 ) -> None:
-    if not is_scrum_project(project) or feature.record_type != "feature":
+    if not is_scrum_project(project):
         return
-    if new_parent_id is None:
+    sprint_id: uuid.UUID | None = None
+    if record.record_type == "task" and is_scrum_story(record) and record.parent_id:
+        parent = db.get(ProjectRecord, record.parent_id)
+        if parent is not None and is_sprint_milestone(parent):
+            sprint_id = parent.id
+    elif record.record_type == "feature":
+        raw = (record.data or {}).get("sprint_id")
+        if raw not in (None, ""):
+            try:
+                sprint_id = uuid.UUID(str(raw))
+            except (TypeError, ValueError):
+                return
+    if sprint_id is None:
         return
-    sprint = db.get(ProjectRecord, new_parent_id)
+    sprint = db.get(ProjectRecord, sprint_id)
     if sprint is None or sprint.record_type != "milestone":
         return
-    sync_feature_dates_from_sprint(db, feature, sprint)
+    sync_feature_dates_from_sprint(db, record, sprint)
 
 
 def maybe_propagate_scrum_sprint_dates(
@@ -129,3 +184,15 @@ def maybe_propagate_scrum_sprint_dates(
     if sprint.record_type != "milestone":
         return
     propagate_sprint_dates_to_features(db, sprint)
+
+
+def is_record_in_product_backlog(db: Session, record: ProjectRecord) -> bool:
+    from app.services.scrum_v2_structure import is_scrum_dev_task, is_scrum_epic_task, is_scrum_story
+
+    if is_scrum_epic_task(record) or is_scrum_dev_task(record):
+        return False
+    if is_scrum_story(record):
+        backlog = get_product_backlog_milestone(db, record.project_id)
+        return backlog is not None and record.parent_id == backlog.id
+    raw = (record.data or {}).get("sprint_id")
+    return raw is None or raw == ""

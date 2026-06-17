@@ -31,6 +31,11 @@ from app.services.audit_display import audit_log_to_read
 from app.services.project_profile import legacy_tipo_for_project
 from app.services.organizations import get_org_member
 from app.services.records.repository import _data, list_records
+from app.services.scrum_v2_structure import (
+    is_scrum_story,
+    is_scrum_template,
+    is_sprint_milestone,
+)
 from app.services.workflow.categories import (
     batch_load_workflows,
     is_terminal_state,
@@ -207,9 +212,101 @@ def _records_by_project(
     return grouped
 
 
+def _portfolio_scope_records(
+    project: Project,
+    rows: list[ProjectRecord],
+) -> list[ProjectRecord]:
+    if is_scrum_template(project.template_slug):
+        return [row for row in rows if is_scrum_story(row)]
+    return [row for row in rows if row.record_type == "feature"]
+
+
+def _is_scrum_committed_story(record: ProjectRecord) -> bool:
+    return (
+        is_scrum_story(record)
+        and record.parent_id is not None
+        and record.estado != "product_backlog"
+    )
+
+
+def _accumulate_feature_bucket(
+    stats_row: dict[str, int],
+    bucket: str | None,
+    bloqueada: bool,
+) -> None:
+    if bucket is None:
+        return
+    stats_row["features_total"] += 1
+    if bloqueada:
+        stats_row["features_blocked"] += 1
+    if bucket == "completed":
+        stats_row["features_completed"] += 1
+    elif bucket == "in_progress":
+        stats_row["features_in_progress"] += 1
+    elif bucket == "pending":
+        stats_row["features_pending"] += 1
+    elif bucket == "uat":
+        stats_row["features_uat"] += 1
+    elif bucket == "awaiting_client":
+        stats_row["features_awaiting_client"] += 1
+    elif bucket == "release":
+        stats_row["release_count"] += 1
+
+
+def _scrum_active_sprint_progress_pct(
+    rows: list[ProjectRecord],
+    workflows: dict,
+    project_id: UUID,
+) -> int:
+    milestones = sorted(
+        (row for row in rows if row.record_type == "milestone"),
+        key=lambda milestone: milestone.orden,
+    )
+    milestone_wf = workflows.get((project_id, "milestone"), {})
+    active_keys = state_keys_in_categories(milestone_wf, {"active"})
+    if not active_keys:
+        active_keys = frozenset({"en_progreso", "en_progreso_con_bug"})
+
+    active_sprint = next(
+        (
+            milestone
+            for milestone in milestones
+            if is_sprint_milestone(milestone) and milestone.estado in active_keys
+        ),
+        None,
+    )
+    if active_sprint is None:
+        return 0
+
+    feature_wf = workflows.get((project_id, "feature"), {})
+    stories = [
+        row
+        for row in rows
+        if is_scrum_story(row)
+        and row.parent_id == active_sprint.id
+        and row.estado != "product_backlog"
+        and not _is_feature_cancelled(feature_wf, row.estado)
+    ]
+    if not stories:
+        return 0
+
+    completed = sum(
+        1
+        for story in stories
+        if _feature_bucket(
+            feature_wf,
+            story.estado,
+            bool(_data(story).get("bloqueada", False)),
+        )
+        == "completed"
+    )
+    return round(completed / len(stories) * 100)
+
+
 def _aggregate_feature_stats(
     records_by_project: dict[UUID, list[ProjectRecord]],
     workflows: dict,
+    projects_by_id: dict[UUID, Project],
 ) -> dict[UUID, dict[str, int]]:
     stats: dict[UUID, dict[str, int]] = defaultdict(
         lambda: {
@@ -224,28 +321,17 @@ def _aggregate_feature_stats(
         }
     )
     for project_id, rows in records_by_project.items():
-        for feature in (r for r in rows if r.record_type == "feature"):
-            wf = workflows.get((project_id, "feature"), {})
+        project = projects_by_id[project_id]
+        scrum = is_scrum_template(project.template_slug)
+        feature_wf = workflows.get((project_id, "feature"), {})
+        for feature in _portfolio_scope_records(project, rows):
             bloqueada = bool(_data(feature).get("bloqueada", False))
-            bucket = _feature_bucket(wf, feature.estado, bloqueada)
-            if bucket is None:
+            bucket = _feature_bucket(feature_wf, feature.estado, bloqueada)
+            if scrum and not _is_scrum_committed_story(feature):
+                if bucket == "release":
+                    _accumulate_feature_bucket(stats[project_id], bucket, bloqueada)
                 continue
-            row = stats[project_id]
-            row["features_total"] += 1
-            if bloqueada:
-                row["features_blocked"] += 1
-            if bucket == "completed":
-                row["features_completed"] += 1
-            elif bucket == "in_progress":
-                row["features_in_progress"] += 1
-            elif bucket == "pending":
-                row["features_pending"] += 1
-            elif bucket == "uat":
-                row["features_uat"] += 1
-            elif bucket == "awaiting_client":
-                row["features_awaiting_client"] += 1
-            elif bucket == "release":
-                row["release_count"] += 1
+            _accumulate_feature_bucket(stats[project_id], bucket, bloqueada)
     return stats
 
 
@@ -311,12 +397,12 @@ def _last_activity_by_project(
 
 def _feature_lookup(
     records_by_project: dict[UUID, list[ProjectRecord]],
+    projects_by_id: dict[UUID, Project],
 ) -> dict[UUID, ProjectRecord]:
     return {
         row.id: row
-        for rows in records_by_project.values()
-        for row in rows
-        if row.record_type == "feature"
+        for project_id, rows in records_by_project.items()
+        for row in _portfolio_scope_records(projects_by_id[project_id], rows)
     }
 
 
@@ -326,10 +412,13 @@ def _build_attention_items(
     workflows: dict,
 ) -> list[PmAttentionItemRead]:
     project_names = {p.id: p.nombre for p in projects}
-    feature_by_id = _feature_lookup(records_by_project)
+    projects_by_id = {p.id: p for p in projects}
+    feature_by_id = _feature_lookup(records_by_project, projects_by_id)
     items: list[PmAttentionItemRead] = []
 
     for project_id, rows in records_by_project.items():
+        project = projects_by_id[project_id]
+        feature_wf = workflows.get((project_id, "feature"), {})
         for report in (r for r in rows if r.record_type == "report"):
             wf = workflows.get((project_id, "report"), {})
             if not _is_pm_pending_report(wf, report.estado):
@@ -367,10 +456,9 @@ def _build_attention_items(
                 )
             )
 
-        for feature in (r for r in rows if r.record_type == "feature"):
-            wf = workflows.get((project_id, "feature"), {})
+        for feature in _portfolio_scope_records(project, rows):
             bloqueada = bool(_data(feature).get("bloqueada", False))
-            if _feature_bucket(wf, feature.estado, bloqueada) != "release":
+            if _feature_bucket(feature_wf, feature.estado, bloqueada) != "release":
                 continue
             items.append(
                 PmAttentionItemRead(
@@ -506,6 +594,7 @@ def build_pm_portfolio(
         )
 
     project_ids = [p.id for p in projects]
+    projects_by_id = {p.id: p for p in projects}
     today = date.today()
     workflows = batch_load_workflows(db, projects)
     records_by_project = _records_by_project(db, project_ids)
@@ -515,7 +604,7 @@ def build_pm_portfolio(
         for pid, rows in records_by_project.items()
     }
 
-    feature_stats = _aggregate_feature_stats(records_by_project, workflows)
+    feature_stats = _aggregate_feature_stats(records_by_project, workflows, projects_by_id)
     report_counts = _count_reports_by_project(records_by_project, workflows)
     query_counts = _count_queries_by_project(records_by_project, workflows)
     active_milestones = _active_milestone_by_project(records_by_project, workflows)
@@ -535,9 +624,16 @@ def build_pm_portfolio(
         pending_reports = report_counts.get(project.id, 0)
         pending_queries = query_counts.get(project.id, 0)
         inbox_action_count = pending_reports + pending_queries + release_count
-        progress_pct = (
-            round(features_completed / features_total * 100) if features_total else 0
-        )
+        if is_scrum_template(project.template_slug):
+            progress_pct = _scrum_active_sprint_progress_pct(
+                records_by_project.get(project.id, []),
+                workflows,
+                project.id,
+            )
+        else:
+            progress_pct = (
+                round(features_completed / features_total * 100) if features_total else 0
+            )
         health = _compute_health(
             estado=project.estado,
             fecha_fin=project.fecha_fin,

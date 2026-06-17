@@ -548,20 +548,46 @@ def migrate_feature(
             detail="La feature ya pertenece a ese hito",
         )
 
-    anterior = str(source_milestone.id)
-    feature.parent_id = target_milestone.id
-    db.flush()
-    record_audit_log(
-        db,
-        project_id=project.id,
-        user_id=actor_user_id,
-        entidad_tipo="feature",
-        entidad_id=feature.id,
-        accion="migrada",
-        campo="milestone_id",
-        valor_anterior=anterior,
-        valor_nuevo=str(target_milestone.id),
-    )
+    if is_scrum_project(project):
+        from app.services.scrum_effort import get_feature_sprint_id, maybe_sync_scrum_on_sprint_assignment
+
+        current_sprint = get_feature_sprint_id(feature)
+        if current_sprint == target_milestone.id:
+            raise HTTPException(
+                status_code=400,
+                detail="La historia ya pertenece a ese sprint",
+            )
+        anterior = str(current_sprint) if current_sprint else None
+        set_field(feature, "sprint_id", str(target_milestone.id))
+        db.flush()
+        maybe_sync_scrum_on_sprint_assignment(db, project, feature)
+        record_audit_log(
+            db,
+            project_id=project.id,
+            user_id=actor_user_id,
+            entidad_tipo="feature",
+            entidad_id=feature.id,
+            accion="migrada",
+            campo="sprint_id",
+            valor_anterior=anterior,
+            valor_nuevo=str(target_milestone.id),
+        )
+    else:
+        anterior = str(source_milestone.id)
+        feature.parent_id = target_milestone.id
+        db.flush()
+        record_audit_log(
+            db,
+            project_id=project.id,
+            user_id=actor_user_id,
+            entidad_tipo="feature",
+            entidad_id=feature.id,
+            accion="migrada",
+            campo="milestone_id",
+            valor_anterior=anterior,
+            valor_nuevo=str(target_milestone.id),
+        )
+
     from app.services.milestones import sync_milestone_state
 
     sync_milestone_state(

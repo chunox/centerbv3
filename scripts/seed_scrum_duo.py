@@ -4,6 +4,8 @@ Crea 2 proyectos Scrum demo listos para ver en la app:
   1. CRM Platform          (t6_scrum_interno)  — equipo interno, sin cliente
   2. E-commerce Relaunch   (t7_scrum_cliente)   — con validacion del cliente
 
+Preferir: scripts/seed_scrum_pack.py (2 proyectos demo oficiales: Logistics + E-commerce).
+
 Uso:
   .venv\\Scripts\\python.exe scripts/seed_scrum_duo.py
 
@@ -85,66 +87,119 @@ def add_member(token, pid, pm_id, user_id, rol):
         pass
 
 
-def mk_sprint(token, pid, pm_id, *, nombre, orden, fi, ff, goal):
+def mk_sprint(token, pid, pm_id, *, nombre, orden, fi, ff, goal, horas_planeadas=None):
+    data = {"tipo": "sprint", "sprint_goal": goal}
+    if horas_planeadas is not None:
+        data["horas_planeadas"] = horas_planeadas
     return post(token, f"/projects/{pid}/records", {
         "actor_user_id": pm_id,
         "record_type": "milestone",
         "titulo": nombre,
         "descripcion": goal,
-        "data": {"tipo": "entrega", "sprint_goal": goal},
+        "data": data,
         "orden": orden,
         "fecha_inicio": fi,
         "fecha_fin": ff,
     })
 
 
-def mk_historia(token, pid, pm_id, *, nombre, sprint_id, prio, desc=""):
+def mk_epic(token, pid, pm_id, *, nombre):
     return post(token, f"/projects/{pid}/records", {
         "actor_user_id": pm_id,
-        "record_type": "feature",
+        "record_type": "task",
         "titulo": nombre,
-        "descripcion": desc,
-        "parent_id": sprint_id,
-        "initial_state": "product_backlog",
-        "data": {"tipo": "desarrollo", "prioridad": prio, "bloqueada": False},
+        "data": {"scrum_role": "epic"},
     })
 
 
-def mk_backlog(token, pid, pm_id, *, nombre, prio, desc=""):
-    return mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=None, prio=prio, desc=desc)
+def mk_historia(token, pid, pm_id, *, nombre, epic_id, prio, desc=""):
+    return post(token, f"/projects/{pid}/records", {
+        "actor_user_id": pm_id,
+        "record_type": "task",
+        "titulo": nombre,
+        "descripcion": desc,
+        "initial_state": "product_backlog",
+        "data": {
+            "scrum_role": "story",
+            "epic_task_id": epic_id,
+            "prioridad": prio,
+            "bloqueada": False,
+        },
+    })
 
 
-def mk_tarea(token, pid, feature_id, actor_id, *, titulo, estado, asignee=None, horas=None):
+def mk_backlog(token, pid, pm_id, *, nombre, epic_id, prio, desc=""):
+    return mk_historia(token, pid, pm_id, nombre=nombre, epic_id=epic_id, prio=prio, desc=desc)
+
+
+def mk_tarea(token, pid, story_id, actor_id, *, titulo, estado, asignee=None, horas=None):
     body = {
         "actor_user_id": actor_id,
         "record_type": "task",
         "titulo": titulo,
-        "parent_id": feature_id,
+        "data": {
+            "scrum_role": "dev",
+            "parent_task_id": story_id,
+        },
         "initial_state": estado,
     }
     if horas is not None:
-        body["data"] = {"estimacion_horas": horas}
+        body["data"]["estimacion_horas"] = horas
     if asignee:
         body["assignee_ids"] = [asignee]
     return post(token, f"/projects/{pid}/records", body)
 
 
-def seed_tareas(token, pid, feature_id, actor_id, horas_list, *, asignee=None, estado=None):
+def mk_subtarea(token, pid, parent_dev_id, actor_id, *, titulo, estado, asignee=None, horas=None):
+    body = {
+        "actor_user_id": actor_id,
+        "record_type": "task",
+        "titulo": titulo,
+        "data": {
+            "scrum_role": "dev",
+            "parent_task_id": parent_dev_id,
+        },
+        "initial_state": estado,
+    }
+    if horas is not None:
+        body["data"]["estimacion_horas"] = horas
+    if asignee:
+        body["assignee_ids"] = [asignee]
+    return post(token, f"/projects/{pid}/records", body)
+
+
+def seed_subtareas(token, pid, parent_dev_id, actor_id, *, asignee=None, count: int = 2):
+    estados = ["to_do", "in_progress", "completed"]
+    for i in range(count):
+        mk_subtarea(
+            token, pid, parent_dev_id, actor_id,
+            titulo=f"Subtarea {i + 1}",
+            estado=estados[i % len(estados)],
+            asignee=asignee,
+            horas=1.5 + i,
+        )
+
+
+def seed_tareas(token, pid, story_id, actor_id, horas_list, *, asignee=None, estado=None):
     estados = ["to_do", "in_progress", "completed", "ready_for_test"]
     for i, horas in enumerate(horas_list):
-        mk_tarea(
-            token, pid, feature_id, actor_id,
+        task = mk_tarea(
+            token, pid, story_id, actor_id,
             titulo=f"Tarea {i + 1}",
             estado=estado or estados[i % len(estados)],
             asignee=asignee,
             horas=horas,
         )
+        if i == 0 and len(horas_list) >= 2:
+            seed_subtareas(token, pid, task["id"], actor_id, asignee=asignee, count=2)
 
 
-def tr(token, pid, rid, *, actor, action, target=None, silent=True):
+def tr(token, pid, rid, *, actor, action, target=None, side_effect_context=None, silent=True):
     body = {"actor_user_id": actor, "action_id": action}
     if target:
         body["target_state"] = target
+    if side_effect_context:
+        body["side_effect_context"] = side_effect_context
     try:
         _, d = http("POST", f"/projects/{pid}/records/{rid}/transition", body=body, token=token, expect_status=200)
         return d
@@ -193,6 +248,13 @@ def seed_crm(token, users, org_id, today):
     for uid, rol in [(pm_id, "pm"), (tech["id"], "tech_lead"), (dev["id"], "dev"), (qa["id"], "qa")]:
         add_member(token, pid, pm_id, uid, rol)
 
+    epics = {
+        "contactos": mk_epic(token, pid, pm_id, nombre="Contactos")["id"],
+        "pipeline": mk_epic(token, pid, pm_id, nombre="Pipeline de ventas")["id"],
+        "reportes": mk_epic(token, pid, pm_id, nombre="Reportes")["id"],
+        "plataforma": mk_epic(token, pid, pm_id, nombre="Plataforma")["id"],
+    }
+
     # Sprint 1 — completado
     s1 = mk_sprint(token, pid, pm_id,
         nombre="Sprint 1 — Base y contactos",
@@ -209,10 +271,9 @@ def seed_crm(token, users, org_id, today):
         ("Tests unitarios capa de servicio",         "media",  [2, 1]),
     ]
     for nombre, prio, horas_list in s1_spec:
-        h = mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=s1["id"], prio=prio)
-        patch(token, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s1["id"]})
-        tr(token, pid, h["id"], actor=pm_id, action="comprometer_sprint")
-        seed_tareas(token, pid, h["id"], tech["id"], horas_list, asignee=tech["id"], estado="completed")
+        h = mk_historia(token, pid, pm_id, nombre=nombre, epic_id=epics["contactos"], prio=prio)
+        tr(token, pid, h["id"], actor=pm_id, action="comprometer_sprint", side_effect_context={"sprint_id": s1["id"]})
+        seed_tareas(token, pid, h["id"], tech["id"], horas_list, asignee=tech["id"], estado="ready_for_test")
         tr(token, pid, h["id"], actor=tech["id"], action="pasar_a_uat")
         tr(token, pid, h["id"], actor=qa["id"], action="enviar_al_pm")
         tr(token, pid, h["id"], actor=pm_id, action="completar")
@@ -235,10 +296,10 @@ def seed_crm(token, users, org_id, today):
         ("Vista de oportunidades ganadas/perdidas","media",  "pendiente",       [1.5, 1.5]),
     ]
     for nombre, prio, estado_final, horas_list in s2_spec:
-        h = mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=s2["id"], prio=prio)
-        patch(token, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s2["id"]})
-        tr(token, pid, h["id"], actor=pm_id, action="comprometer_sprint")
-        seed_tareas(token, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
+        h = mk_historia(token, pid, pm_id, nombre=nombre, epic_id=epics["pipeline"], prio=prio)
+        tr(token, pid, h["id"], actor=pm_id, action="comprometer_sprint", side_effect_context={"sprint_id": s2["id"]})
+        task_estado = "ready_for_test" if estado_final in ("uat", "esperando_liberacion_pm") else None
+        seed_tareas(token, pid, h["id"], tech["id"], horas_list, asignee=dev["id"], estado=task_estado)
         if estado_final in ("uat", "esperando_liberacion_pm"):
             tr(token, pid, h["id"], actor=tech["id"], action="pasar_a_uat")
         if estado_final == "esperando_liberacion_pm":
@@ -258,9 +319,8 @@ def seed_crm(token, users, org_id, today):
         ("Exportacion CSV de contactos y deals",   "media",  [1.5, 1.5]),
     ]
     for nombre, prio, horas_list in s3_spec:
-        h = mk_historia(token, pid, pm_id, nombre=nombre, sprint_id=s3["id"], prio=prio)
-        patch(token, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s3["id"]})
-        tr(token, pid, h["id"], actor=pm_id, action="comprometer_sprint")
+        h = mk_historia(token, pid, pm_id, nombre=nombre, epic_id=epics["reportes"], prio=prio)
+        tr(token, pid, h["id"], actor=pm_id, action="comprometer_sprint", side_effect_context={"sprint_id": s3["id"]})
         seed_tareas(token, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
 
     # Product Backlog
@@ -273,8 +333,10 @@ def seed_crm(token, users, org_id, today):
         ("Busqueda avanzada full-text",            "baja",   [4, 4]),
         ("Notificaciones en tiempo real (WS)",     "baja",   None),
     ]
-    for nombre, prio, horas_list in backlog_crm:
-        h = mk_backlog(token, pid, pm_id, nombre=nombre, prio=prio)
+    backlog_epics = [epics["plataforma"], epics["contactos"], epics["pipeline"], epics["reportes"]]
+    for idx, (nombre, prio, horas_list) in enumerate(backlog_crm):
+        epic_id = backlog_epics[idx % len(backlog_epics)]
+        h = mk_backlog(token, pid, pm_id, nombre=nombre, epic_id=epic_id, prio=prio)
         if horas_list:
             seed_tareas(token, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
 
@@ -335,6 +397,13 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
     ]:
         add_member(token_pm, pid, pm_id, uid, rol)
 
+    epics = {
+        "catalogo": mk_epic(token_pm, pid, pm_id, nombre="Catálogo")["id"],
+        "checkout": mk_epic(token_pm, pid, pm_id, nombre="Checkout")["id"],
+        "cliente": mk_epic(token_pm, pid, pm_id, nombre="Panel cliente")["id"],
+        "plataforma": mk_epic(token_pm, pid, pm_id, nombre="Plataforma")["id"],
+    }
+
     # Sprint 1 — completado (con validacion de cliente)
     s1 = mk_sprint(token_pm, pid, pm_id,
         nombre="Sprint 1 — Catalogo de productos",
@@ -342,6 +411,7 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         fi=add_days(today, -42),
         ff=add_days(today, -29),
         goal="Catalogo publico con filtros, busqueda y detalle de producto.",
+        horas_planeadas=32,
     )
     s1_spec = [
         ("Pagina de catalogo con grilla de productos", "alta",   [4, 4]),
@@ -350,10 +420,9 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         ("Busqueda por nombre y descripcion",          "media",  [2.5, 2.5]),
     ]
     for nombre, prio, horas_list in s1_spec:
-        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, sprint_id=s1["id"], prio=prio)
-        patch(token_pm, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s1["id"]})
-        tr(token_pm, pid, h["id"], actor=pm_id, action="comprometer_sprint")
-        seed_tareas(token_pm, pid, h["id"], tech["id"], horas_list, asignee=tech["id"], estado="completed")
+        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, epic_id=epics["catalogo"], prio=prio)
+        tr(token_pm, pid, h["id"], actor=pm_id, action="comprometer_sprint", side_effect_context={"sprint_id": s1["id"]})
+        seed_tareas(token_pm, pid, h["id"], tech["id"], horas_list, asignee=tech["id"], estado="ready_for_test")
         tr(token_pm, pid, h["id"], actor=tech["id"], action="pasar_a_uat")
         tr(token_pm, pid, h["id"], actor=qa["id"], action="enviar_al_pm")
         tr(token_pm, pid, h["id"], actor=pm_id, action="liberar_cliente")
@@ -367,6 +436,7 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         fi=add_days(today, -14),
         ff=add_days(today, -1),
         goal="Flujo completo de compra: agregar al carrito, checkout, pago y confirmacion de pedido.",
+        horas_planeadas=28,
     )
     tr(token_pm, pid, s2["id"], actor=pm_id, action="sync", target="en_progreso")
 
@@ -378,10 +448,14 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         ("Validaciones de stock en checkout",            "media",  "pendiente",                    [1.5, 1.5]),
     ]
     for nombre, prio, estado_final, horas_list in s2_spec:
-        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, sprint_id=s2["id"], prio=prio)
-        patch(token_pm, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s2["id"]})
-        tr(token_pm, pid, h["id"], actor=pm_id, action="comprometer_sprint")
-        seed_tareas(token_pm, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
+        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, epic_id=epics["checkout"], prio=prio)
+        tr(token_pm, pid, h["id"], actor=pm_id, action="comprometer_sprint", side_effect_context={"sprint_id": s2["id"]})
+        task_estado = (
+            "ready_for_test"
+            if estado_final in ("uat", "esperando_liberacion_pm", "esperando_validacion_cliente")
+            else None
+        )
+        seed_tareas(token_pm, pid, h["id"], tech["id"], horas_list, asignee=dev["id"], estado=task_estado)
         if estado_final in ("uat", "esperando_liberacion_pm", "esperando_validacion_cliente"):
             tr(token_pm, pid, h["id"], actor=tech["id"], action="pasar_a_uat")
         if estado_final in ("esperando_liberacion_pm", "esperando_validacion_cliente"):
@@ -395,6 +469,7 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         fi=add_days(today, 0),
         ff=add_days(today, 13),
         goal="Historial de pedidos, estado en tiempo real y gestion de direcciones del cliente.",
+        horas_planeadas=26,
     )
     s3_spec = [
         ("Historial de pedidos con filtros",           "alta",   [4, 4]),
@@ -403,9 +478,8 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         ("Descarga de factura en PDF",                 "baja",   [1.5, 1.5]),
     ]
     for nombre, prio, horas_list in s3_spec:
-        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, sprint_id=s3["id"], prio=prio)
-        patch(token_pm, f"/projects/{pid}/records/{h['id']}", {"actor_user_id": pm_id, "parent_id": s3["id"]})
-        tr(token_pm, pid, h["id"], actor=pm_id, action="comprometer_sprint")
+        h = mk_historia(token_pm, pid, pm_id, nombre=nombre, epic_id=epics["cliente"], prio=prio)
+        tr(token_pm, pid, h["id"], actor=pm_id, action="comprometer_sprint", side_effect_context={"sprint_id": s3["id"]})
         seed_tareas(token_pm, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
 
     backlog_ec = [
@@ -416,8 +490,10 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         ("Integracion con ERP de inventario",          "alta",   None),
         ("App movil con React Native",                 "baja",   None),
     ]
-    for nombre, prio, horas_list in backlog_ec:
-        h = mk_backlog(token_pm, pid, pm_id, nombre=nombre, prio=prio)
+    backlog_epics = [epics["plataforma"], epics["catalogo"], epics["checkout"], epics["cliente"]]
+    for idx, (nombre, prio, horas_list) in enumerate(backlog_ec):
+        epic_id = backlog_epics[idx % len(backlog_epics)]
+        h = mk_backlog(token_pm, pid, pm_id, nombre=nombre, epic_id=epic_id, prio=prio)
         if horas_list:
             seed_tareas(token_pm, pid, h["id"], tech["id"], horas_list, asignee=dev["id"])
 

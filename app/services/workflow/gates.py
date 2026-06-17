@@ -79,10 +79,15 @@ def _record_id(entity: Any) -> uuid.UUID:
 
 
 def _gate_uat_tasks_complete(db: Session, entity: Any, entity_type: str) -> None:
-    if not _is_feature_record(entity):
-        return
+    from app.services.scrum_v2_structure import is_scrum_story, list_dev_tasks_for_story
+
     fid = _record_id(entity)
-    tasks = list_children(db, fid, "task")
+    if isinstance(entity, ProjectRecord) and is_scrum_story(entity):
+        tasks = list_dev_tasks_for_story(db, entity.project_id, fid)
+    elif _is_feature_record(entity):
+        tasks = list_children(db, fid, "task")
+    else:
+        return
     project = db.get(Project, entity.project_id) if hasattr(entity, "project_id") else None
     task_wf = None
     if project is not None:

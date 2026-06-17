@@ -210,6 +210,24 @@ def post(token: str, path: str, body: dict, *, expect: int = 201) -> dict:
     return data
 
 
+def create_record_dependency(
+    token: str,
+    project_id: str,
+    actor_user_id: str,
+    predecessor_id: str,
+    successor_id: str,
+) -> None:
+    post(
+        token,
+        f"/projects/{project_id}/record-dependencies",
+        {
+            "actor_user_id": actor_user_id,
+            "predecessor_id": predecessor_id,
+            "successor_id": successor_id,
+        },
+    )
+
+
 def create_project(token: str, org_id: str, pm_id: str, **kwargs) -> dict:
     kwargs.setdefault("created_by", pm_id)
     kwargs.setdefault("organization_id", org_id)
@@ -557,6 +575,12 @@ def seed_portal_cliente(
     auth_feat = features[0]
     oauth = features[2]
     webhooks = features[8]
+    dashboard = features[1]
+    api_publica = features[9]
+
+    create_record_dependency(token, portal["id"], pm["id"], oauth["id"], dashboard["id"])
+    create_record_dependency(token, portal["id"], pm["id"], auth_feat["id"], oauth["id"])
+    create_record_dependency(token, portal["id"], pm["id"], webhooks["id"], api_publica["id"])
 
     queries_spec = [
         (0, "¿Usamos SSO corporativo?", "Cliente pregunta por IdP.", dev["id"], "activar"),
@@ -1262,7 +1286,37 @@ def _enrich_generic_projects_db(
     print("[seed] Enriquecimiento genérico: vistas + tipos custom aplicados")
 
 
-def seed_rich_demo() -> None:
+def seed_users_and_org() -> tuple[str, str]:
+    """Usuarios demo + organización (sin proyectos). Retorna (token, pm_id)."""
+    wait_for_api()
+    users = {email: ensure_user(email, nombre) for email, nombre in DEMO_USERS}
+    pm = users["pm@center.demo"]
+
+    auth = login(pm["email"])
+    token = auth["access_token"]
+    org_id = auth.get("organization_id")
+    if not org_id:
+        org = post(
+            token,
+            "/organizations",
+            {"nombre": "Center Demo", "slug": "center-demo"},
+        )
+        org_id = org["id"]
+        auth = login(pm["email"])
+        token = auth["access_token"]
+
+    print(f"[seed] Usuarios demo OK ({len(DEMO_USERS)} cuentas). Org: {org_id}")
+    print("  Cuentas: " + ", ".join(e for e, _ in DEMO_USERS))
+    print(f"  Password: {DEMO_PASSWORD}")
+    return token, pm["id"]
+
+
+def seed_rich_demo(*, scrum_only: bool = False) -> None:
+    if scrum_only:
+        seed_users_and_org()
+        print("[seed] Modo --scrum-only: sin proyectos waterfall. Ejecutá seed_scrum_pack.py")
+        return
+
     wait_for_api()
     today = date.today()
     users = {email: ensure_user(email, nombre) for email, nombre in DEMO_USERS}
@@ -1307,17 +1361,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Reset + seed demo Center v3")
     parser.add_argument("--reset-only", action="store_true")
     parser.add_argument("--seed-only", action="store_true")
+    parser.add_argument(
+        "--scrum-only",
+        action="store_true",
+        help="Solo usuarios/org (sin proyectos waterfall). Usar con seed_scrum_pack.py",
+    )
     args = parser.parse_args()
 
     if not args.seed_only:
         reset_database()
         if args.reset_only:
             print("Reiniciá uvicorn y luego: python scripts/reset_and_seed_demo.py --seed-only")
+            if args.scrum_only:
+                print("  Luego: python scripts/seed_scrum_pack.py")
             return 0
 
     if not args.reset_only:
         try:
-            seed_rich_demo()
+            seed_rich_demo(scrum_only=args.scrum_only)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             print("¿Está uvicorn en :8000? Tras --reset-only hay que reiniciar el servidor.", file=sys.stderr)

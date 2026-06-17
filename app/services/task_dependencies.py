@@ -10,6 +10,13 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import Project, ProjectRecord, ProjectRecordDependency
 from app.services.access import assert_project_active
+from app.services.scrum_effort import is_scrum_project
+from app.services.scrum_v2_structure import (
+    get_epic_task_id,
+    is_scrum_dev_task,
+    is_scrum_epic_task,
+    is_scrum_story,
+)
 from app.services.audit import record_audit_log
 
 from app.services.workflow.categories import (
@@ -115,6 +122,72 @@ def assert_move_allowed_by_dependencies(
         )
 
 
+def _dev_parent_task_id(record: ProjectRecord) -> str | None:
+    data = record.data if isinstance(record.data, dict) else {}
+    raw = data.get("parent_task_id")
+    if raw is None or raw == "":
+        return None
+    return str(raw)
+
+
+def assert_scrum_dependency_level(
+    project: Project,
+    predecessor: ProjectRecord,
+    successor: ProjectRecord,
+) -> None:
+    """Scrum v2: épica←historia, historia←tarea, tarea←subtarea (un nivel)."""
+    if not is_scrum_project(project):
+        return
+
+    if is_scrum_epic_task(successor):
+        if not is_scrum_story(predecessor):
+            raise HTTPException(
+                status_code=400,
+                detail="La épica solo puede depender de historias",
+            )
+        epic_id = get_epic_task_id(predecessor)
+        if epic_id != successor.id:
+            raise HTTPException(
+                status_code=400,
+                detail="La historia debe pertenecer a la épica",
+            )
+        return
+
+    if is_scrum_story(successor):
+        if not is_scrum_dev_task(predecessor):
+            raise HTTPException(
+                status_code=400,
+                detail="La historia solo puede depender de tareas",
+            )
+        if _dev_parent_task_id(predecessor) != str(successor.id):
+            raise HTTPException(
+                status_code=400,
+                detail="La tarea debe ser hija directa de la historia",
+            )
+        return
+
+    if is_scrum_dev_task(successor):
+        if not is_scrum_dev_task(predecessor):
+            raise HTTPException(
+                status_code=400,
+                detail="La tarea solo puede depender de subtareas",
+            )
+        if _dev_parent_task_id(predecessor) != str(successor.id):
+            raise HTTPException(
+                status_code=400,
+                detail="La subtarea debe ser hija directa de la tarea",
+            )
+        return
+
+    pred_role = (predecessor.data or {}).get("scrum_role") if isinstance(predecessor.data, dict) else None
+    succ_role = (successor.data or {}).get("scrum_role") if isinstance(successor.data, dict) else None
+    if pred_role or succ_role:
+        raise HTTPException(
+            status_code=400,
+            detail="Dependencia Scrum inválida entre niveles",
+        )
+
+
 def create_dependency(
     db: Session,
     project: Project,
@@ -140,6 +213,8 @@ def create_dependency(
         )
     if successor.record_type != "task" or predecessor.record_type != "task":
         raise HTTPException(status_code=400, detail="Las dependencias son entre tareas")
+
+    assert_scrum_dependency_level(project, predecessor, successor)
 
     existing = db.scalar(
         select(ProjectRecordDependency.id).where(

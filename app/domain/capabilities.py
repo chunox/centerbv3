@@ -44,6 +44,11 @@ SCOPE_MILESTONE_EDIT = "scope.milestone.edit"
 SCOPE_MILESTONE_REORDER = "scope.milestone.reorder"
 SCOPE_MILESTONE_CANCEL = "scope.milestone.cancel"
 SCOPE_MILESTONE_DELETE = "scope.milestone.delete"
+SCOPE_EPIC_CREATE = "scope.epic.create"
+SCOPE_EPIC_EDIT = "scope.epic.edit"
+SCOPE_EPIC_REORDER = "scope.epic.reorder"
+SCOPE_EPIC_CANCEL = "scope.epic.cancel"
+SCOPE_EPIC_DELETE = "scope.epic.delete"
 SCOPE_FEATURE_CREATE = "scope.feature.create"
 SCOPE_FEATURE_EDIT = "scope.feature.edit"
 SCOPE_FEATURE_MIGRATE = "scope.feature.migrate"
@@ -153,6 +158,11 @@ CAPABILITY_CATALOG: tuple[CapabilityDef, ...] = (
     CapabilityDef(SCOPE_MILESTONE_REORDER, "Reordenar hitos", "scope"),
     CapabilityDef(SCOPE_MILESTONE_CANCEL, "Cancelar hitos", "scope"),
     CapabilityDef(SCOPE_MILESTONE_DELETE, "Eliminar hitos", "scope"),
+    CapabilityDef(SCOPE_EPIC_CREATE, "Crear épicas", "scope"),
+    CapabilityDef(SCOPE_EPIC_EDIT, "Editar épicas", "scope"),
+    CapabilityDef(SCOPE_EPIC_REORDER, "Reordenar épicas", "scope"),
+    CapabilityDef(SCOPE_EPIC_CANCEL, "Cancelar épicas", "scope"),
+    CapabilityDef(SCOPE_EPIC_DELETE, "Eliminar épicas", "scope"),
     CapabilityDef(SCOPE_FEATURE_CREATE, "Crear features", "scope"),
     CapabilityDef(SCOPE_FEATURE_EDIT, "Editar features", "scope"),
     CapabilityDef(SCOPE_FEATURE_MIGRATE, "Migrar features", "scope"),
@@ -232,6 +242,11 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             SCOPE_MILESTONE_REORDER,
             SCOPE_MILESTONE_CANCEL,
             SCOPE_MILESTONE_DELETE,
+            SCOPE_EPIC_CREATE,
+            SCOPE_EPIC_EDIT,
+            SCOPE_EPIC_REORDER,
+            SCOPE_EPIC_CANCEL,
+            SCOPE_EPIC_DELETE,
             SCOPE_FEATURE_CREATE,
             SCOPE_FEATURE_EDIT,
             SCOPE_FEATURE_MIGRATE,
@@ -432,6 +447,15 @@ def resolve_capability_keys(keys: list[str]) -> list[str]:
             ms_suffix = key.split("scope.milestone.", 1)[1]
             if ms_suffix in ("create", "edit", "reorder", "cancel", "delete"):
                 expanded.append("record.milestone.read")
+        elif key.startswith("scope.epic."):
+            expanded.append(key.replace("scope.epic.", "record.epic.", 1))
+            epic_suffix = key.split("scope.epic.", 1)[1]
+            if epic_suffix in ("create", "edit", "reorder", "cancel", "delete"):
+                expanded.append("record.epic.read")
+        elif key.startswith("record.epic.") and key.count(".") >= 2:
+            suffix = key.split("record.epic.", 1)[1]
+            if suffix in ("create", "edit", "reorder", "cancel", "delete", "read"):
+                expanded.append(f"scope.epic.{suffix}" if suffix != "read" else "scope.epic.create")
         elif key.startswith("record.milestone.") and key.count(".") >= 2:
             suffix = key.split("record.milestone.", 1)[1]
             expanded.append(f"scope.milestone.{suffix}")
@@ -458,7 +482,9 @@ def resolve_capability_keys(keys: list[str]) -> list[str]:
         elif key == WORKBENCH_MY_DELIVERIES:
             expanded.append("record.feature.read")
         elif key == WORKBENCH_SCOPE:
-            expanded.extend(["record.milestone.read", "record.feature.read"])
+            expanded.extend(
+                ["record.milestone.read", "record.epic.read", "record.feature.read"]
+            )
         elif key == KANBAN_VIEW:
             expanded.append("record.task.read")
         elif key == "record.task.read":

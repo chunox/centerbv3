@@ -62,6 +62,7 @@ class RecordTransitionRequest(BaseModel):
     action_id: str
     target_state: str | None = None
     form_data: dict[str, Any] | None = None
+    side_effect_context: dict[str, Any] | None = None
 
 
 class RecordTransitionRead(BaseModel):

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.records.types import RecordRef
 from app.models.entities import Project, ProjectRecord
+from app.services.scrum_v2_structure import is_scrum_story
 from app.services.audit import record_audit_log
 from app.services.records.registry import registry
 from app.services.workflow.authorize import assert_any_capability, resolve_capability_keys
@@ -164,7 +165,15 @@ def apply_record_transition(
     side_effect_context: dict[str, Any] | None = None,
 ) -> str:
     entity_type = record_ref.record_type
-    workflow = get_active_workflow(db, project.id, entity_type)
+    from app.models.entities import ProjectRecord
+
+    record_entity = entity if isinstance(entity, ProjectRecord) else db.get(ProjectRecord, record_ref.id)
+    if record_entity is not None:
+        from app.services.scrum_tasks import resolve_workflow_for_record
+
+        workflow = resolve_workflow_for_record(db, project, record_entity)
+    else:
+        workflow = get_active_workflow(db, project.id, entity_type)
     if workflow is None:
         raise HTTPException(status_code=500, detail=f"Workflow '{entity_type}' no configurado")
 
@@ -282,7 +291,54 @@ def apply_record_transition(
             to_state=nuevo,
         )
 
+        _maybe_sync_scrum_sprint_horas_after_feature_transition(
+            db,
+            project=project,
+            entity=entity,
+            entity_type=entity_type,
+            from_state=anterior,
+            to_state=nuevo,
+        )
+
     return nuevo
+
+
+def _maybe_sync_scrum_sprint_horas_after_feature_transition(
+    db: Session,
+    *,
+    project: Project,
+    entity: Any,
+    entity_type: str,
+    from_state: str,
+    to_state: str,
+) -> None:
+    if entity_type != "feature" and not (
+        entity_type == "task"
+        and isinstance(entity, ProjectRecord)
+        and is_scrum_story(entity)
+    ):
+        return
+    if from_state == to_state:
+        return
+    if from_state != "completado" and to_state != "completado":
+        return
+
+    from app.services.scrum_effort import get_scrum_item_sprint_id, is_scrum_project
+    from app.services.scrum_metrics import sync_sprint_horas_completadas
+
+    if not is_scrum_project(project):
+        return
+
+    sprint_id = get_scrum_item_sprint_id(db, entity) if isinstance(entity, ProjectRecord) else None
+
+    if sprint_id is None:
+        return
+
+    sprint = db.get(ProjectRecord, sprint_id)
+    if sprint is None or sprint.project_id != project.id:
+        return
+
+    sync_sprint_horas_completadas(db, sprint, commit=False)
 
 
 def apply_entity_transition(

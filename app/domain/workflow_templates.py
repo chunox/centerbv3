@@ -221,6 +221,14 @@ def default_feature_workflow_scrum_base() -> dict[str, Any]:
             "from": ["product_backlog"],
             "to": "pendiente",
             "required_capabilities": [FEATURE_TRANSITION_COMPROMETER_SPRINT],
+            "side_effects": [
+                {
+                    "type": "set_field",
+                    "field_key": "sprint_id",
+                    "value_from_context": "sprint_id",
+                },
+                {"type": "sync_scrum_sprint_dates"},
+            ],
         },
         *transitions,
         {
@@ -229,6 +237,7 @@ def default_feature_workflow_scrum_base() -> dict[str, Any]:
             "from": ["pendiente"],
             "to": "product_backlog",
             "required_capabilities": [FEATURE_TRANSITION_VOLVER_BACKLOG],
+            "side_effects": [{"type": "clear_field", "field_key": "sprint_id"}],
         },
     ]
     wf["transitions"] = transitions
@@ -257,6 +266,92 @@ def default_feature_workflow_scrum_interno() -> dict[str, Any]:
 
 def default_feature_workflow_scrum_cliente() -> dict[str, Any]:
     return default_feature_workflow_scrum_base()
+
+
+def default_task_workflow_scrum_story_base() -> dict[str, Any]:
+    """Historia Scrum como task: workflow ex-feature con reparent al sprint."""
+    wf = copy.deepcopy(default_feature_workflow_con_cliente())
+    wf["states"] = [
+        _state("product_backlog", "Product Backlog", category="draft", badge="muted"),
+        *wf["states"],
+    ]
+    wf["initial_state"] = "product_backlog"
+    transitions = []
+    for t in wf["transitions"]:
+        if t["id"] == "cancelar":
+            t = {**t, "from": ["product_backlog", *t["from"]]}
+        transitions.append(t)
+    transitions = [
+        {
+            "id": "comprometer_sprint",
+            "label": "Comprometer al Sprint",
+            "from": ["product_backlog"],
+            "to": "pendiente",
+            "required_capabilities": [FEATURE_TRANSITION_COMPROMETER_SPRINT],
+            "side_effects": [
+                {
+                    "type": "reparent_to_sprint",
+                    "value_from_context": "sprint_id",
+                },
+                {"type": "sync_scrum_sprint_dates"},
+            ],
+        },
+        *transitions,
+        {
+            "id": "volver_al_backlog",
+            "label": "Volver al Product Backlog",
+            "from": ["pendiente"],
+            "to": "product_backlog",
+            "required_capabilities": [FEATURE_TRANSITION_VOLVER_BACKLOG],
+            "side_effects": [{"type": "reparent_to_backlog"}],
+        },
+    ]
+    wf["transitions"] = transitions
+    return wf
+
+
+def default_task_workflow_scrum_story_interno() -> dict[str, Any]:
+    wf = default_task_workflow_scrum_story_base()
+    wf["transitions"] = [
+        t for t in wf["transitions"]
+        if t["id"] not in ("liberar_cliente", "confirmar", "no_funciona")
+    ]
+    wf["transitions"].append(
+        {
+            "id": "completar",
+            "label": "Completar",
+            "from": ["esperando_liberacion_pm"],
+            "to": "completado",
+            "required_capabilities": [FEATURE_TRANSITION_COMPLETAR],
+            "conditions": [_COND_NO_CLIENTE],
+            "gates": [_QUERY_BLOCK_GATE],
+        }
+    )
+    return wf
+
+
+def default_task_workflow_scrum_story_cliente() -> dict[str, Any]:
+    return default_task_workflow_scrum_story_base()
+
+
+def default_task_workflow_epic_container() -> dict[str, Any]:
+    return {
+        "states": [
+            _state("abierta", "Abierta", category="active"),
+            _state("cerrada", "Cerrada", category="terminal", badge="success", is_terminal=True),
+        ],
+        "initial_state": "abierta",
+        "terminal_states": ["cerrada"],
+        "transitions": [
+            {
+                "id": "cerrar",
+                "label": "Cerrar épica",
+                "from": ["abierta"],
+                "to": "cerrada",
+                "required_capabilities": [KANBAN_TASK_MOVE],
+            },
+        ],
+    }
 
 
 def default_task_workflow() -> dict[str, Any]:

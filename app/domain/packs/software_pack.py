@@ -185,6 +185,15 @@ def _software_field_definitions() -> list[FieldDefinitionDef]:
             orden=10,
             template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
         ),
+        FieldDefinitionDef(
+            entity_type_key="feature",
+            field_key="sprint_id",
+            label="Sprint",
+            field_type="relation",
+            config={"relation_entity_type": "milestone"},
+            orden=20,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
     ]
 
 
@@ -268,6 +277,8 @@ def _software_blocks() -> list[BlockDef]:
                 "show_summary": True,
                 "allow_reparent": True,
             }
+        if wb["key"] == "timeline":
+            config["entity_types"] = ["milestone", "feature"]
         exclude: list[str] = []
         if wb["key"] == "inbox_client":
             exclude = _INTERNO_SLUGS
@@ -275,6 +286,8 @@ def _software_blocks() -> list[BlockDef]:
             # En Scrum se seedea el kanban con label "Tareas" (ver abajo)
             exclude = _SCRUM_SLUGS
         elif wb["key"] == "inbox_qa":
+            exclude = _SCRUM_SLUGS
+        elif wb["key"] == "scope":
             exclude = _SCRUM_SLUGS
         blocks.append(
             BlockDef(
@@ -286,6 +299,28 @@ def _software_blocks() -> list[BlockDef]:
                 exclude_template_slugs=exclude,
             )
         )
+
+    # Scope Scrum v2: sprint (milestone) → task
+    blocks.append(
+        BlockDef(
+            block_slug="scope",
+            key="scope",
+            label="Alcance",
+            config={
+                "entity_type_key": None,
+                "view_type": "scope",
+                "scope_config": {
+                    "variant": "editorial",
+                    "levels": ["milestone", "task"],
+                    "depth_actions": "any_level",
+                    "show_summary": True,
+                    "allow_reparent": True,
+                },
+            },
+            orden=40,
+            template_slugs=_SCRUM_SLUGS,
+        )
+    )
 
     # Kanban con label "Tareas" para proyectos Scrum
     kanban_config: dict[str, Any] = {

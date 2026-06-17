@@ -36,9 +36,24 @@ class RecordTypeRegistry:
                 )
             )
         )
-        if types:
-            return types
-        return list(LEGACY_ENTITY_TYPES)
+        if not types:
+            types = list(LEGACY_ENTITY_TYPES)
+        else:
+            from app.models.entities import Project, ProjectWorkflowDefinition
+            from app.services.scrum_v2_structure import is_scrum_template
+
+            project = db.get(Project, project_id)
+            if project is not None and is_scrum_template(project.template_slug):
+                has_story_wf = db.scalar(
+                    select(ProjectWorkflowDefinition.id).where(
+                        ProjectWorkflowDefinition.project_id == project_id,
+                        ProjectWorkflowDefinition.entity_type == "feature",
+                        ProjectWorkflowDefinition.is_active.is_(True),
+                    )
+                )
+                if has_story_wf is not None and "feature" not in types:
+                    types = [*types, "feature"]
+        return types
 
     def get(
         self, db: Session, record_ref: RecordRef
@@ -78,10 +93,18 @@ class RecordTypeRegistry:
         *,
         record_type: str,
         parent_id: uuid.UUID | None = None,
+        sprint_id: uuid.UUID | None = None,
+        in_product_backlog: bool | None = None,
         estado: str | None = None,
     ) -> list[RecordDTO]:
         return generic_store.list_records(
-            db, project_id, record_type=record_type, parent_id=parent_id, estado=estado
+            db,
+            project_id,
+            record_type=record_type,
+            parent_id=parent_id,
+            sprint_id=sprint_id,
+            in_product_backlog=in_product_backlog,
+            estado=estado,
         )
 
 

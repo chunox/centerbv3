@@ -462,6 +462,9 @@ def seed_project_from_manifest(
             )
 
     _seed_pack_workbenches_from_views(db, project)
+    from app.services.scrum_v2_structure import apply_scrum_v2_structure
+
+    apply_scrum_v2_structure(db, project)
     return roles
 
 

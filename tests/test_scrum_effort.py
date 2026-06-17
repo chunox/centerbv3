@@ -170,10 +170,10 @@ def test_sync_feature_dates_from_sprint(db_session: Session):
         id=uuid4(),
         project_id=project_id,
         record_type="feature",
-        parent_id=sprint.id,
         titulo="Historia",
         estado="pendiente",
         created_by=pm_id,
+        data={"sprint_id": str(sprint.id)},
     )
     db_session.add_all([sprint, feature])
     db_session.commit()
@@ -198,24 +198,27 @@ def test_propagate_sprint_dates_to_features(db_session: Session):
         created_by=pm_id,
         fecha_inicio=date(2026, 4, 1),
         fecha_fin=date(2026, 4, 14),
+        data={"tipo": "sprint"},
     )
     f1 = ProjectRecord(
         id=uuid4(),
         project_id=project_id,
-        record_type="feature",
+        record_type="task",
         parent_id=sprint.id,
         titulo="H1",
         estado="pendiente",
         created_by=pm_id,
+        data={"scrum_role": "story"},
     )
     f2 = ProjectRecord(
         id=uuid4(),
         project_id=project_id,
-        record_type="feature",
+        record_type="task",
         parent_id=sprint.id,
         titulo="H2",
         estado="en_progreso",
         created_by=pm_id,
+        data={"scrum_role": "story"},
     )
     db_session.add_all([sprint, f1, f2])
     db_session.commit()

@@ -1,6 +1,8 @@
 """
 Crea un proyecto Scrum demo con sprints, historias, tareas y entradas de hub.
 
+Preferir: scripts/seed_scrum_pack.py
+
 Uso (con API en :8000 y usuarios demo existentes):
   .venv\\Scripts\\python.exe scripts/seed_scrum_demo.py
 
@@ -111,7 +113,7 @@ def create_sprint(
     fecha_inicio: str,
     fecha_fin: str,
     sprint_goal: str,
-    velocidad_planeada: int,
+    horas_planeadas: int,
 ) -> dict:
     return post(
         token,
@@ -124,11 +126,29 @@ def create_sprint(
             "data": {
                 "tipo": "entrega",
                 "sprint_goal": sprint_goal,
-                "velocidad_planeada": velocidad_planeada,
+                "horas_planeadas": horas_planeadas,
             },
             "orden": orden,
             "fecha_inicio": fecha_inicio,
             "fecha_fin": fecha_fin,
+        },
+    )
+
+
+def create_epic(
+    token: str,
+    project_id: str,
+    pm_id: str,
+    *,
+    nombre: str,
+) -> dict:
+    return post(
+        token,
+        f"/projects/{project_id}/records",
+        {
+            "actor_user_id": pm_id,
+            "record_type": "epic",
+            "titulo": nombre,
         },
     )
 
@@ -139,12 +159,9 @@ def create_historia(
     pm_id: str,
     *,
     nombre: str,
-    sprint_id: str | None,
-    story_points: str,
+    epic_id: str,
     prioridad: str,
     estado_inicial: str,
-    fecha_inicio: str,
-    fecha_fin: str,
     descripcion: str = "",
 ) -> dict:
     return post(
@@ -155,16 +172,13 @@ def create_historia(
             "record_type": "feature",
             "titulo": nombre,
             "descripcion": descripcion,
-            "parent_id": sprint_id,
+            "parent_id": epic_id,
             "initial_state": estado_inicial,
             "data": {
                 "tipo": "desarrollo",
                 "prioridad": prioridad,
                 "bloqueada": False,
-                "story_points": story_points,
             },
-            "fecha_inicio": fecha_inicio,
-            "fecha_fin": fecha_fin,
         },
     )
 
@@ -199,11 +213,14 @@ def transition(
     actor_user_id: str,
     action_id: str,
     target_state: str | None = None,
+    side_effect_context: dict | None = None,
     ignore_errors: bool = False,
 ) -> dict | None:
     body: dict = {"actor_user_id": actor_user_id, "action_id": action_id}
     if target_state is not None:
         body["target_state"] = target_state
+    if side_effect_context is not None:
+        body["side_effect_context"] = side_effect_context
     try:
         _, data = http(
             "POST",
@@ -296,6 +313,13 @@ def seed_scrum_demo() -> None:
     ]:
         add_member(token, pid, pm["id"], user_id, rol)
 
+    epics = {
+        "auth": create_epic(token, pid, pm["id"], nombre="Autenticación")["id"],
+        "perfil": create_epic(token, pid, pm["id"], nombre="Perfil y onboarding")["id"],
+        "dashboard": create_epic(token, pid, pm["id"], nombre="Dashboard")["id"],
+        "general": create_epic(token, pid, pm["id"], nombre="General")["id"],
+    }
+
     # ── Sprint 0 (completado) ─────────────────────────────────────────────────
     print("[scrum] Creando Sprint 0 (completado)...")
     sprint0 = create_sprint(
@@ -305,26 +329,26 @@ def seed_scrum_demo() -> None:
         fecha_inicio=add_days(today, -42),
         fecha_fin=add_days(today, -29),
         sprint_goal="Infraestructura base, CI/CD y flujo de autenticación completo.",
-        velocidad_planeada=34,
+        horas_planeadas=34,
     )
     sprint0_historias = [
-        ("Configurar repositorio y CI/CD",        "8",  "alta"),
-        ("Login con email y contraseña",           "5",  "alta"),
-        ("Registro de usuario con validación",     "5",  "alta"),
-        ("Recuperación de contraseña por email",   "3",  "media"),
+        ("Configurar repositorio y CI/CD",        "alta"),
+        ("Login con email y contraseña",           "alta"),
+        ("Registro de usuario con validación",     "alta"),
+        ("Recuperación de contraseña por email",   "media"),
     ]
-    for nombre, sp, prio in sprint0_historias:
+    for nombre, prio in sprint0_historias:
         h = create_historia(
             token, pid, pm["id"],
             nombre=nombre,
-            sprint_id=sprint0["id"],
-            story_points=sp,
+            epic_id=epics["auth"],
             prioridad=prio,
             estado_inicial="product_backlog",
-            fecha_inicio=add_days(today, -42),
-            fecha_fin=add_days(today, -29),
         )
-        transition(token, pid, h["id"], actor_user_id=pm["id"], action_id="comprometer_sprint", ignore_errors=True)
+        transition(
+            token, pid, h["id"], actor_user_id=pm["id"], action_id="comprometer_sprint",
+            side_effect_context={"sprint_id": sprint0["id"]}, ignore_errors=True,
+        )
         transition(token, pid, h["id"], actor_user_id=tech["id"], action_id="pasar_a_uat", ignore_errors=True)
         transition(token, pid, h["id"], actor_user_id=qa["id"], action_id="enviar_al_pm", ignore_errors=True)
         transition(token, pid, h["id"], actor_user_id=pm["id"], action_id="completar", ignore_errors=True)
@@ -340,31 +364,29 @@ def seed_scrum_demo() -> None:
         fecha_inicio=add_days(today, -14),
         fecha_fin=add_days(today, 0),
         sprint_goal="Pantallas de perfil, onboarding de usuario nuevo y avatar con crop.",
-        velocidad_planeada=31,
+        horas_planeadas=31,
     )
     transition(token, pid, sprint1["id"], actor_user_id=pm["id"], action_id="sync", target_state="en_progreso", ignore_errors=True)
 
     sprint1_spec = [
-        ("Pantalla de perfil de usuario",    "5",  "alta",   "uat"),
-        ("Flujo onboarding nuevo usuario",   "8",  "alta",   "en_progreso"),
-        ("Upload y crop de avatar",          "5",  "media",  "en_progreso"),
-        ("Notificaciones push — permisos",   "3",  "media",  "esperando_liberacion_pm"),
+        ("Pantalla de perfil de usuario",    "alta",   "uat"),
+        ("Flujo onboarding nuevo usuario",   "alta",   "en_progreso"),
+        ("Upload y crop de avatar",          "media",  "en_progreso"),
+        ("Notificaciones push — permisos",   "media",  "esperando_liberacion_pm"),
     ]
     sprint1_historias: list[dict] = []
-    for nombre, sp, prio, estado_target in sprint1_spec:
+    for nombre, prio, estado_target in sprint1_spec:
         h = create_historia(
             token, pid, pm["id"],
             nombre=nombre,
-            sprint_id=sprint1["id"],
-            story_points=sp,
+            epic_id=epics["perfil"],
             prioridad=prio,
             estado_inicial="product_backlog",
-            fecha_inicio=add_days(today, -14),
-            fecha_fin=add_days(today, 0),
         )
-        transition(token, pid, h["id"], actor_user_id=pm["id"], action_id="comprometer_sprint", ignore_errors=True)
-        if estado_target in ("en_progreso", "uat", "esperando_liberacion_pm"):
-            pass  # ya en pendiente, las pasan los devs
+        transition(
+            token, pid, h["id"], actor_user_id=pm["id"], action_id="comprometer_sprint",
+            side_effect_context={"sprint_id": sprint1["id"]}, ignore_errors=True,
+        )
         if estado_target in ("uat", "esperando_liberacion_pm"):
             transition(token, pid, h["id"], actor_user_id=tech["id"], action_id="pasar_a_uat", ignore_errors=True)
         if estado_target == "esperando_liberacion_pm":
@@ -390,52 +412,50 @@ def seed_scrum_demo() -> None:
         fecha_inicio=add_days(today, 1),
         fecha_fin=add_days(today, 14),
         sprint_goal="Dashboard con métricas clave, gráficos de actividad y filtros por período.",
-        velocidad_planeada=28,
+        horas_planeadas=28,
     )
     sprint2_spec = [
-        ("Dashboard con métricas clave",     "8",  "alta"),
-        ("Gráficos de actividad semanal",    "5",  "media"),
-        ("Filtros por período y exportación","3",  "media"),
+        ("Dashboard con métricas clave",     "alta"),
+        ("Gráficos de actividad semanal",    "media"),
+        ("Filtros por período y exportación","media"),
     ]
-    for nombre, sp, prio in sprint2_spec:
+    for nombre, prio in sprint2_spec:
         h = create_historia(
             token, pid, pm["id"],
             nombre=nombre,
-            sprint_id=sprint2["id"],
-            story_points=sp,
+            epic_id=epics["dashboard"],
             prioridad=prio,
             estado_inicial="product_backlog",
-            fecha_inicio=add_days(today, 1),
-            fecha_fin=add_days(today, 14),
         )
-        transition(token, pid, h["id"], actor_user_id=pm["id"], action_id="comprometer_sprint", ignore_errors=True)
+        transition(
+            token, pid, h["id"], actor_user_id=pm["id"], action_id="comprometer_sprint",
+            side_effect_context={"sprint_id": sprint2["id"]}, ignore_errors=True,
+        )
 
     # ── Product Backlog (sin sprint) ──────────────────────────────────────────
     print("[scrum] Poblando Product Backlog...")
     backlog_spec = [
-        ("Modo oscuro — theming global",          "?",  "baja"),
-        ("Integración con Google Calendar",        "13", "media"),
-        ("Búsqueda global en la app",              "8",  "alta"),
-        ("Historial de actividad del usuario",     "5",  "media"),
-        ("Soporte offline básico (PWA)",            "13", "baja"),
+        ("Modo oscuro — theming global",          "baja"),
+        ("Integración con Google Calendar",        "media"),
+        ("Búsqueda global en la app",              "alta"),
+        ("Historial de actividad del usuario",     "media"),
+        ("Soporte offline básico (PWA)",            "baja"),
     ]
-    for nombre, sp, prio in backlog_spec:
+    backlog_epics = [epics["general"], epics["dashboard"], epics["perfil"]]
+    for idx, (nombre, prio) in enumerate(backlog_spec):
         create_historia(
             token, pid, pm["id"],
             nombre=nombre,
-            sprint_id=None,
-            story_points=sp,
+            epic_id=backlog_epics[idx % len(backlog_epics)],
             prioridad=prio,
             estado_inicial="product_backlog",
-            fecha_inicio=add_days(today, 14),
-            fecha_fin=add_days(today, 60),
         )
 
     # ── Hub entries ───────────────────────────────────────────────────────────
     print("[scrum] Agregando entradas al hub...")
     create_hub_update(
         token, pid, pm["id"],
-        contenido="Sprint 0 cerrado con 21 SP entregados de 34 planeados. Login y CI/CD completos.",
+        contenido="Sprint 0 cerrado. Login y CI/CD completos.",
     )
     create_hub_note(
         token, pid, pm["id"],
@@ -445,7 +465,7 @@ def seed_scrum_demo() -> None:
             "Equipo coordinado en code review.\n\n"
             "**Qué mejorar:** Estimaciones de las tareas de setup fueron optimistas. "
             "El avatar quedó fuera del sprint.\n\n"
-            "**Acción:** Spike de 1 SP para evaluar librerías de crop antes de Sprint 1."
+            "**Acción:** Spike de 1h para evaluar librerías de crop antes de Sprint 1."
         ),
     )
     create_hub_note(
@@ -453,7 +473,7 @@ def seed_scrum_demo() -> None:
         titulo=f"Sprint Goal — Sprint 1",
         contenido=(
             "**Objetivo:** Pantallas de perfil, onboarding de usuario nuevo y avatar con crop.\n\n"
-            "**Velocidad planeada:** 31 SP\n"
+            "**Velocidad planeada:** 31h\n"
             "**Equipo:** PM, Tech Lead, Dev, QA\n\n"
             "Definición de Done: historia integrada en staging, pasó smoke tests y QA aprobó."
         ),

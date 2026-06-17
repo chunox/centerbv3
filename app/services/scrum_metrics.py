@@ -1,4 +1,4 @@
-"""Métricas Scrum: velocity y sincronización de sprint."""
+"""Métricas Scrum: velocity y sincronización de sprint (horas)."""
 from __future__ import annotations
 
 import uuid
@@ -8,41 +8,34 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.entities import ProjectRecord
+from app.services.scrum_effort import batch_feature_effort_hours, get_feature_sprint_id
+from app.services.scrum_structure import list_features_for_sprint
 
 
-def _sp_value(sp_str: str | None) -> int:
-    if sp_str is None or sp_str == "?":
-        return 0
-    try:
-        return int(sp_str)
-    except (ValueError, TypeError):
-        return 0
+def compute_sprint_completed_horas(
+    db: Session, project_id: uuid.UUID, sprint_id: uuid.UUID
+) -> float:
+    features = [
+        f
+        for f in list_features_for_sprint(db, project_id, sprint_id)
+        if f.estado == "completado"
+    ]
+    if not features:
+        return 0.0
+    effort = batch_feature_effort_hours(db, project_id, [f.id for f in features])
+    return sum(effort.values())
 
 
-def compute_sprint_completed_sp(db: Session, project_id: uuid.UUID, sprint_id: uuid.UUID) -> int:
-    features = list(
-        db.scalars(
-            select(ProjectRecord).where(
-                ProjectRecord.project_id == project_id,
-                ProjectRecord.parent_id == sprint_id,
-                ProjectRecord.record_type == "feature",
-                ProjectRecord.estado == "completado",
-            )
-        )
-    )
-    return sum(_sp_value((f.data or {}).get("story_points")) for f in features)
-
-
-def sync_sprint_velocidad_real(
+def sync_sprint_horas_completadas(
     db: Session,
     sprint: ProjectRecord,
     *,
     commit: bool = True,
-) -> int:
-    """Calcula SP completados del sprint y persiste en milestone.data.velocidad_real."""
-    total = compute_sprint_completed_sp(db, sprint.project_id, sprint.id)
+) -> float:
+    """Calcula horas completadas del sprint y persiste en milestone.data."""
+    total = compute_sprint_completed_horas(db, sprint.project_id, sprint.id)
     data = dict(sprint.data or {})
-    data["velocidad_real"] = total
+    data["horas_completadas"] = total
     sprint.data = data
     if commit:
         db.commit()
@@ -75,9 +68,19 @@ def list_sprint_velocity(
             {
                 "sprint_id": str(s.id),
                 "titulo": s.titulo,
-                "velocidad_planeada": data.get("velocidad_planeada"),
-                "velocidad_real": data.get("velocidad_real"),
+                "horas_planeadas": data.get("horas_planeadas"),
+                "horas_completadas": data.get("horas_completadas"),
                 "fecha_fin": s.fecha_fin.isoformat() if s.fecha_fin else None,
             }
         )
     return out
+
+
+def sum_sprint_committed_horas(
+    db: Session, project_id: uuid.UUID, sprint_id: uuid.UUID
+) -> float:
+    features = list_features_for_sprint(db, project_id, sprint_id)
+    if not features:
+        return 0.0
+    effort = batch_feature_effort_hours(db, project_id, [f.id for f in features])
+    return sum(effort.values())

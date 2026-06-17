@@ -9,9 +9,12 @@ from sqlalchemy.orm import Session
 from app.api.v1.deps import get_milestone_or_404, get_project_or_404
 from app.database import get_db
 from app.domain.capabilities import (
+    KANBAN_TASK_CREATE,
     KANBAN_TASK_EDIT,
     KANBAN_VIEW,
     PROJECT_ROLES_MANAGE,
+    SCOPE_EPIC_CREATE,
+    SCOPE_FEATURE_CREATE,
     WORKBENCH_INBOX_CLIENT,
     WORKBENCH_INBOX_DEV,
     WORKBENCH_INBOX_PM,
@@ -75,6 +78,55 @@ def _assert_record_cap(db: Session, project_id: UUID, user_id: UUID, cap: str) -
     assert_capability(db, project_id, user_id, cap)
 
 
+def _assert_task_create_capability(
+    db: Session,
+    project,
+    payload: RecordCreate,
+) -> None:
+    """Scrum v2: épicas/historias usan caps de alcance; dev tasks usan kanban."""
+    from app.services.scrum_effort import is_scrum_project
+    from app.services.scrum_v2_structure import SCRUM_ROLE_DEV, SCRUM_ROLE_EPIC, SCRUM_ROLE_STORY
+
+    task_data = dict(payload.data or {})
+    scrum_role = task_data.get("scrum_role")
+
+    if is_scrum_project(project):
+        if scrum_role == SCRUM_ROLE_EPIC:
+            assert_any_capability(
+                db,
+                project.id,
+                payload.actor_user_id,
+                [
+                    SCOPE_EPIC_CREATE,
+                    "record.epic.create",
+                    "record.task.create",
+                    KANBAN_TASK_CREATE,
+                ],
+                detail="Sin permisos para crear épicas",
+            )
+            return
+        if scrum_role == SCRUM_ROLE_STORY:
+            assert_any_capability(
+                db,
+                project.id,
+                payload.actor_user_id,
+                [
+                    SCOPE_FEATURE_CREATE,
+                    "record.feature.create",
+                    "record.task.create",
+                    KANBAN_TASK_CREATE,
+                ],
+                detail="Sin permisos para crear historias",
+            )
+            return
+        if scrum_role == SCRUM_ROLE_DEV or task_data.get("parent_task_id"):
+            assert_capability(db, project.id, payload.actor_user_id, KANBAN_TASK_CREATE)
+            return
+
+    _assert_record_cap(db, project.id, payload.actor_user_id, "record.task.create")
+    assert_capability(db, project.id, payload.actor_user_id, KANBAN_TASK_CREATE)
+
+
 def _assert_dependency_read(db: Session, project_id: UUID, user_id: UUID) -> None:
     from app.services.workflow.capabilities import user_has_capability
 
@@ -120,6 +172,8 @@ def list_project_records(
     project_id: UUID,
     record_type: str = Query(...),
     parent_id: UUID | None = None,
+    sprint_id: UUID | None = None,
+    in_product_backlog: bool | None = Query(default=None),
     estado: str | None = Query(default=None),
     actor_user_id: UUID = Query(...),
     db: Session = Depends(get_db),
@@ -128,16 +182,35 @@ def list_project_records(
     _assert_record_cap(
         db, project.id, actor_user_id, f"record.{record_type}.read"
     )
+    if in_product_backlog:
+        from app.services.scrum_effort import is_scrum_project
+
+        if not is_scrum_project(project):
+            raise HTTPException(
+                status_code=422,
+                detail="in_product_backlog solo aplica a proyectos Scrum",
+            )
+        if record_type not in ("feature", "task"):
+            raise HTTPException(
+                status_code=422,
+                detail="in_product_backlog requiere record_type=feature o task",
+            )
     rows = registry.list_records(
-        db, project.id, record_type=record_type, parent_id=parent_id, estado=estado
+        db,
+        project.id,
+        record_type=record_type,
+        parent_id=parent_id,
+        sprint_id=sprint_id,
+        in_product_backlog=in_product_backlog,
+        estado=estado,
     )
     effort_map: dict = {}
-    if record_type == "feature":
+    if record_type in ("feature", "task"):
         from app.services.scrum_effort import batch_feature_effort_hours, is_scrum_project
 
         if is_scrum_project(project):
-            feature_ids = [r.id for r in rows]
-            effort_map = batch_feature_effort_hours(db, project.id, feature_ids)
+            item_ids = [r.id for r in rows]
+            effort_map = batch_feature_effort_hours(db, project.id, item_ids)
     return [
         _dto_to_read(
             r,
@@ -191,9 +264,12 @@ def create_project_record(
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    _assert_record_cap(
-        db, project.id, payload.actor_user_id, f"record.{payload.record_type}.create"
-    )
+    if payload.record_type == "task":
+        _assert_task_create_capability(db, project, payload)
+    else:
+        _assert_record_cap(
+            db, project.id, payload.actor_user_id, f"record.{payload.record_type}.create"
+        )
     if registry.is_legacy(payload.record_type):
         raise HTTPException(
             status_code=422,
@@ -244,51 +320,125 @@ def create_project_record(
         if not settings.communication_rules_only:
             notify_pms_report_received(db, project, db.get(ProjectRecord, dto.id))
     elif payload.record_type == "task":
-        from app.domain.capabilities import KANBAN_TASK_CREATE
         from app.services.features import sync_feature_from_tasks
         from app.services.records.repository import _data
+        from app.services.scrum_effort import is_scrum_project
+        from app.services.scrum_tasks import (
+            create_dev_subtask,
+            create_dev_task,
+            create_epic_task,
+            create_story_task,
+        )
+        from app.services.scrum_v2_structure import (
+            SCRUM_ROLE_DEV,
+            SCRUM_ROLE_EPIC,
+            SCRUM_ROLE_STORY,
+            is_scrum_dev_task,
+        )
         from app.services.tasks import sync_task_assignees
-        from app.services.workflow.authorize import assert_capability
 
-        if payload.parent_id is None:
-            raise HTTPException(status_code=422, detail="parent_id requerido para tareas")
-        feature = db.get(ProjectRecord, payload.parent_id)
-        if feature is None or feature.record_type != "feature":
-            raise HTTPException(status_code=404, detail="Feature no encontrada")
-        if _data(feature).get("bloqueada"):
-            raise HTTPException(
-                status_code=409,
-                detail="La feature está bloqueada; no se pueden crear tareas",
-            )
-        assert_capability(db, project.id, payload.actor_user_id, KANBAN_TASK_CREATE)
-        dto = generic_store.create_record(
-            db,
-            project,
-            record_type=payload.record_type,
-            titulo=payload.titulo,
-            created_by=payload.actor_user_id,
-            descripcion=payload.descripcion,
-            parent_id=payload.parent_id,
-            data=payload.data,
-            fecha_inicio=payload.fecha_inicio,
-            fecha_fin=payload.fecha_fin,
-            initial_state=payload.initial_state,
-            orden=payload.orden,
-        )
-        task = db.get(ProjectRecord, dto.id)
-        if payload.assignee_ids:
-            sync_task_assignees(
+        task_data = dict(payload.data or {})
+        scrum_role = task_data.get("scrum_role")
+
+        if is_scrum_project(project) and scrum_role == SCRUM_ROLE_EPIC:
+            row = create_epic_task(
                 db,
-                task,
                 project,
-                actor_user_id=payload.actor_user_id,
-                user_ids=payload.assignee_ids,
+                titulo=payload.titulo,
+                created_by=payload.actor_user_id,
+                descripcion=payload.descripcion,
             )
-        sync_feature_from_tasks(
-            db, feature, project, actor_user_id=payload.actor_user_id
-        )
-        db.refresh(task)
-        dto = generic_store.get_record(db, dto.id) or dto
+            dto = generic_store.get_record(db, row.id)
+            assert dto is not None
+        elif is_scrum_project(project) and scrum_role == SCRUM_ROLE_STORY:
+            epic_raw = task_data.get("epic_task_id")
+            if not epic_raw:
+                raise HTTPException(status_code=422, detail="epic_task_id requerido para historias")
+            row = create_story_task(
+                db,
+                project,
+                titulo=payload.titulo,
+                created_by=payload.actor_user_id,
+                epic_task_id=UUID(str(epic_raw)),
+                descripcion=payload.descripcion,
+                prioridad=str(task_data.get("prioridad") or "media"),
+                initial_state=payload.initial_state or "product_backlog",
+                data=task_data,
+            )
+            dto = generic_store.get_record(db, row.id)
+            assert dto is not None
+        elif is_scrum_project(project) and (
+            scrum_role == SCRUM_ROLE_DEV or task_data.get("parent_task_id")
+        ):
+            story_raw = task_data.get("parent_task_id")
+            if not story_raw:
+                raise HTTPException(status_code=422, detail="parent_task_id requerido para tareas dev")
+            parent_record = db.get(ProjectRecord, UUID(str(story_raw)))
+            if parent_record is not None and is_scrum_dev_task(parent_record):
+                row = create_dev_subtask(
+                    db,
+                    project,
+                    titulo=payload.titulo,
+                    created_by=payload.actor_user_id,
+                    parent_dev_id=parent_record.id,
+                    descripcion=payload.descripcion,
+                    data=task_data,
+                    initial_state=payload.initial_state,
+                    assignee_ids=payload.assignee_ids,
+                )
+            else:
+                row = create_dev_task(
+                    db,
+                    project,
+                    titulo=payload.titulo,
+                    created_by=payload.actor_user_id,
+                    story_id=UUID(str(story_raw)),
+                    descripcion=payload.descripcion,
+                    data=task_data,
+                    initial_state=payload.initial_state,
+                    assignee_ids=payload.assignee_ids,
+                )
+            dto = generic_store.get_record(db, row.id)
+            assert dto is not None
+        else:
+            if payload.parent_id is None:
+                raise HTTPException(status_code=422, detail="parent_id requerido para tareas")
+            feature = db.get(ProjectRecord, payload.parent_id)
+            if feature is None or feature.record_type != "feature":
+                raise HTTPException(status_code=404, detail="Feature no encontrada")
+            if _data(feature).get("bloqueada"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="La feature está bloqueada; no se pueden crear tareas",
+                )
+            dto = generic_store.create_record(
+                db,
+                project,
+                record_type=payload.record_type,
+                titulo=payload.titulo,
+                created_by=payload.actor_user_id,
+                descripcion=payload.descripcion,
+                parent_id=payload.parent_id,
+                data=payload.data,
+                fecha_inicio=payload.fecha_inicio,
+                fecha_fin=payload.fecha_fin,
+                initial_state=payload.initial_state,
+                orden=payload.orden,
+            )
+            task = db.get(ProjectRecord, dto.id)
+            if payload.assignee_ids and task is not None:
+                sync_task_assignees(
+                    db,
+                    task,
+                    project,
+                    actor_user_id=payload.actor_user_id,
+                    user_ids=payload.assignee_ids,
+                )
+                sync_feature_from_tasks(
+                    db, feature, project, actor_user_id=payload.actor_user_id
+                )
+            db.refresh(task)
+            dto = generic_store.get_record(db, dto.id) or dto
     elif payload.record_type == "milestone":
         from app.services.milestones import next_milestone_orden
 
@@ -460,6 +610,7 @@ def transition_project_record(
         actor_user_id=payload.actor_user_id,
         target_state=payload.target_state,
         form_data=payload.form_data,
+        side_effect_context=payload.side_effect_context,
     )
     db.commit()
     return _dto_to_read(dto)
@@ -478,7 +629,18 @@ def migrate_project_record(
         raise HTTPException(status_code=404, detail="Feature no encontrada")
     if feature.parent_id is None:
         raise HTTPException(status_code=409, detail="Feature sin hito padre")
-    source_milestone = get_milestone_or_404(project_id, feature.parent_id, db)
+    from app.services.scrum_effort import get_feature_sprint_id, is_scrum_project
+
+    if is_scrum_project(project):
+        sprint_id = get_feature_sprint_id(feature)
+        if sprint_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="La historia no está asignada a un sprint",
+            )
+        source_milestone = get_milestone_or_404(project_id, sprint_id, db)
+    else:
+        source_milestone = get_milestone_or_404(project_id, feature.parent_id, db)
     target_milestone = get_milestone_or_404(
         project_id, payload.target_milestone_id, db
     )

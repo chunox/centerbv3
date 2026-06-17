@@ -155,9 +155,9 @@ def sync_milestone_state(
         target_state=nuevo,
     )
     if nuevo == "completado":
-        from app.services.scrum_metrics import sync_sprint_velocidad_real
+        from app.services.scrum_metrics import sync_sprint_horas_completadas
 
-        sync_sprint_velocidad_real(db, milestone, commit=False)
+        sync_sprint_horas_completadas(db, milestone, commit=False)
     return True
 
 

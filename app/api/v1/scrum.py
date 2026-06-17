@@ -13,19 +13,12 @@ from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.domain.capabilities import WORKBENCH_SPRINT_BOARD
 from app.models.entities import AuditLog, ProjectRecord
-from app.services.scrum_metrics import list_sprint_velocity, sync_sprint_velocidad_real
+from app.services.scrum_effort import batch_feature_effort_hours
+from app.services.scrum_metrics import list_sprint_velocity, sync_sprint_horas_completadas
+from app.services.scrum_structure import list_features_for_sprint
 from app.services.workflow.authorize import assert_capability
 
 router = APIRouter(prefix="/projects", tags=["scrum"])
-
-
-def _sp_value(sp_str: str | None) -> int:
-    if sp_str is None or sp_str == "?":
-        return 0
-    try:
-        return int(sp_str)
-    except (ValueError, TypeError):
-        return 0
 
 
 @router.get("/{project_id}/scrum/sprints")
@@ -54,10 +47,13 @@ def list_sprints(
             "fecha_inicio": s.fecha_inicio.isoformat() if s.fecha_inicio else None,
             "fecha_fin": s.fecha_fin.isoformat() if s.fecha_fin else None,
             "sprint_goal": (s.data or {}).get("sprint_goal"),
-            "velocidad_planeada": (s.data or {}).get("velocidad_planeada"),
-            "velocidad_real": (s.data or {}).get("velocidad_real"),
+            "horas_planeadas": (s.data or {}).get("horas_planeadas"),
+            "horas_completadas": (s.data or {}).get("horas_completadas"),
+            "velocidad_planeada": (s.data or {}).get("horas_planeadas"),
+            "velocidad_real": (s.data or {}).get("horas_completadas"),
         }
         for s in sprints
+        if (s.data or {}).get("tipo") != "product_backlog"
     ]
 
 
@@ -76,21 +72,10 @@ def get_sprint_burndown(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Sprint no encontrado")
 
-    features = list(
-        db.scalars(
-            select(ProjectRecord).where(
-                ProjectRecord.project_id == project.id,
-                ProjectRecord.parent_id == sprint_id,
-                ProjectRecord.record_type == "feature",
-            )
-        )
-    )
-
-    total_sp = sum(_sp_value((f.data or {}).get("story_points")) for f in features)
-    feature_ids = {f.id for f in features}
-    feature_sp: dict[uuid.UUID, int] = {
-        f.id: _sp_value((f.data or {}).get("story_points")) for f in features
-    }
+    features = list_features_for_sprint(db, project.id, sprint_id)
+    feature_ids = [f.id for f in features]
+    feature_horas = batch_feature_effort_hours(db, project.id, feature_ids)
+    total_horas = sum(feature_horas.values())
 
     start: date = sprint.fecha_inicio or date.today()
     end: date = sprint.fecha_fin or date.today()
@@ -111,20 +96,33 @@ def get_sprint_burndown(
         )
     ) if feature_ids else []
 
-    completed_sp_by_day: dict[date, int] = {}
+    task_completions = list(
+        db.scalars(
+            select(AuditLog).where(
+                AuditLog.project_id == project.id,
+                AuditLog.entidad_tipo == "task",
+                AuditLog.campo == "estado",
+                AuditLog.valor_nuevo == "completado",
+                AuditLog.entidad_id.in_(feature_ids),
+            )
+        )
+    ) if feature_ids else []
+    completions = list(completions) + task_completions
+
+    completed_horas_by_day: dict[date, float] = {}
     for log in completions:
         day = log.created_at.date()
-        completed_sp_by_day[day] = completed_sp_by_day.get(day, 0) + feature_sp.get(
-            log.entidad_id, 0
+        completed_horas_by_day[day] = completed_horas_by_day.get(day, 0.0) + feature_horas.get(
+            log.entidad_id, 0.0
         )
 
     days: list[dict[str, Any]] = []
-    cumulative_completed = 0
+    cumulative_completed = 0.0
     for i in range(total_days + 1):
         current_day = start + timedelta(days=i)
-        ideal = round(total_sp * (1 - i / total_days), 1)
-        cumulative_completed += completed_sp_by_day.get(current_day, 0)
-        actual = max(total_sp - cumulative_completed, 0)
+        ideal = round(total_horas * (1 - i / total_days), 1)
+        cumulative_completed += completed_horas_by_day.get(current_day, 0.0)
+        actual = max(total_horas - cumulative_completed, 0.0)
         days.append(
             {
                 "date": current_day.isoformat(),
@@ -133,16 +131,18 @@ def get_sprint_burndown(
             }
         )
 
-    completed_sp = sum(
-        feature_sp[f.id]
+    completed_horas = sum(
+        feature_horas[f.id]
         for f in features
         if f.estado == "completado"
     )
 
     return {
         "sprint_id": str(sprint_id),
-        "total_sp": total_sp,
-        "completed_sp": completed_sp,
+        "total_horas": total_horas,
+        "completed_horas": completed_horas,
+        "total_sp": total_horas,
+        "completed_sp": completed_horas,
         "days": days,
     }
 
@@ -174,8 +174,9 @@ def post_sync_sprint_velocity(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Sprint no encontrado")
 
-    total = sync_sprint_velocidad_real(db, sprint)
+    total = sync_sprint_horas_completadas(db, sprint)
     return {
         "sprint_id": str(sprint_id),
+        "horas_completadas": total,
         "velocidad_real": total,
     }

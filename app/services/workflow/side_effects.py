@@ -187,8 +187,123 @@ def _handle_set_field(
     if not field_key:
         return
     row = _record(db, entity)
-    set_field(row, field_key, effect.get("value"))
+    value = effect.get("value")
+    if value is None and effect.get("value_from_context") and side_effect_context:
+        value = side_effect_context.get(effect["value_from_context"])
+    if value is not None:
+        set_field(row, field_key, str(value) if field_key == "sprint_id" else value)
+        db.flush()
+        if field_key == "sprint_id" and row.record_type == "feature":
+            from app.services.scrum_effort import maybe_sync_scrum_on_sprint_assignment
+
+            maybe_sync_scrum_on_sprint_assignment(db, project, row)
+
+
+def _handle_clear_field(
+    db: Session,
+    project: Project,
+    entity: Any,
+    entity_type: str,
+    action_id: str,
+    actor_user_id: uuid.UUID,
+    effect: dict[str, Any],
+    form_data: dict[str, Any] | None,
+    side_effect_context: dict[str, Any] | None,
+    entidad_tipo: str,
+) -> None:
+    field_key = effect.get("field_key")
+    if not field_key:
+        return
+    row = _record(db, entity)
+    data = dict(row.data or {})
+    data.pop(field_key, None)
+    row.data = data
     db.flush()
+
+
+def _handle_sync_scrum_sprint_dates(
+    db: Session,
+    project: Project,
+    entity: Any,
+    entity_type: str,
+    action_id: str,
+    actor_user_id: uuid.UUID,
+    effect: dict[str, Any],
+    form_data: dict[str, Any] | None,
+    side_effect_context: dict[str, Any] | None,
+    entidad_tipo: str,
+) -> None:
+    from app.services.scrum_effort import maybe_sync_scrum_on_sprint_assignment
+
+    row = _record(db, entity)
+    if row.record_type in ("feature", "task"):
+        maybe_sync_scrum_on_sprint_assignment(db, project, row)
+
+
+def _handle_reparent_to_sprint(
+    db: Session,
+    project: Project,
+    entity: Any,
+    entity_type: str,
+    action_id: str,
+    actor_user_id: uuid.UUID,
+    effect: dict[str, Any],
+    form_data: dict[str, Any] | None,
+    side_effect_context: dict[str, Any] | None,
+    entidad_tipo: str,
+) -> None:
+    row = _record(db, entity)
+    raw = None
+    if effect.get("value_from_context") and side_effect_context:
+        raw = side_effect_context.get(effect["value_from_context"])
+    if raw is None:
+        return
+    try:
+        sprint_id = uuid.UUID(str(raw))
+    except (TypeError, ValueError):
+        return
+    sprint = db.get(ProjectRecord, sprint_id)
+    if sprint is None or sprint.project_id != project.id:
+        return
+    row.parent_id = sprint_id
+    db.flush()
+    from app.services.scrum_effort import maybe_sync_scrum_on_sprint_assignment
+
+    maybe_sync_scrum_on_sprint_assignment(db, project, row)
+    from app.services.scrum_v2_structure import is_scrum_story, list_dev_tasks_for_story
+
+    if is_scrum_story(row):
+        for dev in list_dev_tasks_for_story(db, project.id, row.id):
+            dev.parent_id = sprint_id
+        db.flush()
+
+
+def _handle_reparent_to_backlog(
+    db: Session,
+    project: Project,
+    entity: Any,
+    entity_type: str,
+    action_id: str,
+    actor_user_id: uuid.UUID,
+    effect: dict[str, Any],
+    form_data: dict[str, Any] | None,
+    side_effect_context: dict[str, Any] | None,
+    entidad_tipo: str,
+) -> None:
+    from app.services.scrum_v2_structure import (
+        ensure_product_backlog_milestone,
+        is_scrum_story,
+        list_dev_tasks_for_story,
+    )
+
+    row = _record(db, entity)
+    backlog = ensure_product_backlog_milestone(db, project, created_by=actor_user_id)
+    row.parent_id = backlog.id
+    db.flush()
+    if is_scrum_story(row):
+        for dev in list_dev_tasks_for_story(db, project.id, row.id):
+            dev.parent_id = backlog.id
+        db.flush()
 
 
 def _handle_finalize_parent_when_siblings_done(
@@ -643,6 +758,10 @@ def _handle_run_transition(
 register_side_effect("notify", _handle_notify)
 register_side_effect("notify_role", _handle_notify_role)
 register_side_effect("set_field", _handle_set_field)
+register_side_effect("clear_field", _handle_clear_field)
+register_side_effect("sync_scrum_sprint_dates", _handle_sync_scrum_sprint_dates)
+register_side_effect("reparent_to_sprint", _handle_reparent_to_sprint)
+register_side_effect("reparent_to_backlog", _handle_reparent_to_backlog)
 register_side_effect("finalize_parent_when_siblings_done", _handle_finalize_parent_when_siblings_done)
 register_side_effect("notify_reporter", _handle_notify_reporter)
 register_side_effect("generate_feature_from_report", _handle_generate_feature_from_report)
