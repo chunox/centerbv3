@@ -42,13 +42,23 @@ def upgrade() -> None:
         ),
     )
 
-    op.alter_column(
-        "project_workflow_definitions",
-        "entity_type",
-        existing_type=sa.String(length=20),
-        type_=sa.String(length=40),
-        existing_nullable=False,
-    )
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("project_workflow_definitions") as batch:
+            batch.alter_column(
+                "entity_type",
+                existing_type=sa.String(length=20),
+                type_=sa.String(length=40),
+                existing_nullable=False,
+            )
+    else:
+        op.alter_column(
+            "project_workflow_definitions",
+            "entity_type",
+            existing_type=sa.String(length=20),
+            type_=sa.String(length=40),
+            existing_nullable=False,
+        )
 
     op.create_table(
         "project_record_types",
@@ -124,12 +134,22 @@ def downgrade() -> None:
     op.drop_index("idx_project_records_project_type", table_name="project_records")
     op.drop_table("project_records")
     op.drop_table("project_record_types")
-    op.alter_column(
-        "project_workflow_definitions",
-        "entity_type",
-        existing_type=sa.String(length=40),
-        type_=sa.String(length=20),
-        existing_nullable=False,
-    )
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("project_workflow_definitions") as batch:
+            batch.alter_column(
+                "entity_type",
+                existing_type=sa.String(length=40),
+                type_=sa.String(length=20),
+                existing_nullable=False,
+            )
+    else:
+        op.alter_column(
+            "project_workflow_definitions",
+            "entity_type",
+            existing_type=sa.String(length=40),
+            type_=sa.String(length=20),
+            existing_nullable=False,
+        )
     op.drop_column("projects", "pack_slug")
     op.drop_table("project_packs")

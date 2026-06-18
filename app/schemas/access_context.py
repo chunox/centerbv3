@@ -142,6 +142,7 @@ class ProjectAccessContextRead(BaseModel):
     views: list[ProjectViewRead] = Field(default_factory=list)
     pack_slug: str = "software"
     profile_slug: str = "default"
+    template_slug: str = "default"
     project_role_slugs: list[str] = Field(default_factory=list)
     member_role_slugs: list[str] = Field(default_factory=list)
 

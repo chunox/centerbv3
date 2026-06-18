@@ -249,8 +249,9 @@ def get_access_context(
         blocks=blocks,
         views=views,
         pack_slug=project.pack_slug,
-    profile_slug=getattr(project, "profile_slug", None) or "default",
-    project_role_slugs=list_project_role_slugs(db, project.id),
+        profile_slug=getattr(project, "profile_slug", None) or "default",
+        template_slug=project.template_slug or "default",
+        project_role_slugs=list_project_role_slugs(db, project.id),
     member_role_slugs=[r.slug for r in assignments],
     )
 
