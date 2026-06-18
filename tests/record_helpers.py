@@ -10,7 +10,6 @@ from app.models.entities import Project, ProjectRecord, User
 from app.services.features import ensure_default_task
 from app.services.packs import seed_project_from_pack
 from app.services.records.repository import create_record
-from app.domain.project_profiles import resolve_profile_slug
 from app.domain.project_templates import get_template
 from tests.org_helpers import add_member_with_slug, create_organization
 
@@ -32,17 +31,10 @@ def seed_project_with_roles(
         ]
     )
     org = create_organization(session, owner_id=pm_id)
-    tpl = get_template(template_slug)
-    profile_slug = resolve_profile_slug(
-        pack_slug="software",
-        template_profile=tpl.profile_slug,
-        legacy_tipo=tipo,
-    )
     project = Project(
         organization_id=org.id,
         id=uuid.uuid4(),
         nombre="WF",
-        profile_slug=profile_slug,
         template_slug=template_slug,
         pack_slug="software",
         estado="activo",

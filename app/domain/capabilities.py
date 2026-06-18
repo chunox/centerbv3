@@ -136,6 +136,10 @@ WORKBENCH_TEAM = "workbench.team"
 WORKBENCH_SPRINT_BOARD    = "workbench.sprint_board"
 WORKBENCH_PRODUCT_BACKLOG = "workbench.product_backlog"
 WORKBENCH_SPRINT_PLANNING = "workbench.sprint_planning"
+WORKBENCH_SCRUM_IMPEDIMENTS = "workbench.scrum_impediments"
+WORKBENCH_SCRUM_REFINEMENT = "workbench.scrum_refinement"
+WORKBENCH_SCRUM_CAPACITY = "workbench.scrum_capacity"
+WORKBENCH_SCRUM_METRICS = "workbench.scrum_metrics"
 
 # ── Auditoría ─────────────────────────────────────────────────────────────
 
@@ -218,6 +222,10 @@ CAPABILITY_CATALOG: tuple[CapabilityDef, ...] = (
     CapabilityDef(WORKBENCH_SPRINT_BOARD, "Sprint Board (Scrum)", "workbench"),
     CapabilityDef(WORKBENCH_PRODUCT_BACKLOG, "Product Backlog (Scrum)", "workbench"),
     CapabilityDef(WORKBENCH_SPRINT_PLANNING, "Sprint Planning (Scrum)", "workbench"),
+    CapabilityDef(WORKBENCH_SCRUM_IMPEDIMENTS, "Impedimentos (Scrum)", "workbench"),
+    CapabilityDef(WORKBENCH_SCRUM_REFINEMENT, "Refinement (Scrum)", "workbench"),
+    CapabilityDef(WORKBENCH_SCRUM_CAPACITY, "Capacity (Scrum)", "workbench"),
+    CapabilityDef(WORKBENCH_SCRUM_METRICS, "Métricas (Scrum)", "workbench"),
     CapabilityDef(AUDIT_VIEW_ALL, "Ver toda la auditoría", "audit"),
     CapabilityDef(AUDIT_VIEW_SCOPED, "Ver auditoría acotada", "audit"),
     CapabilityDef(TIMELINE_VIEW, "Ver cronograma", "audit"),
@@ -281,6 +289,10 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             WORKBENCH_SPRINT_BOARD,
             WORKBENCH_PRODUCT_BACKLOG,
             WORKBENCH_SPRINT_PLANNING,
+            WORKBENCH_SCRUM_IMPEDIMENTS,
+            WORKBENCH_SCRUM_REFINEMENT,
+            WORKBENCH_SCRUM_CAPACITY,
+            WORKBENCH_SCRUM_METRICS,
             AUDIT_VIEW_ALL,
             TIMELINE_VIEW,
             COMMENT_CREATE,
@@ -368,6 +380,10 @@ TECH_LEAD_CAPABILITIES: frozenset[str] = (
         FEATURE_TRANSITION_COMPROMETER_SPRINT,
         WORKBENCH_PRODUCT_BACKLOG,
         WORKBENCH_SPRINT_PLANNING,
+        WORKBENCH_SCRUM_IMPEDIMENTS,
+        WORKBENCH_SCRUM_REFINEMENT,
+        WORKBENCH_SCRUM_CAPACITY,
+        WORKBENCH_SCRUM_METRICS,
     }
 )
 

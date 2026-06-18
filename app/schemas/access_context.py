@@ -141,8 +141,8 @@ class ProjectAccessContextRead(BaseModel):
     blocks: list[ProjectBlockRead] = Field(default_factory=list)
     views: list[ProjectViewRead] = Field(default_factory=list)
     pack_slug: str = "software"
-    profile_slug: str = "default"
     template_slug: str = "default"
+    project_tipo: str = "interno"
     project_role_slugs: list[str] = Field(default_factory=list)
     member_role_slugs: list[str] = Field(default_factory=list)
 
@@ -168,7 +168,7 @@ class ProjectWorkflowUpdate(BaseModel):
 
 class WorkflowTemplateApply(BaseModel):
     actor_user_id: UUID
-    profile_slug: str | None = None
+    template_slug: str | None = None
     project_tipo: str | None = None
 
 

@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.domain.workflow_templates import workflow_for_profile
+from app.domain.workflow_templates import workflow_for_template
 from app.models.entities import Project, ProjectWorkflowDefinition
 from app.services.workflow.store import WORKFLOW_ENTITY_TYPES, get_active_workflow
 
@@ -16,12 +16,12 @@ def resolve_workflow(
     db: Session,
     project_id: UUID,
     entity_type: str,
-    project_tipo: str,
+    template_slug: str,
 ) -> dict[str, Any]:
     wf = get_active_workflow(db, project_id, entity_type)
     if wf is not None:
         return wf
-    return workflow_for_profile(project_tipo, entity_type)
+    return workflow_for_template(template_slug, entity_type)
 
 
 def state_keys_in_categories(
@@ -152,8 +152,8 @@ def batch_load_workflows(
         return {}
 
     project_ids = [p.id for p in projects]
-    profile_by_id = {
-        p.id: getattr(p, "profile_slug", None) or "default" for p in projects
+    template_by_id = {
+        p.id: p.template_slug or "default" for p in projects
     }
 
     rows = list(
@@ -186,8 +186,8 @@ def batch_load_workflows(
         for entity_type in WORKFLOW_ENTITY_TYPES:
             key = (project.id, entity_type)
             if key not in result and project.pack_slug == "software":
-                result[key] = workflow_for_profile(
-                    profile_by_id[project.id], entity_type
+                result[key] = workflow_for_template(
+                    template_by_id[project.id], entity_type
                 )
 
     return result

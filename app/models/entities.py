@@ -28,7 +28,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
-from app.domain.project_profiles import template_slug_to_profile
 
 
 def _utcnow() -> datetime:
@@ -209,10 +208,6 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, onupdate=_utcnow
     )
-
-    @property
-    def profile_slug(self) -> str:
-        return template_slug_to_profile(self.template_slug)
 
     organization: Mapped[Organization] = relationship(back_populates="projects")
     creator: Mapped[User] = relationship(back_populates="projects_created")
@@ -472,6 +467,73 @@ class ProjectRecordDependency(Base):
         String(20), nullable=False, default="finish_to_start"
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class ScrumCeremonySession(Base):
+    __tablename__ = "scrum_ceremony_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "session_type IN ('daily', 'planning_poker', 'sprint_review', 'retro')",
+            name="chk_scrum_session_type",
+        ),
+        CheckConstraint(
+            "status IN ('planned', 'active', 'closed')",
+            name="chk_scrum_session_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    sprint_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("project_records.id", ondelete="SET NULL"), nullable=True
+    )
+    session_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="planned")
+    facilitator_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+    entries: Mapped[list["ScrumCeremonyEntry"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class ScrumCeremonyEntry(Base):
+    __tablename__ = "scrum_ceremony_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("scrum_ceremony_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    author_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    entry_type: Mapped[str] = mapped_column(String(32), nullable=False, default="note")
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+    session: Mapped[ScrumCeremonySession] = relationship(back_populates="entries")
 
 
 class ProjectRole(Base):

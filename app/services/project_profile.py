@@ -7,7 +7,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from app.domain.packs.catalog import get_pack_manifest
-from app.domain.project_profiles import legacy_tipo_from_profile
+from app.domain.project_templates import project_tipo_for_project
 from app.models.entities import Project, ProjectMember, ProjectRole
 
 BLOCKING_WITH_CLIENT = frozenset(
@@ -63,10 +63,7 @@ def pack_supports(db: Session, project: Project, trait: str) -> bool:
 
 
 def supports_external_stakeholder(db: Session, project: Project) -> bool:
-    if has_role_slug(db, project.id, "cliente"):
-        return True
-    profile = getattr(project, "profile_slug", None) or "default"
-    return profile in ("with_client", "flexible")
+    return has_role_slug(db, project.id, "cliente")
 
 
 def supports_reports(db: Session, project: Project) -> bool:
@@ -78,7 +75,7 @@ def supports_reports(db: Session, project: Project) -> bool:
 def blocking_query_states(db: Session, project: Project) -> frozenset[str]:
     if supports_external_stakeholder(db, project):
         blocking = set(BLOCKING_WITH_CLIENT)
-        if getattr(project, "profile_slug", None) == "flexible":
+        if project_tipo_for_project(project) == "freestyle":
             blocking |= BLOCKING_INTERNAL
         return frozenset(blocking)
     return BLOCKING_INTERNAL
@@ -86,13 +83,10 @@ def blocking_query_states(db: Session, project: Project) -> frozenset[str]:
 
 def active_query_target(db: Session, project: Project) -> str:
     if supports_external_stakeholder(db, project):
-        profile = getattr(project, "profile_slug", None)
-        if profile == "flexible" and not has_role_slug(db, project.id, "cliente"):
-            return "esperando_pm"
         return "esperando_cliente"
     return "esperando_pm"
 
 
 def legacy_tipo_for_project(project: Project) -> str:
-    profile = getattr(project, "profile_slug", None) or "default"
-    return legacy_tipo_from_profile(profile, pack_slug=project.pack_slug or "software")
+    """Alias de compatibilidad; preferir project_tipo_for_project."""
+    return project_tipo_for_project(project)

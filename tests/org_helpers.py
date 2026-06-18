@@ -8,7 +8,6 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from app.domain.project_profiles import resolve_profile_slug
 from app.domain.project_templates import get_template, template_slug_for_legacy_tipo
 from app.models.entities import Organization, OrganizationMember, Project, ProjectMember, User
 from app.services.packs import seed_project_from_pack
@@ -57,7 +56,6 @@ def create_project_for_org(
     *,
     nombre: str = "P",
     tipo: str = "interno",
-    profile_slug: str | None = None,
     pack_slug: str = "software",
     template_slug: str | None = None,
     estado: str = "activo",
@@ -68,18 +66,10 @@ def create_project_for_org(
     if org is None:
         org = create_organization(session, owner_id=pm_id)
     slug = template_slug or template_slug_for_legacy_tipo(tipo)
-    tpl = get_template(slug)
-    resolved_profile = resolve_profile_slug(
-        pack_slug=pack_slug,
-        template_profile=tpl.profile_slug,
-        legacy_tipo=tipo,
-        profile_override=profile_slug,
-    )
     project = Project(
         id=uuid.uuid4(),
         organization_id=org.id,
         nombre=nombre,
-        profile_slug=resolved_profile,
         template_slug=slug,
         pack_slug=pack_slug,
         estado=estado,
@@ -108,12 +98,10 @@ def _ensure_project_roles(session: Session, project: Project) -> None:
 
     from app.models.entities import ProjectRole
 
-    exists = session.scalar(
-        select(ProjectRole.id)
-        .where(ProjectRole.project_id == project.id)
-        .limit(1)
+    existing = session.scalar(
+        select(ProjectRole.id).where(ProjectRole.project_id == project.id).limit(1)
     )
-    if not exists:
+    if existing is None:
         seed_default_project_access(session, project)
 
 
@@ -130,13 +118,16 @@ def add_member_with_slug(
     _ensure_project_roles(session, project)
     role = session.scalar(
         select(ProjectRole).where(
-            ProjectRole.project_id == project.id, ProjectRole.slug == role_slug
+            ProjectRole.project_id == project.id,
+            ProjectRole.slug == role_slug,
         )
     )
-    if not role:
-        raise ValueError(f"Rol '{role_slug}' no encontrado en el proyecto")
+    if role is None:
+        raise ValueError(f"Rol no encontrado: {role_slug}")
     member = ProjectMember(
-        project_id=project.id, user_id=user_id, role_id=role.id
+        project_id=project.id,
+        user_id=user_id,
+        role_id=role.id,
     )
     session.add(member)
     session.flush()

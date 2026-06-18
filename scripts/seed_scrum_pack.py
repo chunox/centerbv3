@@ -64,6 +64,124 @@ def sync_sprint_velocity(token: str, project_id: str, sprint_id: str, actor_user
     http("POST", path, token=token, expect_status=200)
 
 
+def seed_scrum_support_data(
+    token: str,
+    project_id: str,
+    actor_user_id: str,
+    users: dict[str, dict],
+) -> None:
+    sprints = http(
+        "GET",
+        f"/projects/{project_id}/scrum/sprints?actor_user_id={actor_user_id}",
+        token=token,
+    )[1] or []
+    if not sprints:
+        return
+    sprint = next((s for s in sprints if s.get("estado") != "completado"), sprints[0])
+    sprint_id = sprint["id"]
+    dev_id = users.get("dev@center.demo", {}).get("id")
+    qa_id = users.get("qa@center.demo", {}).get("id")
+
+    capacity_plan = [
+        {"user_id": actor_user_id, "dias": 8, "pto_dias": 6, "focus_pct": 65, "committed_h": 31.2},
+        {"user_id": dev_id, "dias": 8, "pto_dias": 6.5, "focus_pct": 75, "committed_h": 39.0},
+        {"user_id": qa_id, "dias": 6, "pto_dias": 5.5, "focus_pct": 70, "committed_h": 23.1},
+    ]
+    http(
+        "PUT",
+        f"/projects/{project_id}/scrum/sprints/{sprint_id}/capacity",
+        token=token,
+        body={"actor_user_id": actor_user_id, "capacity_plan": capacity_plan},
+        expect_status=200,
+    )
+
+    impediments = [
+        {
+            "titulo": "Ambiente staging inestable",
+            "owner_user_id": dev_id,
+            "impacto": "Bloquea validaciones de integración en historias checkout.",
+        },
+        {
+            "titulo": "Proveedor de pagos demora respuesta",
+            "owner_user_id": actor_user_id,
+            "impacto": "Riesgo para cerrar objetivo del sprint actual.",
+        },
+    ]
+    created_imps: list[dict] = []
+    for item in impediments:
+        _, imp = http(
+            "POST",
+            f"/projects/{project_id}/scrum/impediments",
+            token=token,
+            body={
+                "actor_user_id": actor_user_id,
+                "titulo": item["titulo"],
+                "sprint_id": sprint_id,
+                "owner_user_id": item["owner_user_id"],
+                "impacto": item["impacto"],
+            },
+            expect_status=200,
+        )
+        created_imps.append(imp)
+    if created_imps:
+        http(
+            "POST",
+            f"/projects/{project_id}/scrum/impediments/{created_imps[0]['id']}/resolve",
+            token=token,
+            body={
+                "actor_user_id": actor_user_id,
+                "resolucion": "Reinicio de pods + ventana de validación coordinada.",
+            },
+            expect_status=200,
+        )
+
+    sessions = [
+        ("daily", "Daily de seguimiento", "active"),
+        ("planning_poker", "Planning Poker (horas)", "planned"),
+        ("sprint_review", "Sprint Review semanal", "planned"),
+        ("retro", "Retro del sprint", "planned"),
+    ]
+    for session_type, title, status in sessions:
+        _, session = http(
+            "POST",
+            f"/projects/{project_id}/scrum/sessions",
+            token=token,
+            body={
+                "actor_user_id": actor_user_id,
+                "session_type": session_type,
+                "title": title,
+                "status": status,
+                "sprint_id": sprint_id,
+            },
+            expect_status=200,
+        )
+        if session_type == "planning_poker":
+            for hours in [2, 3, 5]:
+                http(
+                    "POST",
+                    f"/projects/{project_id}/scrum/sessions/{session['id']}/entries",
+                    token=token,
+                    body={
+                        "actor_user_id": actor_user_id,
+                        "entry_type": "vote",
+                        "payload": {"hours": hours, "story_hint": "Checkout mobile"},
+                    },
+                    expect_status=200,
+                )
+        else:
+            http(
+                "POST",
+                f"/projects/{project_id}/scrum/sessions/{session['id']}/entries",
+                token=token,
+                body={
+                    "actor_user_id": actor_user_id,
+                    "entry_type": "note",
+                    "payload": {"text": f"Nota inicial para {title.lower()}"},
+                },
+                expect_status=200,
+            )
+
+
 def verify_pack(token: str, pm_id: str, logistics_id: str, ecommerce_id: str) -> None:
     def count_backlog(pid: str) -> int:
         rows = http(
@@ -155,6 +273,7 @@ def main() -> None:
     print("\n[1/2] Logistics Hub (t6_scrum_interno)...")
     lh_stats = seed_logistics_hub(token, users, org_id, today)
     logistics_id = lh_stats["project_id"]
+    seed_scrum_support_data(token, logistics_id, pm_id, users)
 
     print("\n  Sync velocity Sprint 1...")
     sprints = http(
@@ -172,6 +291,7 @@ def main() -> None:
 
     print("\n[2/2] E-commerce Relaunch (t7_scrum_cliente)...")
     ecommerce_id = seed_ecommerce(token, token_cliente, users, org_id, today)
+    seed_scrum_support_data(token, ecommerce_id, pm_id, users)
 
     print("\n[seed-scrum-pack] Listo.")
     print(f"  Logistics Hub:       http://localhost:5173/projects/{logistics_id}")

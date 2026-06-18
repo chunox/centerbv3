@@ -26,7 +26,8 @@ from app.services.communication.store import (
 )
 from app.services.config_snapshots import list_config_snapshots
 from app.services.studio_health import build_studio_health
-from app.domain.workflow_templates import workflow_for_profile
+from app.domain.project_templates import project_tipo_for_project, template_slug_for_legacy_tipo
+from app.domain.workflow_templates import workflow_for_template
 from app.services.project_profile import list_project_role_slugs
 from app.models.entities import ProjectMember, ProjectRole, ProjectWorkflowDefinition
 from app.schemas.access_context import (
@@ -249,8 +250,8 @@ def get_access_context(
         blocks=blocks,
         views=views,
         pack_slug=project.pack_slug,
-        profile_slug=getattr(project, "profile_slug", None) or "default",
         template_slug=project.template_slug or "default",
+        project_tipo=project_tipo_for_project(project),
         project_role_slugs=list_project_role_slugs(db, project.id),
     member_role_slugs=[r.slug for r in assignments],
     )
@@ -561,13 +562,13 @@ def get_workflow_template(
     allowed = set(workflow_entity_types(db, project.id))
     if entity_type not in allowed:
         raise HTTPException(status_code=422, detail="entity_type inválido")
-    profile = getattr(project, "profile_slug", None) or "default"
+    template_slug = project.template_slug or "default"
     if project.pack_slug != "software":
         raise HTTPException(
             status_code=422,
             detail="Plantillas de workflow solo aplican al pack software",
         )
-    return workflow_for_profile(profile, entity_type)
+    return workflow_for_template(template_slug, entity_type)
 
 
 @router.post(
@@ -585,20 +586,18 @@ def apply_workflow_template(
     allowed = set(workflow_entity_types(db, project.id))
     if entity_type not in allowed:
         raise HTTPException(status_code=422, detail="entity_type inválido")
-    from app.domain.project_profiles import LEGACY_TIPO_TO_PROFILE
-
-    if payload.profile_slug:
-        profile = payload.profile_slug
+    if payload.template_slug:
+        template_slug = payload.template_slug
     elif payload.project_tipo:
-        profile = LEGACY_TIPO_TO_PROFILE.get(payload.project_tipo, "default")
+        template_slug = template_slug_for_legacy_tipo(payload.project_tipo)
     else:
-        profile = getattr(project, "profile_slug", None) or "default"
+        template_slug = project.template_slug or "default"
     if project.pack_slug != "software":
         raise HTTPException(
             status_code=422,
             detail="Plantillas de workflow solo aplican al pack software",
         )
-    definition = workflow_for_profile(profile, entity_type)
+    definition = workflow_for_template(template_slug, entity_type)
     wf, _capabilities_added = update_workflow_definition(db, project, entity_type, definition)
     db.commit()
     return workflow_summary_from_definition(

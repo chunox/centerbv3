@@ -36,7 +36,7 @@ def _task_workflow(db: Session, project_id: uuid.UUID) -> dict:
     project = db.get(Project, project_id)
     if project is None:
         return {}
-    return resolve_workflow(db, project.id, "task", project.profile_slug)
+    return resolve_workflow(db, project.id, "task", project.template_slug or "default")
 
 
 def list_project_dependencies(

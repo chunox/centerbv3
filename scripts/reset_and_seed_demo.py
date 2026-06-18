@@ -478,7 +478,7 @@ def seed_portal_cliente(
             "Proyecto con cliente externo: inbox denso, reportes, consultas, "
             "hub, validación UAT y Kanban con muchas tareas."
         ),
-        profile_slug="with_client",
+        template_slug="t1_cliente_clasico",
         fecha_inicio=add_days(today, -45),
         fecha_fin=add_days(today, 120),
     )
@@ -757,7 +757,7 @@ def seed_plataforma_interna(
             "Proyecto interno: múltiples sprints, UAT denso, consultas PM, "
             "hub interno y Kanban con decenas de tareas."
         ),
-        profile_slug="internal",
+        template_slug="t3_interno_clasico",
         fecha_inicio=add_days(today, -30),
         fecha_fin=add_days(today, 90),
     )
@@ -983,7 +983,7 @@ def seed_generic_pack_projects(
         nombre="Conferencia Producto 2026",
         descripcion="Pack evento — checklist y timeline",
         pack_slug="evento",
-        profile_slug="default",
+        template_slug="default",
         fecha_inicio=add_days(today, 0),
         fecha_fin=add_days(today, 90),
     )
@@ -1064,7 +1064,7 @@ def seed_generic_pack_projects(
         nombre="Campaña Verano Creativo",
         descripcion="Pack creativo — board e inbox de aprobaciones",
         pack_slug="creativo",
-        profile_slug="default",
+        template_slug="default",
         fecha_inicio=add_days(today, -14),
         fecha_fin=add_days(today, 60),
     )
@@ -1153,7 +1153,7 @@ def seed_generic_pack_projects(
         nombre="Consultoría ONG Demo",
         descripcion="Pack simple — fases, gantt y checklist",
         pack_slug="simple",
-        profile_slug="default",
+        template_slug="default",
         fecha_inicio=add_days(today, 0),
         fecha_fin=add_days(today, 120),
     )

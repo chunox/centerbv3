@@ -27,8 +27,7 @@ EntityType = str  # feature | task | query | report | milestone
 
 _COND_HAS_CLIENTE: dict[str, Any] = {"type": "has_role", "slug": "cliente"}
 _COND_NO_CLIENTE: dict[str, Any] = {"type": "has_role", "slug": "cliente", "negate": True}
-_COND_PROFILE_FLEXIBLE: dict[str, Any] = {"type": "profile", "in": ["flexible"]}
-_COND_PROFILE_INTERNAL: dict[str, Any] = {"type": "profile", "in": ["internal"]}
+_COND_PROJECT_TIPO_FREESTYLE: dict[str, Any] = {"type": "project_tipo", "in": ["freestyle"]}
 
 _QUERY_BLOCK_GATE: dict[str, Any] = {"type": "blocked_by_active_query"}
 _TRANSITIONS_NEEDING_QUERY_GATE = frozenset(
@@ -622,7 +621,7 @@ def default_feature_workflow_freestyle() -> dict[str, Any]:
             "from": ["esperando_liberacion_pm"],
             "to": "completado",
             "required_capabilities": [FEATURE_TRANSITION_COMPLETAR],
-            "conditions": [_COND_PROFILE_FLEXIBLE],
+            "conditions": [_COND_PROJECT_TIPO_FREESTYLE],
             "gates": [_QUERY_BLOCK_GATE],
         }
     )
@@ -633,7 +632,7 @@ def default_feature_workflow_freestyle() -> dict[str, Any]:
             "from": ["uat"],
             "to": "completado",
             "required_capabilities": [FEATURE_TRANSITION_COMPLETAR],
-            "conditions": [_COND_PROFILE_FLEXIBLE],
+            "conditions": [_COND_PROJECT_TIPO_FREESTYLE],
             "gates": [
                 _QUERY_BLOCK_GATE,
                 {"type": "uat_tasks_complete"},
@@ -653,7 +652,7 @@ def default_query_workflow_freestyle() -> dict[str, Any]:
             "from": ["borrador", "pendiente_aprobacion_pm", "esperando_pm"],
             "to": "cerrada",
             "required_capabilities": ["query.close"],
-            "conditions": [_COND_PROFILE_FLEXIBLE],
+            "conditions": [_COND_PROJECT_TIPO_FREESTYLE],
         },
         {
             "id": "activar_cliente",
@@ -661,7 +660,7 @@ def default_query_workflow_freestyle() -> dict[str, Any]:
             "from": ["borrador"],
             "to": "esperando_cliente",
             "required_capabilities": ["query.send"],
-            "conditions": [_COND_PROFILE_FLEXIBLE],
+            "conditions": [_COND_PROJECT_TIPO_FREESTYLE],
         },
         {
             "id": "activar_interno",
@@ -669,7 +668,7 @@ def default_query_workflow_freestyle() -> dict[str, Any]:
             "from": ["borrador"],
             "to": "esperando_pm",
             "required_capabilities": ["query.send"],
-            "conditions": [_COND_PROFILE_FLEXIBLE],
+            "conditions": [_COND_PROJECT_TIPO_FREESTYLE],
         },
     ]
     return wf
@@ -684,7 +683,7 @@ def default_report_workflow_freestyle() -> dict[str, Any]:
             "from": ["pendiente"],
             "to": "aprobado",
             "required_capabilities": ["report.approve"],
-            "conditions": [_COND_PROFILE_FLEXIBLE],
+            "conditions": [_COND_PROJECT_TIPO_FREESTYLE],
             "gates": [{"type": "project_active"}],
             "side_effects": [
                 {"type": "notify_reporter", "notification_tipo": "reporte_resuelto"},
@@ -704,7 +703,7 @@ _TEMPLATE_TO_TIPO: dict[str, str] = {
 
 
 def workflow_for_template(template_slug: str, entity_type: str) -> dict[str, Any]:
-    """Resuelve el workflow por template_slug directamente, sin pasar por profile_slug."""
+    """Resuelve el workflow por template_slug."""
     if entity_type == "feature":
         if template_slug == "t6_scrum_interno":
             return default_feature_workflow_scrum_interno()
@@ -712,17 +711,6 @@ def workflow_for_template(template_slug: str, entity_type: str) -> dict[str, Any
             return default_feature_workflow_scrum_cliente()
     tipo = _TEMPLATE_TO_TIPO.get(template_slug, "interno")
     return workflow_for_project_tipo(tipo, entity_type)
-
-
-def workflow_for_profile(profile_slug: str, entity_type: str) -> dict[str, Any]:
-    from app.domain.project_profiles import PROFILE_TO_LEGACY_TIPO
-
-    legacy = PROFILE_TO_LEGACY_TIPO.get(profile_slug)
-    if legacy is None:
-        raise ValueError(f"profile_slug desconocido: {profile_slug}")
-    if profile_slug == "flexible":
-        legacy = "freestyle"
-    return workflow_for_project_tipo(legacy, entity_type)
 
 
 def workflow_for_project_tipo(tipo: str, entity_type: str) -> dict[str, Any]:

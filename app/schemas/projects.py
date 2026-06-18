@@ -6,11 +6,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
-from app.domain.project_profiles import legacy_tipo_from_profile
+from app.domain.project_templates import project_tipo_for_template
 from app.schemas.project_structure import ProjectStructureDef
 
 ProjectTipo = Literal["con_cliente", "interno", "freestyle"]
-ProjectProfileSlug = Literal["with_client", "internal", "flexible", "default"]
 ProjectEstado = Literal["activo", "cerrado", "cancelado"]
 MemberRol = Literal["cliente", "pm", "dev", "qa"]
 ProjectTemplateSlug = Literal[
@@ -68,7 +67,6 @@ class ProjectTemplateRead(BaseModel):
     slug: str
     nombre: str
     descripcion: str
-    profile_slug: ProjectProfileSlug
     tipo: ProjectTipo
     roles: list[str]
     creator_role: str
@@ -80,7 +78,6 @@ class ProjectRead(BaseModel):
     organization_id: UUID
     nombre: str
     descripcion: str | None
-    profile_slug: ProjectProfileSlug
     template_slug: str
     pack_slug: str = "software"
     structure_version: int = 2
@@ -96,10 +93,10 @@ class ProjectRead(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def tipo(self) -> ProjectTipo:
-        """Deprecated alias computado desde profile_slug."""
-        legacy = legacy_tipo_from_profile(self.profile_slug, pack_slug=self.pack_slug)
-        if legacy == "freestyle" and self.pack_slug != "software":
-            return "interno"
+        legacy = project_tipo_for_template(
+            self.template_slug,
+            pack_slug=self.pack_slug,
+        )
         return legacy  # type: ignore[return-value]
 
 

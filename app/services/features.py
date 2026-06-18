@@ -260,12 +260,12 @@ def sync_feature_from_tasks(
     tasks = load_active_tasks(
         db,
         feature.id,
-        task_workflow=resolve_workflow(db, project.id, "task", project.profile_slug),
+        task_workflow=resolve_workflow(db, project.id, "task", project.template_slug or "default"),
     )
     nuevo = compute_dev_feature_estado(
         feature,
         tasks,
-        task_workflow=resolve_workflow(db, project.id, "task", project.profile_slug),
+        task_workflow=resolve_workflow(db, project.id, "task", project.template_slug or "default"),
     )
     if nuevo is None or nuevo == feature.estado:
         return False
@@ -317,10 +317,10 @@ def cancel_feature_cascade(
             accion="cancelada",
         )
     cancellable = task_cancellable_state_keys(
-        resolve_workflow(db, project.id, "task", project.profile_slug)
+        resolve_workflow(db, project.id, "task", project.template_slug or "default")
     )
     cancel_targets = task_cancel_state_keys(
-        resolve_workflow(db, project.id, "task", project.profile_slug)
+        resolve_workflow(db, project.id, "task", project.template_slug or "default")
     )
     cancel_to = next(iter(cancel_targets), "cancel")
     for task in list_children(db, feature.id, "task"):

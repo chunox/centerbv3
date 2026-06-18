@@ -81,7 +81,7 @@ def test_merge_pack_custom_software_structure(db_session: Session):
         ],
         initial_roots=[{"titulo": "Brief", "orden": 0}],
     )
-    merged = merge_pack_with_structure(base, structure, profile_slug="internal")
+    merged = merge_pack_with_structure(base, structure, template_slug="t3_interno_clasico")
     keys = {et.key for et in merged.entity_types}
     assert keys == {"campana", "entregable", "task"}
     assert "campana" in merged.workflows
@@ -147,7 +147,6 @@ def test_record_parent_validation(db_session: Session):
         id=uuid.uuid4(),
         organization_id=org.id,
         nombre="P",
-        profile_slug="internal",
         template_slug="t3_interno_clasico",
         pack_slug="simple",
         fecha_inicio=__import__("datetime").date(2026, 1, 1),

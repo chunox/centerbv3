@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.feature_reports import ReportTipo
 from app.schemas.milestones import MilestoneEstado
-from app.schemas.projects import ProjectEstado, ProjectProfileSlug, ProjectTipo
+from app.schemas.projects import ProjectEstado, ProjectTipo
 
 PmHealth = Literal["on_track", "at_risk", "overdue", "closed"]
 PmHealthReason = Literal[
@@ -31,8 +31,8 @@ class PmInboxBreakdownRead(BaseModel):
 class PmProjectSummaryRead(BaseModel):
     project_id: UUID = Field(serialization_alias="projectId")
     nombre: str
-    profile_slug: ProjectProfileSlug = Field(serialization_alias="profileSlug")
     pack_slug: str = Field(serialization_alias="packSlug", default="software")
+    template_slug: str = Field(serialization_alias="templateSlug", default="default")
     tipo: ProjectTipo
     estado: ProjectEstado
     fecha_inicio: date = Field(serialization_alias="fechaInicio")

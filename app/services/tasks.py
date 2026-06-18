@@ -31,7 +31,7 @@ TaskEstado = str
 def _task_state_keys(db: Session, project: Project) -> set[str]:
     from app.services.workflow.categories import resolve_workflow
 
-    wf = resolve_workflow(db, project.id, "task", project.profile_slug)
+    wf = resolve_workflow(db, project.id, "task", project.template_slug or "default")
     return {
         s["key"]
         for s in wf.get("states", [])
@@ -122,7 +122,7 @@ def move_task(
     assert_project_active(project)
     _assert_valid_task_state(db, project, nuevo_estado)
 
-    task_wf = resolve_workflow(db, project.id, "task", project.profile_slug)
+    task_wf = resolve_workflow(db, project.id, "task", project.template_slug or "default")
 
     if _feature_bloqueada(feature) and not is_task_cancel_state(task_wf, nuevo_estado):
         raise HTTPException(

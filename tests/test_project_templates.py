@@ -60,46 +60,41 @@ def test_list_project_templates(api_client: TestClient):
     response = api_client.get("/api/v1/project-templates")
     assert response.status_code == 200
     body = response.json()
-    assert len(body) == 5
+    assert len(body) == len(PROJECT_TEMPLATES)
     slugs = {item["slug"] for item in body}
     assert slugs == set(PROJECT_TEMPLATES.keys())
 
 
 @pytest.mark.parametrize(
-    "template_slug,expected_roles,expected_profile,expected_tipo,expected_creator",
+    "template_slug,expected_roles,expected_tipo,expected_creator",
     [
         (
             "t1_cliente_clasico",
             {"pm", "tech_lead", "dev", "qa", "cliente"},
-            "with_client",
             "con_cliente",
             "pm",
         ),
         (
             "t2_cliente_pm_tecnico",
             {"pm_tecnico", "dev", "qa", "cliente"},
-            "with_client",
             "con_cliente",
             "pm_tecnico",
         ),
         (
             "t3_interno_clasico",
             {"pm", "tech_lead", "dev", "qa"},
-            "internal",
             "interno",
             "pm",
         ),
         (
             "t4_interno_pm_tecnico",
             {"pm_tecnico", "dev", "qa"},
-            "internal",
             "interno",
             "pm_tecnico",
         ),
         (
             "t5_freestyle",
             {"pm", "pm_tecnico", "dev", "tech_lead", "qa", "cliente"},
-            "flexible",
             "freestyle",
             "pm",
         ),
@@ -110,7 +105,6 @@ def test_create_project_per_template(
     db_session: Session,
     template_slug: str,
     expected_roles: set[str],
-    expected_profile: str,
     expected_tipo: str,
     expected_creator: str,
 ):
@@ -124,7 +118,6 @@ def test_create_project_per_template(
     )
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body["profile_slug"] == expected_profile
     assert body["tipo"] == expected_tipo
     assert body["template_slug"] == template_slug
     project_id = UUID(body["id"])

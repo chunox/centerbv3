@@ -501,7 +501,6 @@ def main() -> None:
                 ),
                 "pack_slug": "software",
                 "template_slug": "t1_cliente_clasico",
-                "profile_slug": "with_client",
                 "fecha_inicio": add_days(today, -30),
                 "fecha_fin": add_days(today, 120),
                 "created_by": pm["id"],

@@ -70,10 +70,29 @@ def list_sprint_velocity(
                 "titulo": s.titulo,
                 "horas_planeadas": data.get("horas_planeadas"),
                 "horas_completadas": data.get("horas_completadas"),
+                "predictibilidad_pct": _predictibilidad_pct(
+                    data.get("horas_planeadas"),
+                    data.get("horas_completadas"),
+                ),
+                "sprint_goal": data.get("sprint_goal"),
                 "fecha_fin": s.fecha_fin.isoformat() if s.fecha_fin else None,
             }
         )
     return out
+
+
+def _predictibilidad_pct(horas_planeadas: Any, horas_completadas: Any) -> float | None:
+    try:
+        planned = float(horas_planeadas)
+    except (TypeError, ValueError):
+        return None
+    try:
+        completed = float(horas_completadas)
+    except (TypeError, ValueError):
+        return None
+    if planned <= 0:
+        return None
+    return round((completed / planned) * 100, 1)
 
 
 def sum_sprint_committed_horas(
@@ -84,3 +103,20 @@ def sum_sprint_committed_horas(
         return 0.0
     effort = batch_feature_effort_hours(db, project_id, [f.id for f in features])
     return sum(effort.values())
+
+
+def sync_sprint_horas_planeadas(
+    db: Session,
+    sprint: ProjectRecord,
+    *,
+    commit: bool = True,
+) -> float:
+    """Recalcula horas comprometidas del sprint y persiste en milestone.data."""
+    total = sum_sprint_committed_horas(db, sprint.project_id, sprint.id)
+    data = dict(sprint.data or {})
+    data["horas_planeadas"] = total
+    sprint.data = data
+    if commit:
+        db.commit()
+        db.refresh(sprint)
+    return total

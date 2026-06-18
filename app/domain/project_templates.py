@@ -2,16 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import HTTPException
 
-from app.domain.project_profiles import (
-    PROFILE_FLEXIBLE,
-    PROFILE_INTERNAL,
-    PROFILE_WITH_CLIENT,
-    legacy_tipo_from_profile,
-)
+if TYPE_CHECKING:
+    from app.models.entities import Project
 
 ProjectTemplateSlug = Literal[
     "t1_cliente_clasico",
@@ -24,7 +20,6 @@ ProjectTemplateSlug = Literal[
 ]
 
 ProjectTipoFromTemplate = Literal["con_cliente", "interno", "freestyle"]
-ProjectProfileFromTemplate = Literal["with_client", "internal", "flexible"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +27,6 @@ class ProjectTemplateDef:
     slug: ProjectTemplateSlug
     nombre: str
     descripcion: str
-    profile_slug: ProjectProfileFromTemplate
     tipo: ProjectTipoFromTemplate
     roles: tuple[str, ...]
     creator_role: str
@@ -44,7 +38,6 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         slug="t1_cliente_clasico",
         nombre="Entrega con cliente",
         descripcion="PM, Tech Líder, Dev, QA y Cliente. Flujo completo con validación externa.",
-        profile_slug=PROFILE_WITH_CLIENT,
         tipo="con_cliente",
         roles=("pm", "tech_lead", "dev", "qa", "cliente"),
         creator_role="pm",
@@ -54,7 +47,6 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         slug="t2_cliente_pm_tecnico",
         nombre="Cliente compacto",
         descripcion="PM Técnico, Dev, QA y Cliente. Gestión y desarrollo en un rol.",
-        profile_slug=PROFILE_WITH_CLIENT,
         tipo="con_cliente",
         roles=("pm_tecnico", "dev", "qa", "cliente"),
         creator_role="pm_tecnico",
@@ -64,7 +56,6 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         slug="t3_interno_clasico",
         nombre="Squad interno",
         descripcion="PM, Tech Líder, Dev y QA. Sin cliente en el flujo.",
-        profile_slug=PROFILE_INTERNAL,
         tipo="interno",
         roles=("pm", "tech_lead", "dev", "qa"),
         creator_role="pm",
@@ -74,7 +65,6 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         slug="t4_interno_pm_tecnico",
         nombre="Interno compacto",
         descripcion="PM Técnico, Dev y QA. Equipo mínimo interno.",
-        profile_slug=PROFILE_INTERNAL,
         tipo="interno",
         roles=("pm_tecnico", "dev", "qa"),
         creator_role="pm_tecnico",
@@ -84,7 +74,6 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         slug="t5_freestyle",
         nombre="Flexible",
         descripcion="Los 6 roles. Personalizable en Configuración.",
-        profile_slug=PROFILE_FLEXIBLE,
         tipo="freestyle",
         roles=("pm", "pm_tecnico", "dev", "tech_lead", "qa", "cliente"),
         creator_role="pm",
@@ -94,7 +83,6 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         slug="t6_scrum_interno",
         nombre="Scrum Interno",
         descripcion="PM (PO), Tech Líder, Dev y QA. Sprints con Product Backlog. Sin cliente.",
-        profile_slug=PROFILE_INTERNAL,
         tipo="interno",
         roles=("pm", "tech_lead", "dev", "qa"),
         creator_role="pm",
@@ -104,7 +92,6 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         slug="t7_scrum_cliente",
         nombre="Scrum con Cliente",
         descripcion="PM (PO), Tech Líder, Dev, QA y Cliente. Sprints con validación externa.",
-        profile_slug=PROFILE_WITH_CLIENT,
         tipo="con_cliente",
         roles=("pm", "tech_lead", "dev", "qa", "cliente"),
         creator_role="pm",
@@ -122,24 +109,33 @@ def get_template(slug: str) -> ProjectTemplateDef:
     return tpl
 
 
-def resolve_project_profile(
-    template_slug: str,
-    profile_override: str | None = None,
-) -> str:
-    if profile_override:
-        return profile_override
-    return get_template(template_slug).profile_slug
+def project_tipo_for_template(template_slug: str, *, pack_slug: str = "software") -> str:
+    if pack_slug != "software" or template_slug in ("default", ""):
+        return "interno"
+    tpl = PROJECT_TEMPLATES.get(template_slug)
+    if tpl is None:
+        return "interno"
+    if tpl.tipo == "freestyle" and pack_slug != "software":
+        return "interno"
+    return tpl.tipo
+
+
+def project_tipo_for_project(project: Project) -> str:
+    return project_tipo_for_template(
+        project.template_slug or "default",
+        pack_slug=project.pack_slug or "software",
+    )
 
 
 def resolve_project_tipo(
     template_slug: str,
     tipo_override: str | None = None,
+    *,
+    pack_slug: str = "software",
 ) -> str:
-    """Deprecated: alias computado desde profile para compat API."""
     if tipo_override:
         return tipo_override
-    tpl = get_template(template_slug)
-    return legacy_tipo_from_profile(tpl.profile_slug, pack_slug="software")
+    return project_tipo_for_template(template_slug, pack_slug=pack_slug)
 
 
 def template_slug_for_legacy_tipo(tipo: str) -> str:
@@ -156,7 +152,6 @@ def list_templates_for_api() -> list[dict]:
             "slug": t.slug,
             "nombre": t.nombre,
             "descripcion": t.descripcion,
-            "profile_slug": t.profile_slug,
             "tipo": t.tipo,
             "roles": list(t.roles),
             "creator_role": t.creator_role,

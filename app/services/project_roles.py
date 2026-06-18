@@ -18,7 +18,7 @@ from app.domain.project_templates import (
     template_slug_for_legacy_tipo,
 )
 from app.domain.workbenches import DEFAULT_WORKBENCHES
-from app.domain.workflow_templates import workflow_for_profile
+from app.domain.workflow_templates import workflow_for_template
 from app.models.entities import (
     Project,
     ProjectMember,
@@ -54,8 +54,7 @@ def seed_project_from_template(
         created[slug] = role
 
     for entity_type in ("feature", "task", "query", "report", "milestone"):
-        profile = getattr(project, "profile_slug", None) or "with_client"
-        wf = workflow_for_profile(profile, entity_type)
+        wf = workflow_for_template(template_slug, entity_type)
         db.add(
             ProjectWorkflowDefinition(
                 project_id=project.id,

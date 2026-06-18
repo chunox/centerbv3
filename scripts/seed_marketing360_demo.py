@@ -146,7 +146,7 @@ def seed_marketing360_project(
         nombre=PROJECT_NAME,
         descripcion="Pack Marketing 360° — briefing, kanban 7 estados, calendario y aprobaciones",
         pack_slug="marketing360",
-        profile_slug="with_client",
+        template_slug="t1_cliente_clasico",
         fecha_inicio=add_days(today, -7),
         fecha_fin=add_days(today, 90),
     )

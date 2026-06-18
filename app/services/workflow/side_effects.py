@@ -277,6 +277,10 @@ def _handle_reparent_to_sprint(
             dev.parent_id = sprint_id
         db.flush()
 
+    from app.services.scrum_metrics import sync_sprint_horas_planeadas
+
+    sync_sprint_horas_planeadas(db, sprint, commit=False)
+
 
 def _handle_reparent_to_backlog(
     db: Session,
@@ -297,6 +301,7 @@ def _handle_reparent_to_backlog(
     )
 
     row = _record(db, entity)
+    previous_sprint_id = row.parent_id
     backlog = ensure_product_backlog_milestone(db, project, created_by=actor_user_id)
     row.parent_id = backlog.id
     db.flush()
@@ -304,6 +309,18 @@ def _handle_reparent_to_backlog(
         for dev in list_dev_tasks_for_story(db, project.id, row.id):
             dev.parent_id = backlog.id
         db.flush()
+
+    if previous_sprint_id is not None:
+        previous_sprint = db.get(ProjectRecord, previous_sprint_id)
+        if (
+            previous_sprint is not None
+            and previous_sprint.project_id == project.id
+            and previous_sprint.record_type == "milestone"
+            and (previous_sprint.data or {}).get("tipo") == "sprint"
+        ):
+            from app.services.scrum_metrics import sync_sprint_horas_planeadas
+
+            sync_sprint_horas_planeadas(db, previous_sprint, commit=False)
 
 
 def _handle_finalize_parent_when_siblings_done(
@@ -566,7 +583,7 @@ def _handle_sync_tasks(
         task_test_state_keys,
     )
 
-    task_wf = resolve_workflow(db, project.id, "task", project.profile_slug)
+    task_wf = resolve_workflow(db, project.id, "task", project.template_slug or "default")
     test_keys = task_test_state_keys(task_wf)
     done_to = next(iter(task_done_state_keys(task_wf)), "completed")
     for task in list_children(db, row.id, "task"):
@@ -607,7 +624,7 @@ def _handle_rework_tasks(
         task_test_state_keys,
     )
 
-    task_wf = resolve_workflow(db, project.id, "task", project.profile_slug)
+    task_wf = resolve_workflow(db, project.id, "task", project.template_slug or "default")
     test_keys = task_test_state_keys(task_wf)
     active_keys = state_keys_in_categories(task_wf, frozenset({"active"}))
     rework_to = next(iter(active_keys), "in_progress")

@@ -70,6 +70,26 @@ def audit_project(name: str, pid: str, pm_id: str, token: str) -> dict:
 
     sprints_api = req("GET", f"/projects/{pid}/scrum/sprints?actor_user_id={pm_id}", token=token)
     velocity = req("GET", f"/projects/{pid}/scrum/velocity?actor_user_id={pm_id}&limit=6", token=token)
+    impediments = req("GET", f"/projects/{pid}/scrum/impediments?actor_user_id={pm_id}", token=token)
+    sessions = req("GET", f"/projects/{pid}/scrum/sessions?actor_user_id={pm_id}", token=token)
+
+    capacity_rows: list[dict] = []
+    for m in sprint_milestones:
+        cap = req(
+            "GET",
+            f"/projects/{pid}/scrum/sprints/{m['id']}/capacity?actor_user_id={pm_id}",
+            token=token,
+        )
+        if isinstance(cap, dict) and "_error" in cap:
+            continue
+        if isinstance(cap, dict):
+            capacity_rows.append(
+                {
+                    "sprint_id": m["id"],
+                    "available_horas": cap.get("available_horas"),
+                    "capacity_items": len(cap.get("capacity_plan") or []),
+                }
+            )
 
     uat_states = {"uat", "ready_for_test", "esperando_liberacion_pm", "esperando_validacion_cliente"}
     uat_stories = [s for s in stories if s["estado"] in uat_states]
@@ -91,9 +111,15 @@ def audit_project(name: str, pid: str, pm_id: str, token: str) -> dict:
             "dev_hours_sum": round(dev_hours, 1),
             "story_esfuerzo_horas_sum": round(story_hours, 1),
             "uat_stories": len(uat_stories),
+            "impediments_total": len(impediments or []) if isinstance(impediments, list) else 0,
+            "impediments_open": len(
+                [i for i in (impediments or []) if (i.get("data") or {}).get("status") == "open"]
+            ) if isinstance(impediments, list) else 0,
+            "sessions_total": len(sessions or []) if isinstance(sessions, list) else 0,
         },
         "stories_by_state": estados,
         "sprints": sprint_rows,
+        "capacity": capacity_rows,
         "scrum_api_first_sprint": sprints_api[0] if sprints_api and not isinstance(sprints_api, dict) else None,
         "velocity": velocity if not isinstance(velocity, dict) or "_error" not in velocity else velocity,
     }

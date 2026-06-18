@@ -652,8 +652,8 @@ def build_pm_portfolio(
             PmProjectSummaryRead(
                 project_id=project.id,
                 nombre=project.nombre,
-                profile_slug=getattr(project, "profile_slug", None) or "default",
                 pack_slug=project.pack_slug or "software",
+                template_slug=project.template_slug or "default",
                 tipo=legacy_tipo_for_project(project),
                 estado=project.estado,
                 fecha_inicio=project.fecha_inicio,

@@ -9,6 +9,10 @@ from app.domain.capabilities import (
     WORKBENCH_KANBAN,
     WORKBENCH_INBOX_QA,
     WORKBENCH_SPRINT_BOARD,
+    WORKBENCH_SCRUM_CAPACITY,
+    WORKBENCH_SCRUM_IMPEDIMENTS,
+    WORKBENCH_SCRUM_METRICS,
+    WORKBENCH_SCRUM_REFINEMENT,
     WORKBENCH_PRODUCT_BACKLOG,
     WORKBENCH_SPRINT_PLANNING,
 )
@@ -81,6 +85,17 @@ def _software_entity_types() -> list[EntityTypeDef]:
             icon="bug",
             traits={"spawns": "feature", "comments": True},
             orden=5,
+        ),
+        EntityTypeDef(
+            key="impediment",
+            label="Impedimento",
+            hierarchy="child",
+            parent_type="milestone",
+            parent_type_keys=["milestone"],
+            icon="alert-triangle",
+            traits={"comments": True},
+            orden=6,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
         ),
     ]
 
@@ -194,6 +209,96 @@ def _software_field_definitions() -> list[FieldDefinitionDef]:
             orden=20,
             template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
         ),
+        FieldDefinitionDef(
+            entity_type_key="task",
+            field_key="refinement_ready",
+            label="Refinement ready",
+            field_type="checkbox",
+            config={"default": False, "indexed": True},
+            orden=21,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="task",
+            field_key="criterios_aceptacion",
+            label="Criterios de aceptación",
+            field_type="textarea",
+            config={"format": "json_array"},
+            orden=22,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="milestone",
+            field_key="capacity_plan",
+            label="Plan de capacidad",
+            field_type="textarea",
+            config={"format": "json_array"},
+            orden=23,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="impediment",
+            field_key="titulo",
+            label="Título",
+            field_type="text",
+            config={"required": True},
+            orden=1,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="impediment",
+            field_key="sprint_id",
+            label="Sprint",
+            field_type="relation",
+            config={"relation_entity_type": "milestone"},
+            orden=2,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="impediment",
+            field_key="owner_user_id",
+            label="Owner",
+            field_type="user",
+            config={},
+            orden=3,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="impediment",
+            field_key="status",
+            label="Estado",
+            field_type="select",
+            config={"options": ["open", "resolved"], "default": "open", "indexed": True},
+            orden=4,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="impediment",
+            field_key="impacto",
+            label="Impacto",
+            field_type="textarea",
+            config={},
+            orden=5,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="impediment",
+            field_key="resolucion",
+            label="Resolución",
+            field_type="textarea",
+            config={},
+            orden=6,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="impediment",
+            field_key="raised_at",
+            label="Reportado en",
+            field_type="datetime",
+            config={},
+            orden=7,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
     ]
 
 
@@ -211,6 +316,14 @@ def _software_custom_view_key(wb_key: str) -> str | None:
         "sprint_board": "software.sprint_board",
         "product_backlog": "software.product_backlog",
         "sprint_planning": "software.sprint_planning",
+        "scrum_impediments": "software.scrum_impediments",
+        "scrum_refinement": "software.scrum_refinement",
+        "scrum_capacity": "software.scrum_capacity",
+        "scrum_metrics": "software.scrum_metrics",
+        "scrum_daily": "software.scrum_daily",
+        "scrum_planning_poker": "software.scrum_planning_poker",
+        "scrum_sprint_review": "software.scrum_sprint_review",
+        "scrum_retro": "software.scrum_retro",
     }
     return mapping.get(wb_key)
 
@@ -376,6 +489,26 @@ def _software_blocks() -> list[BlockDef]:
                 template_slugs=_SCRUM_SLUGS,
             )
         )
+    for i, (wb_key, label, icon) in enumerate([
+        ("scrum_refinement", "Refinement", "list-checks"),
+        ("scrum_capacity", "Capacity", "gauge"),
+        ("scrum_impediments", "Impedimentos", "alert-triangle"),
+        ("scrum_daily", "Daily", "timer-reset"),
+        ("scrum_planning_poker", "Planning Poker", "dice-5"),
+        ("scrum_sprint_review", "Sprint Review", "messages-square"),
+        ("scrum_retro", "Retro", "repeat"),
+        ("scrum_metrics", "Métricas", "line-chart"),
+    ]):
+        blocks.append(
+            BlockDef(
+                block_slug="custom",
+                key=wb_key,
+                label=label,
+                config={"custom_view_key": f"software.{wb_key}", "view_type": "custom"},
+                orden=140 + i * 10,
+                template_slugs=_SCRUM_SLUGS,
+            )
+        )
     return blocks
 
 
@@ -466,6 +599,61 @@ def _software_views() -> list[ViewDef]:
                 },
                 required_capabilities=[cap],
                 orden=100 + i * 10,
+                template_slugs=_SCRUM_SLUGS,
+                view_type="custom",
+            )
+        )
+    views.append(
+        ViewDef(
+            key="scrum_metrics",
+            label="Métricas",
+            route="scrum/metrics",
+            icon="line-chart",
+            section="plan",
+            layout={
+                "blocks": [{"project_block_key": "scrum_metrics", "width": "full"}],
+                "nav": {
+                    "group": "scrum",
+                    "group_order": 3,
+                    "primary": False,
+                },
+            },
+            required_capabilities=[WORKBENCH_SCRUM_METRICS],
+            orden=130,
+            template_slugs=_SCRUM_SLUGS,
+            view_type="custom",
+        )
+    )
+    ceremony_views = [
+        ("scrum_refinement", "Refinement", "scrum/refinement", "list-checks", WORKBENCH_SCRUM_REFINEMENT, 0, True),
+        ("scrum_capacity", "Capacity", "scrum/capacity", "gauge", WORKBENCH_SCRUM_CAPACITY, 1, False),
+        ("scrum_impediments", "Impedimentos", "scrum/impediments", "alert-triangle", WORKBENCH_SCRUM_IMPEDIMENTS, 2, False),
+        ("scrum_daily", "Daily", "scrum/daily", "timer-reset", WORKBENCH_SPRINT_BOARD, 3, False),
+        ("scrum_planning_poker", "Planning Poker", "scrum/planning-poker", "dice-5", WORKBENCH_SPRINT_BOARD, 4, False),
+        ("scrum_sprint_review", "Sprint Review", "scrum/sprint-review", "messages-square", WORKBENCH_SPRINT_BOARD, 5, False),
+        ("scrum_retro", "Retro", "scrum/retro", "repeat", WORKBENCH_SPRINT_BOARD, 6, False),
+    ]
+    for i, (wb_key, label, route, icon, cap, group_order, is_primary) in enumerate(ceremony_views):
+        nav: dict[str, Any] = {
+            "group": "ceremonies",
+            "group_order": group_order,
+            "primary": is_primary,
+        }
+        if is_primary:
+            nav["group_label"] = "Ceremonias"
+        views.append(
+            ViewDef(
+                key=wb_key,
+                label=label,
+                route=route,
+                icon=icon,
+                section="plan",
+                layout={
+                    "blocks": [{"project_block_key": wb_key, "width": "full"}],
+                    "nav": nav,
+                },
+                required_capabilities=[cap],
+                orden=200 + i * 10,
                 template_slugs=_SCRUM_SLUGS,
                 view_type="custom",
             )
