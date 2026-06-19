@@ -12,7 +12,7 @@ from app.models.entities import Project, User
 from app.services.packs import seed_project_from_pack
 from app.services.records.generic_store import list_records, transition_record
 from app.services.scrum_effort import get_scrum_item_sprint_id, is_record_in_product_backlog
-from app.services.scrum_tasks import create_epic_task, create_story_task
+from app.services.scrum_tasks import create_dev_task, create_epic_task, create_story_task
 from app.services.scrum_v2_structure import (
     get_product_backlog_milestone,
     list_stories_for_sprint,
@@ -156,6 +156,15 @@ def test_dev_task_rollup_and_uat(db_session: Session):
     )
     db_session.commit()
 
+    create_dev_task(
+        db_session,
+        project,
+        titulo="Historia UAT",
+        created_by=pm_id,
+        story_id=story.id,
+    )
+    db_session.commit()
+
     transition_record(
         db_session,
         project,
@@ -189,7 +198,7 @@ def test_dev_task_rollup_and_uat(db_session: Session):
     assert story.estado == "uat"
 
 
-def test_create_story_spawns_dev_task(db_session: Session):
+def test_create_story_does_not_spawn_dev_task(db_session: Session):
     project, pm_id, _ = _seed_scrum_project(db_session)
     from app.services.scrum_v2_structure import list_dev_tasks_for_story
 
@@ -197,16 +206,14 @@ def test_create_story_spawns_dev_task(db_session: Session):
     story = create_story_task(
         db_session,
         project,
-        titulo="Historia con tarea",
+        titulo="Historia sin tarea auto",
         created_by=pm_id,
         epic_task_id=epic.id,
     )
     db_session.commit()
 
     dev_tasks = list_dev_tasks_for_story(db_session, project.id, story.id)
-    assert len(dev_tasks) == 1
-    assert dev_tasks[0].titulo == "Historia con tarea"
-    assert dev_tasks[0].parent_id == story.parent_id
+    assert dev_tasks == []
 
 
 def test_in_product_backlog_list_filter(db_session: Session):
@@ -234,7 +241,6 @@ def test_in_product_backlog_list_filter(db_session: Session):
 def test_scrum_rejects_task_dependency_on_epic(db_session: Session):
     from fastapi import HTTPException
 
-    from app.services.scrum_v2_structure import list_dev_tasks_for_story
     from app.services.task_dependencies import create_dependency
 
     project, pm_id, dev_id = _seed_scrum_project(db_session)
@@ -247,7 +253,14 @@ def test_scrum_rejects_task_dependency_on_epic(db_session: Session):
         epic_task_id=epic.id,
     )
     db_session.commit()
-    dev = list_dev_tasks_for_story(db_session, project.id, story.id)[0]
+    dev = create_dev_task(
+        db_session,
+        project,
+        titulo="Tarea dev",
+        created_by=pm_id,
+        story_id=story.id,
+    )
+    db_session.commit()
 
     with pytest.raises(HTTPException) as exc:
         create_dependency(
@@ -264,7 +277,6 @@ def test_scrum_rejects_task_dependency_on_epic(db_session: Session):
 def test_scrum_rejects_cross_story_task_on_story(db_session: Session):
     from fastapi import HTTPException
 
-    from app.services.scrum_v2_structure import list_dev_tasks_for_story
     from app.services.task_dependencies import create_dependency
 
     project, pm_id, dev_id = _seed_scrum_project(db_session)
@@ -284,7 +296,14 @@ def test_scrum_rejects_cross_story_task_on_story(db_session: Session):
         epic_task_id=epic.id,
     )
     db_session.commit()
-    dev_b = list_dev_tasks_for_story(db_session, project.id, story_b.id)[0]
+    dev_b = create_dev_task(
+        db_session,
+        project,
+        titulo="Tarea B",
+        created_by=pm_id,
+        story_id=story_b.id,
+    )
+    db_session.commit()
 
     with pytest.raises(HTTPException) as exc:
         create_dependency(

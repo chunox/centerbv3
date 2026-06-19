@@ -401,6 +401,20 @@ def default_task_workflow() -> dict[str, Any]:
         "terminal_states": ["completed", "cancel"],
         "transitions": [
             {
+                "id": "completar",
+                "label": "Completar",
+                "from": ["backlog", "to_do", "in_progress", "ready_for_test"],
+                "to": "completed",
+                "required_capabilities": [STORY_TRANSITION_COMPLETAR, KANBAN_TASK_MOVE],
+            },
+            {
+                "id": "reabrir",
+                "label": "Reabrir",
+                "from": ["completed"],
+                "to": "to_do",
+                "required_capabilities": [STORY_TRANSITION_COMPLETAR, KANBAN_TASK_MOVE],
+            },
+            {
                 "id": "move",
                 "label": "Mover",
                 "from": ["backlog", "to_do", "in_progress", "ready_for_test"],

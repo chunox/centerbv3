@@ -262,6 +262,12 @@ def _handle_reparent_to_sprint(
         sprint_id = uuid.UUID(str(raw))
     except (TypeError, ValueError):
         return
+    from app.services.scrum_v2_structure import is_scrum_story, reparent_scrum_story_to_sprint
+
+    if is_scrum_story(row):
+        reparent_scrum_story_to_sprint(db, project, row, sprint_id)
+        return
+
     sprint = db.get(ProjectRecord, sprint_id)
     if sprint is None or sprint.project_id != project.id:
         return
@@ -270,13 +276,6 @@ def _handle_reparent_to_sprint(
     from app.services.scrum_effort import maybe_sync_scrum_on_sprint_assignment
 
     maybe_sync_scrum_on_sprint_assignment(db, project, row)
-    from app.services.scrum_v2_structure import is_scrum_story, list_dev_tasks_for_story
-
-    if is_scrum_story(row):
-        for dev in list_dev_tasks_for_story(db, project.id, row.id):
-            dev.parent_id = sprint_id
-        db.flush()
-
     from app.services.scrum_metrics import sync_sprint_horas_planeadas
 
     sync_sprint_horas_planeadas(db, sprint, commit=False)

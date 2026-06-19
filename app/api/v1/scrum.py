@@ -14,6 +14,7 @@ from app.api.v1.auth_deps import get_current_actor_id
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.domain.capabilities import (
+    SCOPE_SPRINT_EDIT,
     WORKBENCH_SCRUM_CAPACITY,
     WORKBENCH_SCRUM_IMPEDIMENTS,
     WORKBENCH_SPRINT_BOARD,
@@ -36,6 +37,7 @@ from app.services.scrum_ceremonies import (
 )
 from app.services.scrum_effort import batch_feature_effort_hours
 from app.services.scrum_metrics import list_sprint_velocity, sync_sprint_horas_completadas
+from app.services.scrum_sprint_close import close_scrum_sprint
 from app.services.scrum_structure import list_features_for_sprint
 from app.services.workflow.authorize import assert_capability
 
@@ -432,6 +434,47 @@ def post_sync_sprint_velocity(
         "sprint_id": str(sprint_id),
         "horas_completadas": total,
         "velocidad_real": total,
+    }
+
+
+class CloseSprintBody(BaseModel):
+    carry_over_to_next_sprint: bool = False
+
+
+@router.post("/{project_id}/scrum/sprints/{sprint_id}/close")
+def post_close_sprint(
+    project_id: uuid.UUID,
+    sprint_id: uuid.UUID,
+    body: CloseSprintBody,
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    project = get_project_or_404(project_id, db)
+    assert_capability(db, project.id, actor_user_id, SCOPE_SPRINT_EDIT)
+
+    sprint = db.get(ProjectRecord, sprint_id)
+    if sprint is None or sprint.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Sprint no encontrado")
+
+    result = close_scrum_sprint(
+        db,
+        project,
+        sprint,
+        actor_user_id,
+        carry_over_to_next_sprint=body.carry_over_to_next_sprint,
+    )
+    db.commit()
+    db.refresh(sprint)
+
+    return {
+        "sprint_id": str(result.sprint_id),
+        "estado": sprint.estado,
+        "target_sprint_id": (
+            str(result.target_sprint_id) if result.target_sprint_id is not None else None
+        ),
+        "carried_over_story_ids": [str(story_id) for story_id in result.carried_over_story_ids],
+        "horas_completadas": result.horas_completadas,
+        "velocidad_real": result.horas_completadas,
     }
 
 

@@ -96,13 +96,6 @@ def create_story_task(
         predecessor_id=story.id,
         successor_id=epic_task_id,
     )
-    create_dev_task(
-        db,
-        project,
-        titulo=titulo,
-        created_by=created_by,
-        story_id=story.id,
-    )
     return story
 
 

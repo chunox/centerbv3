@@ -69,6 +69,15 @@ def _dto_to_read(dto, *, esfuerzo_horas: float | None = None) -> RecordRead:
     )
 
 
+def _effort_hours_for_dto(db: Session, project, dto) -> float | None:
+    if dto.record_type not in ("feature", "task"):
+        return None
+    effort_map = get_delivery_service(project).list_effort_map(
+        db, project, dto.record_type, [dto]
+    )
+    return effort_map.get(dto.id)
+
+
 def _assert_record_cap(db: Session, project_id: UUID, user_id: UUID, cap: str) -> None:
     assert_record_cap(db, project_id, user_id, cap)
 
@@ -270,7 +279,7 @@ def get_project_record(
     dto, _ = registry.get(db, ref)
     if dto is None:
         raise HTTPException(status_code=404, detail="Registro no encontrado")
-    return _dto_to_read(dto)
+    return _dto_to_read(dto, esfuerzo_horas=_effort_hours_for_dto(db, project, dto))
 
 
 @router.patch("/{project_id}/records/{record_id}", response_model=RecordRead)
@@ -349,7 +358,25 @@ def update_project_record(
         db.refresh(row)
         dto = generic_store.get_record(db, row.id) or dto
     db.commit()
-    return _dto_to_read(dto)
+    return _dto_to_read(dto, esfuerzo_horas=_effort_hours_for_dto(db, project, dto))
+
+
+def _task_delete_capabilities(row: ProjectRecord) -> list[str]:
+    caps = ["record.task.delete", "record.task.edit"]
+    role = (row.data or {}).get("scrum_role")
+    if role == "epic":
+        caps.extend(["scope.epic.delete", "record.epic.delete"])
+    elif role == "story":
+        caps.extend(
+            [
+                "scope.story.edit",
+                "scope.feature.edit",
+                "scope.feature.cancel",
+            ]
+        )
+    else:
+        caps.extend(["scope.story.edit", "kanban.task.cancel"])
+    return list(dict.fromkeys(caps))
 
 
 @router.delete("/{project_id}/records/{record_id}", status_code=204)
@@ -363,10 +390,13 @@ def delete_project_record(
     row = db.get(ProjectRecord, record_id)
     if row is None or row.project_id != project.id:
         raise HTTPException(status_code=404, detail="Registro no encontrado")
-    cap = f"record.{row.record_type}.delete"
-    if not is_record_capability(cap):
-        cap = f"record.{row.record_type}.edit"
-    _assert_record_cap(db, project.id, actor_user_id, cap)
+    if row.record_type == "task":
+        assert_any_capability(db, project.id, actor_user_id, _task_delete_capabilities(row))
+    else:
+        cap = f"record.{row.record_type}.delete"
+        if not is_record_capability(cap):
+            cap = f"record.{row.record_type}.edit"
+        _assert_record_cap(db, project.id, actor_user_id, cap)
     if row.record_type == "milestone":
         from app.services.deletions import delete_milestone
 

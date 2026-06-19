@@ -36,7 +36,7 @@ def validate_record_data(
 ) -> dict[str, Any]:
     defs = list_field_defs(db, project_id, entity_type_key)
     if not defs:
-        return data
+        return _enforce_task_hour_fields(entity_type_key, data)
 
     out = dict(data)
     for fd in defs:
@@ -77,7 +77,7 @@ def validate_record_data(
                 if config.get("allow_decimal"):
                     parsed = float(value)
                     step = float(config.get("step") or 0.5)
-                    min_val = float(config.get("min") or 0)
+                    min_val = float(config.get("min") if config.get("min") is not None else 0)
                     if parsed < min_val:
                         raise HTTPException(
                             status_code=422,
@@ -100,6 +100,30 @@ def validate_record_data(
                 ) from exc
         if fd.field_type == "checkbox":
             out[key] = bool(value)
+    return _enforce_task_hour_fields(entity_type_key, out)
+
+
+def _enforce_task_hour_fields(
+    entity_type_key: str, data: dict[str, Any]
+) -> dict[str, Any]:
+    """Salvaguarda estimacion_horas aunque falte field definition en el proyecto."""
+    if entity_type_key != "task" or "estimacion_horas" not in data:
+        return data
+    value = data.get("estimacion_horas")
+    if value is None or value == "":
+        return data
+    out = dict(data)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422, detail="Estimación (h) debe ser numérico"
+        ) from exc
+    if parsed < 0:
+        raise HTTPException(
+            status_code=422, detail="Estimación (h) debe ser >= 0"
+        )
+    out["estimacion_horas"] = parsed
     return out
 
 

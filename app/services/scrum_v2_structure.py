@@ -247,6 +247,47 @@ def story_in_product_backlog(story: ProjectRecord, backlog: ProjectRecord | None
     return story.parent_id == backlog.id
 
 
+def reparent_scrum_story_to_sprint(
+    db: Session,
+    project: Project,
+    story: ProjectRecord,
+    sprint_id: uuid.UUID,
+    *,
+    sync_source_sprint: bool = True,
+) -> None:
+    """Mueve historia (y dev tasks) a un sprint sin cambiar su estado de workflow."""
+    sprint = db.get(ProjectRecord, sprint_id)
+    if sprint is None or sprint.project_id != project.id or not is_sprint_record(sprint):
+        return
+
+    source_sprint_id = story.parent_id
+    story.parent_id = sprint_id
+    db.flush()
+
+    from app.services.scrum_effort import maybe_sync_scrum_on_sprint_assignment
+
+    maybe_sync_scrum_on_sprint_assignment(db, project, story)
+
+    if is_scrum_story(story):
+        for dev in list_dev_tasks_for_story(db, project.id, story.id):
+            dev.parent_id = sprint_id
+        db.flush()
+
+    from app.services.scrum_metrics import sync_sprint_horas_planeadas
+
+    sync_sprint_horas_planeadas(db, sprint, commit=False)
+
+    if sync_source_sprint and source_sprint_id is not None:
+        previous_sprint = db.get(ProjectRecord, source_sprint_id)
+        if (
+            previous_sprint is not None
+            and previous_sprint.project_id == project.id
+            and is_sprint_record(previous_sprint)
+            and previous_sprint.id != sprint_id
+        ):
+            sync_sprint_horas_planeadas(db, previous_sprint, commit=False)
+
+
 def apply_scrum_v2_structure(db: Session, project: Project) -> None:
     """Idempotente: task-first Scrum con tipos sprint/product_backlog propios."""
     if not is_scrum_template(getattr(project, "template_slug", None)):
