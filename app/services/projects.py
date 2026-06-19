@@ -60,11 +60,13 @@ def update_project(
     db: Session,
     project: Project,
     payload: ProjectUpdate,
+    *,
+    actor_user_id: uuid.UUID,
 ) -> None:
     assert_project_active(project)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_SETTINGS_EDIT)
+    assert_capability(db, project.id, actor_user_id, PROJECT_SETTINGS_EDIT)
 
-    changes = payload.model_dump(exclude_unset=True, exclude={"actor_user_id"})
+    changes = payload.model_dump(exclude_unset=True)
     if not changes:
         return
 
@@ -84,7 +86,7 @@ def update_project(
         record_audit_log(
             db,
             project_id=project.id,
-            user_id=payload.actor_user_id,
+            user_id=actor_user_id,
             entidad_tipo="project",
             entidad_id=project.id,
             accion="updated",

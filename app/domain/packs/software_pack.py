@@ -90,12 +90,27 @@ def _software_entity_types() -> list[EntityTypeDef]:
             key="impediment",
             label="Impedimento",
             hierarchy="child",
-            parent_type="milestone",
-            parent_type_keys=["milestone"],
+            parent_type="sprint",
+            parent_type_keys=["sprint"],
             icon="alert-triangle",
             traits={"comments": True},
             orden=6,
-            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        EntityTypeDef(
+            key="product_backlog",
+            label="Product Backlog",
+            hierarchy="root",
+            icon="list-ordered",
+            traits={"comments": True, "scope_chain": True},
+            orden=7,
+        ),
+        EntityTypeDef(
+            key="sprint",
+            label="Sprint",
+            hierarchy="root",
+            icon="timer",
+            traits={"schedulable": True, "comments": True, "scope_chain": True},
+            orden=8,
         ),
     ]
 
@@ -192,12 +207,30 @@ def _software_field_definitions() -> list[FieldDefinitionDef]:
         ),
         # ── Scrum (solo t6/t7) ──────────────────────────────────────────────
         FieldDefinitionDef(
-            entity_type_key="milestone",
+            entity_type_key="sprint",
             field_key="sprint_goal",
             label="Objetivo del Sprint",
             field_type="textarea",
             config={},
-            orden=10,
+            orden=1,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="sprint",
+            field_key="horas_planeadas",
+            label="Horas planeadas",
+            field_type="number",
+            config={"min": 0},
+            orden=2,
+            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
+        ),
+        FieldDefinitionDef(
+            entity_type_key="sprint",
+            field_key="capacity_plan",
+            label="Plan de capacidad",
+            field_type="textarea",
+            config={"format": "json_array"},
+            orden=3,
             template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
         ),
         FieldDefinitionDef(
@@ -205,7 +238,7 @@ def _software_field_definitions() -> list[FieldDefinitionDef]:
             field_key="sprint_id",
             label="Sprint",
             field_type="relation",
-            config={"relation_entity_type": "milestone"},
+            config={"relation_entity_type": "sprint"},
             orden=20,
             template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
         ),
@@ -228,15 +261,6 @@ def _software_field_definitions() -> list[FieldDefinitionDef]:
             template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
         ),
         FieldDefinitionDef(
-            entity_type_key="milestone",
-            field_key="capacity_plan",
-            label="Plan de capacidad",
-            field_type="textarea",
-            config={"format": "json_array"},
-            orden=23,
-            template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
-        ),
-        FieldDefinitionDef(
             entity_type_key="impediment",
             field_key="titulo",
             label="Título",
@@ -250,7 +274,7 @@ def _software_field_definitions() -> list[FieldDefinitionDef]:
             field_key="sprint_id",
             label="Sprint",
             field_type="relation",
-            config={"relation_entity_type": "milestone"},
+            config={"relation_entity_type": "sprint"},
             orden=2,
             template_slugs=["t6_scrum_interno", "t7_scrum_cliente"],
         ),
@@ -324,6 +348,8 @@ def _software_custom_view_key(wb_key: str) -> str | None:
         "scrum_planning_poker": "software.scrum_planning_poker",
         "scrum_sprint_review": "software.scrum_sprint_review",
         "scrum_retro": "software.scrum_retro",
+        "scrum_scope": "software.scrum_scope",
+        "scrum_kanban": "software.scrum_kanban",
     }
     return mapping.get(wb_key)
 
@@ -337,7 +363,9 @@ def _software_entity_type(wb_key: str) -> str | None:
     return mapping.get(wb_key)
 
 
-_SCRUM_SLUGS = ["t6_scrum_interno", "t7_scrum_cliente"]
+from app.domain.project_templates import SCRUM_TEMPLATE_SLUGS
+
+_SCRUM_SLUGS = sorted(SCRUM_TEMPLATE_SLUGS)
 _INTERNO_SLUGS = ["t3_interno_clasico", "t4_interno_pm_tecnico", "t6_scrum_interno"]
 
 
@@ -413,7 +441,7 @@ def _software_blocks() -> list[BlockDef]:
             )
         )
 
-    # Scope Scrum v2: sprint (milestone) → task
+    # Scope Scrum v2: product_backlog / sprint → task
     blocks.append(
         BlockDef(
             block_slug="scope",
@@ -421,10 +449,11 @@ def _software_blocks() -> list[BlockDef]:
             label="Alcance",
             config={
                 "entity_type_key": None,
-                "view_type": "scope",
+                "view_type": "custom",
+                "custom_view_key": "software.scrum_scope",
                 "scope_config": {
                     "variant": "editorial",
-                    "levels": ["milestone", "task"],
+                    "levels": ["product_backlog", "sprint", "task"],
                     "depth_actions": "any_level",
                     "show_summary": True,
                     "allow_reparent": True,
@@ -439,7 +468,7 @@ def _software_blocks() -> list[BlockDef]:
     kanban_config: dict[str, Any] = {
         "entity_type_key": "task",
         "view_type": "custom",
-        "custom_view_key": _software_custom_view_key("kanban"),
+        "custom_view_key": "software.scrum_kanban",
         "board_config": {
             "variant": "editorial",
             "filters": {"search": True, "parent_chain": True, "group_by_parent": True},
@@ -688,16 +717,18 @@ def _software_roles() -> list[PackRoleDef]:
 
 def _software_workflow_profiles() -> dict[str, dict[str, dict[str, Any]]]:
     from app.domain.workflow_templates import workflow_for_template
-    from app.domain.project_templates import PROJECT_TEMPLATES
+    from app.domain.project_templates import PROJECT_TEMPLATES, SCRUM_TEMPLATE_SLUGS
 
-    entity_types = ("feature", "task", "query", "report", "milestone")
-    return {
-        template_slug: {
+    waterfall_entities = ("feature", "task", "query", "report", "milestone")
+    scrum_entities = ("task", "query", "report", "sprint", "product_backlog")
+    profiles: dict[str, dict[str, dict[str, Any]]] = {}
+    for template_slug in PROJECT_TEMPLATES:
+        entity_types = scrum_entities if template_slug in SCRUM_TEMPLATE_SLUGS else waterfall_entities
+        profiles[template_slug] = {
             et: workflow_for_template(template_slug, et)
             for et in entity_types
         }
-        for template_slug in PROJECT_TEMPLATES
-    }
+    return profiles
 
 
 def pack_software_manifest() -> PackManifest:

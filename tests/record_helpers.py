@@ -73,6 +73,34 @@ def create_milestone_record(
     )
 
 
+def create_sprint_record(
+    session: Session,
+    project: Project,
+    *,
+    created_by: uuid.UUID,
+    nombre: str = "Sprint 1",
+    orden: int = 1,
+    sprint_goal: str | None = "Goal",
+    horas_planeadas: float | None = None,
+) -> ProjectRecord:
+    data: dict = {}
+    if sprint_goal:
+        data["sprint_goal"] = sprint_goal
+    if horas_planeadas is not None:
+        data["horas_planeadas"] = horas_planeadas
+    return create_record(
+        session,
+        project,
+        entity_type="sprint",
+        titulo=nombre,
+        created_by=created_by,
+        data=data,
+        fecha_inicio=date(2026, 3, 1),
+        fecha_fin=date(2026, 3, 14),
+        orden=orden,
+    )
+
+
 def create_feature_record(
     session: Session,
     project: Project,

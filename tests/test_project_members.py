@@ -5,43 +5,14 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.database import Base, get_db
-from app.main import app
 from app.models.entities import ProjectMember, ProjectRole, User
 from app.schemas.projects import ProjectMemberUpdate
 from app.services.project_members import remove_project_member, update_project_member_role
-from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org, create_user
-
-
-@pytest.fixture
-def db_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-@pytest.fixture
-def api_client(db_session: Session):
-    def _override_get_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = _override_get_db
-    with TestClient(app) as client:
-        yield client
-    app.dependency_overrides.clear()
+from tests.conftest import auth_headers
+from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
 
 
 def _role_id(session: Session, project_id, slug: str):
@@ -76,7 +47,8 @@ def test_cambiar_rol_miembro(db_session: Session):
         db_session,
         project,
         member,
-        ProjectMemberUpdate(actor_user_id=pm_id, role_id=qa_role_id),
+        ProjectMemberUpdate(role_id=qa_role_id),
+        actor_user_id=pm_id,
     )
     db_session.commit()
 
@@ -96,7 +68,8 @@ def test_cambiar_rol_duplicado_falla(db_session: Session):
             db_session,
             project,
             member,
-            ProjectMemberUpdate(actor_user_id=pm_id, role_id=qa_role_id),
+            ProjectMemberUpdate(role_id=qa_role_id),
+            actor_user_id=pm_id,
         )
     assert exc.value.status_code == 409
 
@@ -107,7 +80,8 @@ def test_patch_miembro_api(db_session: Session, api_client: TestClient):
 
     response = api_client.patch(
         f"/api/v1/projects/{project.id}/members/{member.id}",
-        json={"actor_user_id": str(pm_id), "role_id": str(qa_role_id)},
+        json={"role_id": str(qa_role_id)},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 200
     assert response.json()["role_slug"] == "qa"
@@ -148,6 +122,6 @@ def test_delete_miembro_api(db_session: Session, api_client: TestClient):
 
     response = api_client.delete(
         f"/api/v1/projects/{project.id}/members/{member.id}",
-        params={"actor_user_id": str(pm_id)},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 204

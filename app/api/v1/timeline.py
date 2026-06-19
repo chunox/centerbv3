@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth_deps import get_current_actor_id
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.schemas.timeline import ProjectTimelineRead
@@ -20,10 +21,7 @@ def get_project_timeline(
     incluir_plan: bool = Query(default=True),
     eventos_limit: int = Query(default=200, ge=1, le=500),
     eventos_offset: int = Query(default=0, ge=0),
-    viewer_user_id: UUID | None = Query(
-        default=None,
-        description="Filtra eventos por capacidades del viewer (demo sin JWT)",
-    ),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     """Timeline unificado: eventos (audit + comentarios) y plan (hitos + features)."""
@@ -37,5 +35,5 @@ def get_project_timeline(
         incluir_plan=incluir_plan,
         eventos_limit=eventos_limit,
         eventos_offset=eventos_offset,
-        viewer_user_id=viewer_user_id,
+        viewer_user_id=actor_user_id,
     )

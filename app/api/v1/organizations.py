@@ -2,16 +2,14 @@
 API de organizaciones (tenant SaaS).
 
 CRUD de org, miembros e invitaciones. Crear org requiere JWT.
-En demo_mode, GET /organizations acepta ?user_id= sin Bearer.
 """
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.v1.auth_deps import AuthContext, get_current_auth, get_optional_auth, get_organization_or_404
-from app.config import settings
+from app.api.v1.auth_deps import AuthContext, get_current_auth, get_organization_or_404
 from app.database import get_db
 from app.models.entities import OrganizationMember, User
 from app.schemas.organizations import (
@@ -41,15 +39,10 @@ router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 @router.get("", response_model=list[OrganizationRead])
 def list_organizations(
-    user_id: UUID | None = Query(default=None, description="Demo sin JWT"),
-    auth: AuthContext | None = Depends(get_optional_auth),
+    auth: AuthContext = Depends(get_current_auth),
     db: Session = Depends(get_db),
 ):
-    if auth is not None:
-        return list_user_organizations(db, auth.user.id)
-    if settings.demo_mode and user_id is not None:
-        return list_user_organizations(db, user_id)
-    raise HTTPException(status_code=401, detail="No autenticado")
+    return list_user_organizations(db, auth.user.id)
 
 
 @router.post("", response_model=OrganizationRead, status_code=201)

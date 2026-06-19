@@ -1,13 +1,13 @@
 """Catálogo de project packs."""
 from __future__ import annotations
 
-import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth_deps import get_current_actor_id
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.domain.capabilities import PROJECT_ROLES_MANAGE
@@ -68,8 +68,8 @@ def get_pack(slug: str, db: Session = Depends(get_db)):
 def apply_pack_to_project(
     project_id: UUID,
     pack_slug: str,
-    actor_user_id: UUID,
     template_slug: str | None = None,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)

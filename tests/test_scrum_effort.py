@@ -159,7 +159,7 @@ def test_sync_feature_dates_from_sprint(db_session: Session):
     sprint = ProjectRecord(
         id=uuid4(),
         project_id=project_id,
-        record_type="milestone",
+        record_type="sprint",
         titulo="Sprint 1",
         estado="en_progreso",
         created_by=pm_id,
@@ -192,7 +192,7 @@ def test_propagate_sprint_dates_to_features(db_session: Session):
     sprint = ProjectRecord(
         id=uuid4(),
         project_id=project_id,
-        record_type="milestone",
+        record_type="sprint",
         titulo="Sprint 1",
         estado="en_progreso",
         created_by=pm_id,

@@ -1,4 +1,4 @@
-"""Scrum v2: workflow de historias (feature) sigue en access-context."""
+"""Scrum v2: workflow de historias expuesto como story (no feature phantom)."""
 from datetime import date
 from uuid import uuid4
 
@@ -32,7 +32,7 @@ def db_session():
         session.close()
 
 
-def test_scrum_project_exposes_feature_workflow_for_stories(db_session: Session):
+def test_scrum_project_exposes_story_workflow_not_feature(db_session: Session):
     pm_id = uuid4()
     org = create_organization(db_session, owner_id=pm_id)
     db_session.add(
@@ -68,5 +68,7 @@ def test_scrum_project_exposes_feature_workflow_for_stories(db_session: Session)
         )
     )
     assert "feature" not in record_types
-    assert "feature" in types
-    assert "feature" in workflow_entity_types(db_session, project.id)
+    assert "feature" not in types
+    assert "task" in types
+    assert "sprint" in types or "product_backlog" in types
+    assert "feature" not in workflow_entity_types(db_session, project.id)

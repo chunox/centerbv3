@@ -4,9 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth_deps import get_current_actor_id
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
-from app.models.entities import Notification, User
+from app.models.entities import Notification
 from app.schemas.notifications import (
     NotificationCreate,
     NotificationRead,
@@ -20,13 +21,6 @@ from app.services.notifications import (
 from app.services.record_validation import AUDIT_RECORD_TYPE, assert_project_record
 
 router = APIRouter(tags=["notifications"])
-
-
-def _get_user_or_404(user_id: UUID, db: Session) -> User:
-    user = db.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    return user
 
 
 def _validate_entidad_in_project(
@@ -47,6 +41,11 @@ def _validate_entidad_in_project(
     )
 
 
+def _assert_notification_owner(user_id: UUID, actor_user_id: UUID) -> None:
+    if user_id != actor_user_id:
+        raise HTTPException(status_code=403, detail="No podés acceder a notificaciones de otro usuario")
+
+
 @router.get("/{user_id}/notifications", response_model=list[NotificationRead])
 def list_notifications(
     user_id: UUID,
@@ -54,9 +53,10 @@ def list_notifications(
     project_id: UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
-    _get_user_or_404(user_id, db)
+    _assert_notification_owner(user_id, actor_user_id)
     stmt = select(Notification).where(Notification.user_id == user_id)
     if leida is not None:
         stmt = stmt.where(Notification.leida == leida)
@@ -73,9 +73,10 @@ def list_notifications(
 def create_user_notification(
     user_id: UUID,
     payload: NotificationCreate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
-    _get_user_or_404(user_id, db)
+    _assert_notification_owner(user_id, actor_user_id)
     get_project_or_404(payload.project_id, db)
     _validate_entidad_in_project(
         payload.entidad_tipo, payload.entidad_id, payload.project_id, db
@@ -96,9 +97,12 @@ def create_user_notification(
 
 @router.get("/{user_id}/notifications/{notification_id}", response_model=NotificationRead)
 def get_notification(
-    user_id: UUID, notification_id: UUID, db: Session = Depends(get_db)
+    user_id: UUID,
+    notification_id: UUID,
+    actor_user_id: UUID = Depends(get_current_actor_id),
+    db: Session = Depends(get_db),
 ):
-    _get_user_or_404(user_id, db)
+    _assert_notification_owner(user_id, actor_user_id)
     notification = db.get(Notification, notification_id)
     if not notification or notification.user_id != user_id:
         raise HTTPException(status_code=404, detail="Notificación no encontrada")
@@ -110,9 +114,10 @@ def update_notification(
     user_id: UUID,
     notification_id: UUID,
     payload: NotificationUpdate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
-    _get_user_or_404(user_id, db)
+    _assert_notification_owner(user_id, actor_user_id)
     notification = db.get(Notification, notification_id)
     if not notification or notification.user_id != user_id:
         raise HTTPException(status_code=404, detail="Notificación no encontrada")

@@ -1,8 +1,7 @@
 """
 Configuración vía variables de entorno (.env).
 
-demo_mode=True permite ?user_id= en algunos endpoints sin Bearer (desarrollo).
-jwt_* define el token usado por el frontend demo.
+jwt_* define el token de sesión Bearer.
 """
 from pathlib import Path
 from uuid import UUID
@@ -28,7 +27,6 @@ class Settings(BaseSettings):
     uploads_dir: str = _DEFAULT_UPLOADS.as_posix()
     upload_max_bytes: int = 25 * 1024 * 1024
 
-    demo_mode: bool = True
     communication_rules_only: bool = True
     jwt_secret: str = "center-v3-dev-secret-change-in-prod"
     jwt_algorithm: str = "HS256"

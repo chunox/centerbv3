@@ -1,51 +1,13 @@
 """Tests de hub_entries — centro del proyecto."""
 
-from datetime import date
-from uuid import uuid4
+from uuid import UUID
 
-import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.orm import Session
 
-from app.database import Base, get_db
-from app.main import app
-from app.models.entities import HubEntry, ProjectMember
-from app.services.auth_tokens import create_access_token
+from app.models.entities import HubEntry
+from tests.conftest import auth_headers
 from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org, create_user
-
-
-@pytest.fixture
-def db_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-@pytest.fixture
-def api_client(db_session: Session):
-    def _override_get_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = _override_get_db
-    with TestClient(app) as client:
-        yield client
-    app.dependency_overrides.clear()
-
-
-def _auth_headers(user_id, org_id):
-    token = create_access_token(user_id=user_id, organization_id=org_id)
-    return {"Authorization": f"Bearer {token}"}
 
 
 def _seed_project(session: Session):
@@ -54,23 +16,21 @@ def _seed_project(session: Session):
     qa = create_user(session, email="qa@hub.test")
     org = create_organization(session, owner_id=pm.id)
     project = create_project_for_org(session, pm.id, org)
-    add_member_with_slug(session, project, dev.id, 'dev')
-    add_member_with_slug(session, project, qa.id, 'qa')
+    add_member_with_slug(session, project, dev.id, "dev")
+    add_member_with_slug(session, project, qa.id, "qa")
     session.commit()
     return pm, dev, qa, org, project
 
 
 def test_dev_can_create_update(api_client: TestClient, db_session: Session):
-    pm, dev, _qa, org, project = _seed_project(db_session)
+    _pm, dev, _qa, _org, project = _seed_project(db_session)
     resp = api_client.post(
         f"/api/v1/projects/{project.id}/hub-entries",
         json={
-            "author_id": str(dev.id),
             "tipo": "update",
             "contenido": "Avance en login OAuth",
-            "visibilidad": "publico",
         },
-        headers=_auth_headers(dev.id, org.id),
+        headers=auth_headers(dev.id),
     )
     assert resp.status_code == 201
     data = resp.json()
@@ -80,31 +40,27 @@ def test_dev_can_create_update(api_client: TestClient, db_session: Session):
 
 
 def test_note_requires_title(api_client: TestClient, db_session: Session):
-    pm, dev, _qa, org, project = _seed_project(db_session)
+    pm, _dev, _qa, org, project = _seed_project(db_session)
     resp = api_client.post(
         f"/api/v1/projects/{project.id}/hub-entries",
         json={
-            "author_id": str(pm.id),
             "tipo": "note",
             "contenido": "Contenido de la nota",
-            "visibilidad": "publico",
         },
-        headers=_auth_headers(pm.id, org.id),
+        headers=auth_headers(pm.id, org.id),
     )
     assert resp.status_code == 422
 
 
 def test_qa_cannot_create(api_client: TestClient, db_session: Session):
-    _pm, _dev, qa, org, project = _seed_project(db_session)
+    _pm, _dev, qa, _org, project = _seed_project(db_session)
     resp = api_client.post(
         f"/api/v1/projects/{project.id}/hub-entries",
         json={
-            "author_id": str(qa.id),
             "tipo": "update",
             "contenido": "Intento QA",
-            "visibilidad": "publico",
         },
-        headers=_auth_headers(qa.id, org.id),
+        headers=auth_headers(qa.id),
     )
     assert resp.status_code == 403
 
@@ -114,55 +70,48 @@ def test_interno_hidden_from_list_filter(api_client: TestClient, db_session: Ses
     api_client.post(
         f"/api/v1/projects/{project.id}/hub-entries",
         json={
-            "author_id": str(pm.id),
             "tipo": "update",
             "contenido": "Público",
-            "visibilidad": "publico",
         },
-        headers=_auth_headers(pm.id, org.id),
+        headers=auth_headers(pm.id, org.id),
     )
     api_client.post(
         f"/api/v1/projects/{project.id}/hub-entries",
         json={
-            "author_id": str(pm.id),
             "tipo": "update",
             "contenido": "Interno",
-            "visibilidad": "interno",
+            "visible_roles": ["pm"],
         },
-        headers=_auth_headers(pm.id, org.id),
+        headers=auth_headers(pm.id, org.id),
     )
     resp = api_client.get(
-        f"/api/v1/projects/{project.id}/hub-entries"
-        f"?viewer_user_id={qa.id}",
-        headers=_auth_headers(qa.id, org.id),
+        f"/api/v1/projects/{project.id}/hub-entries",
+        headers=auth_headers(qa.id),
     )
     assert resp.status_code == 200
-    assert len(resp.json()) == 2
+    assert len(resp.json()) == 1
 
     resp_dev = api_client.get(
-        f"/api/v1/projects/{project.id}/hub-entries"
-        f"?viewer_user_id={dev.id}&tipo=update",
-        headers=_auth_headers(dev.id, org.id),
+        f"/api/v1/projects/{project.id}/hub-entries?tipo=update",
+        headers=auth_headers(dev.id),
     )
-    assert len(resp_dev.json()) == 2
+    assert len(resp_dev.json()) == 1
 
 
 def test_author_can_edit_own_entry(api_client: TestClient, db_session: Session):
-    pm, dev, _qa, org, project = _seed_project(db_session)
+    _pm, dev, _qa, _org, project = _seed_project(db_session)
     created = api_client.post(
         f"/api/v1/projects/{project.id}/hub-entries",
         json={
-            "author_id": str(dev.id),
             "tipo": "update",
             "contenido": "Original",
-            "visibilidad": "publico",
         },
-        headers=_auth_headers(dev.id, org.id),
+        headers=auth_headers(dev.id),
     ).json()
     resp = api_client.patch(
         f"/api/v1/projects/{project.id}/hub-entries/{created['id']}",
-        json={"actor_user_id": str(dev.id), "contenido": "Editado"},
-        headers=_auth_headers(dev.id, org.id),
+        json={"contenido": "Editado"},
+        headers=auth_headers(dev.id),
     )
     assert resp.status_code == 200
     assert resp.json()["contenido"] == "Editado"
@@ -173,36 +122,29 @@ def test_pm_can_delete_any_entry(api_client: TestClient, db_session: Session):
     created = api_client.post(
         f"/api/v1/projects/{project.id}/hub-entries",
         json={
-            "author_id": str(dev.id),
             "tipo": "update",
             "contenido": "Borrar",
-            "visibilidad": "publico",
         },
-        headers=_auth_headers(dev.id, org.id),
+        headers=auth_headers(dev.id),
     ).json()
     resp = api_client.delete(
-        f"/api/v1/projects/{project.id}/hub-entries/{created['id']}"
-        f"?actor_user_id={pm.id}",
-        headers=_auth_headers(pm.id, org.id),
+        f"/api/v1/projects/{project.id}/hub-entries/{created['id']}",
+        headers=auth_headers(pm.id, org.id),
     )
     assert resp.status_code == 204
-    from uuid import UUID
-
     assert db_session.get(HubEntry, UUID(created["id"])) is None
 
 
 def test_closed_project_blocks_create(api_client: TestClient, db_session: Session):
-    pm, dev, _qa, org, project = _seed_project(db_session)
+    _pm, dev, _qa, _org, project = _seed_project(db_session)
     project.estado = "cerrado"
     db_session.commit()
     resp = api_client.post(
         f"/api/v1/projects/{project.id}/hub-entries",
         json={
-            "author_id": str(dev.id),
             "tipo": "update",
             "contenido": "No permitido",
-            "visibilidad": "publico",
         },
-        headers=_auth_headers(dev.id, org.id),
+        headers=auth_headers(dev.id),
     )
     assert resp.status_code == 409

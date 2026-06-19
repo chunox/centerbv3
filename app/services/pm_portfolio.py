@@ -31,10 +31,10 @@ from app.services.audit_display import audit_log_to_read
 from app.services.project_profile import legacy_tipo_for_project
 from app.services.organizations import get_org_member
 from app.services.records.repository import _data, list_records
+from app.domain.project_mode import filter_portfolio_work_items, is_scrum_mode
 from app.services.scrum_v2_structure import (
     is_scrum_story,
-    is_scrum_template,
-    is_sprint_milestone,
+    is_sprint_record,
 )
 from app.services.workflow.categories import (
     batch_load_workflows,
@@ -216,9 +216,7 @@ def _portfolio_scope_records(
     project: Project,
     rows: list[ProjectRecord],
 ) -> list[ProjectRecord]:
-    if is_scrum_template(project.template_slug):
-        return [row for row in rows if is_scrum_story(row)]
-    return [row for row in rows if row.record_type == "feature"]
+    return filter_portfolio_work_items(project, rows)
 
 
 def _is_scrum_committed_story(record: ProjectRecord) -> bool:
@@ -258,34 +256,36 @@ def _scrum_active_sprint_progress_pct(
     workflows: dict,
     project_id: UUID,
 ) -> int:
-    milestones = sorted(
-        (row for row in rows if row.record_type == "milestone"),
-        key=lambda milestone: milestone.orden,
+    sprints = sorted(
+        (row for row in rows if row.record_type == "sprint"),
+        key=lambda sprint: sprint.orden,
     )
-    milestone_wf = workflows.get((project_id, "milestone"), {})
-    active_keys = state_keys_in_categories(milestone_wf, {"active"})
+    sprint_wf = workflows.get((project_id, "sprint"), {})
+    active_keys = state_keys_in_categories(sprint_wf, {"active"})
     if not active_keys:
         active_keys = frozenset({"en_progreso", "en_progreso_con_bug"})
 
     active_sprint = next(
         (
-            milestone
-            for milestone in milestones
-            if is_sprint_milestone(milestone) and milestone.estado in active_keys
+            sprint
+            for sprint in sprints
+            if is_sprint_record(sprint) and sprint.estado in active_keys
         ),
         None,
     )
     if active_sprint is None:
         return 0
 
-    feature_wf = workflows.get((project_id, "feature"), {})
+    story_wf = workflows.get((project_id, "story"), {}) or workflows.get(
+        (project_id, "task"), {}
+    )
     stories = [
         row
         for row in rows
         if is_scrum_story(row)
         and row.parent_id == active_sprint.id
         and row.estado != "product_backlog"
-        and not _is_feature_cancelled(feature_wf, row.estado)
+        and not _is_feature_cancelled(story_wf, row.estado)
     ]
     if not stories:
         return 0
@@ -294,7 +294,7 @@ def _scrum_active_sprint_progress_pct(
         1
         for story in stories
         if _feature_bucket(
-            feature_wf,
+            story_wf,
             story.estado,
             bool(_data(story).get("bloqueada", False)),
         )
@@ -322,7 +322,7 @@ def _aggregate_feature_stats(
     )
     for project_id, rows in records_by_project.items():
         project = projects_by_id[project_id]
-        scrum = is_scrum_template(project.template_slug)
+        scrum = is_scrum_mode(project)
         feature_wf = workflows.get((project_id, "feature"), {})
         for feature in _portfolio_scope_records(project, rows):
             bloqueada = bool(_data(feature).get("bloqueada", False))
@@ -624,7 +624,7 @@ def build_pm_portfolio(
         pending_reports = report_counts.get(project.id, 0)
         pending_queries = query_counts.get(project.id, 0)
         inbox_action_count = pending_reports + pending_queries + release_count
-        if is_scrum_template(project.template_slug):
+        if is_scrum_mode(project):
             progress_pct = _scrum_active_sprint_progress_pct(
                 records_by_project.get(project.id, []),
                 workflows,

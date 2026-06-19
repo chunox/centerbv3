@@ -110,7 +110,11 @@ def test_simple_pack_seeds_board_workbench(db_session: Session):
         )
     )
     assert wb_row is not None
-    workbenches = __import__("json").loads(wb_row.definition)
+    workbenches = (
+        wb_row.definition
+        if isinstance(wb_row.definition, list)
+        else __import__("json").loads(wb_row.definition)
+    )
     board_wb = next(w for w in workbenches if w["key"] == "board")
     assert board_wb["view_type"] == "board"
     assert board_wb["entity_type"] == "tarea"

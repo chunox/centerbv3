@@ -5,5 +5,4 @@ __pycache__/
 data/*.db
 data/uploads/
 .pytest_cache/
-scripts/qa_live_smoke_results.json
 *.egg-info/

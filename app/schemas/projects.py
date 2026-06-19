@@ -10,6 +10,7 @@ from app.domain.project_templates import project_tipo_for_template
 from app.schemas.project_structure import ProjectStructureDef
 
 ProjectTipo = Literal["con_cliente", "interno", "freestyle"]
+TemplateDeliveryMode = Literal["waterfall", "scrum"]
 ProjectEstado = Literal["activo", "cerrado", "cancelado"]
 MemberRol = Literal["cliente", "pm", "dev", "qa"]
 ProjectTemplateSlug = Literal[
@@ -33,7 +34,6 @@ class ProjectCreate(BaseModel):
     estado: ProjectEstado = "activo"
     fecha_inicio: date
     fecha_fin: date
-    created_by: UUID
     project_structure: ProjectStructureDef | None = None
 
     @model_validator(mode="after")
@@ -56,7 +56,6 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
-    actor_user_id: UUID
     nombre: str | None = Field(default=None, min_length=1, max_length=150)
     descripcion: str | None = None
     fecha_inicio: date | None = None
@@ -68,6 +67,7 @@ class ProjectTemplateRead(BaseModel):
     nombre: str
     descripcion: str
     tipo: ProjectTipo
+    delivery_mode: TemplateDeliveryMode
     roles: list[str]
     creator_role: str
     orden: int
@@ -102,11 +102,9 @@ class ProjectRead(BaseModel):
 
 class ProjectEstadoAction(BaseModel):
     action: Literal["cerrar", "reabrir", "cancelar"]
-    actor_user_id: UUID
 
 
 class ProjectMemberCreate(BaseModel):
-    actor_user_id: UUID
     user_id: UUID
     role_id: UUID | None = None
     rol: str | None = None
@@ -119,7 +117,6 @@ class ProjectMemberCreate(BaseModel):
 
 
 class ProjectMemberUpdate(BaseModel):
-    actor_user_id: UUID
     role_id: UUID | None = None
     rol: str | None = None
 

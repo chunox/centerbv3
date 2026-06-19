@@ -148,7 +148,6 @@ class ProjectAccessContextRead(BaseModel):
 
 
 class ProjectRoleCreate(BaseModel):
-    actor_user_id: UUID
     slug: str = Field(min_length=1, max_length=40)
     nombre: str = Field(min_length=1, max_length=80)
     descripcion: str | None = None
@@ -157,21 +156,17 @@ class ProjectRoleCreate(BaseModel):
 
 
 class ProjectRoleCapabilitiesUpdate(BaseModel):
-    actor_user_id: UUID
     capability_keys: list[str]
 
 
 class ProjectWorkflowUpdate(BaseModel):
-    actor_user_id: UUID
     definition: dict[str, Any]
 
 
 class WorkflowTemplateApply(BaseModel):
-    actor_user_id: UUID
     template_slug: str | None = None
     project_tipo: str | None = None
 
 
 class ProjectWorkbenchesUpdate(BaseModel):
-    actor_user_id: UUID
     workbenches: list[dict[str, Any]]

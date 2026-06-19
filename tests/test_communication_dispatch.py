@@ -11,6 +11,7 @@ from app.database import Base, get_db
 from app.main import app
 from app.models.entities import ProjectRecord, User
 from tests.org_helpers import create_organization, create_project_for_org
+from tests.conftest import auth_headers
 from tests.record_helpers import create_feature_record, create_milestone_record, seed_project_with_roles
 
 
@@ -81,11 +82,11 @@ def test_simulate_communication_rules(api_client: TestClient, db_session: Sessio
     res = api_client.post(
         f"/api/v1/projects/{project.id}/communication-rules/simulate",
         json={
-            "actor_user_id": str(pm_id),
             "event": "on_record_created",
             "record_type": "report",
             "sandbox": True,
         },
+        headers=auth_headers(pm_id),
     )
     assert res.status_code == 200
     assert "matched" in res.json()

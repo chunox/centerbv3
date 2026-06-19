@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.models.entities import User
+from tests.conftest import auth_headers
 from tests.org_helpers import add_member_with_slug, create_project_for_org, create_user
 
 
@@ -54,7 +55,7 @@ def test_get_workflow_template_pm(db_session: Session, api_client: TestClient):
     project, pm_id, _ = _seed(db_session)
     response = api_client.get(
         f"/api/v1/projects/{project.id}/workflow-templates/feature",
-        params={"user_id": str(pm_id)},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 200
     body = response.json()
@@ -67,7 +68,7 @@ def test_get_workbench_template_pm(db_session: Session, api_client: TestClient):
     project, pm_id, _ = _seed(db_session)
     response = api_client.get(
         f"/api/v1/projects/{project.id}/workbench-template",
-        params={"user_id": str(pm_id)},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 200
     body = response.json()
@@ -82,6 +83,6 @@ def test_get_workflow_template_dev_forbidden(db_session: Session, api_client: Te
     project, _, dev_id = _seed(db_session)
     response = api_client.get(
         f"/api/v1/projects/{project.id}/workflow-templates/feature",
-        params={"user_id": str(dev_id)},
+        headers=auth_headers(dev_id),
     )
     assert response.status_code == 403

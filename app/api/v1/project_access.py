@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.v1.auth_deps import AuthContext, get_optional_auth
+from app.api.v1.auth_deps import get_current_actor_id
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.domain.capabilities import CAPABILITY_CATALOG, CapabilityDef, expand_nav_capabilities
@@ -86,14 +86,6 @@ from app.domain.capabilities import PROJECT_MEMBERS_MANAGE, PROJECT_ROLES_MANAGE
 router = APIRouter(prefix="/projects", tags=["project-access"])
 
 
-def _resolve_user_id(auth: AuthContext | None, user_id: UUID | None) -> UUID:
-    if user_id is not None:
-        return user_id
-    if auth is not None:
-        return auth.user.id
-    raise HTTPException(status_code=401, detail="Se requiere autenticación")
-
-
 def _role_to_read(db: Session, role: ProjectRole) -> ProjectRoleRead:
     return ProjectRoleRead(
         id=role.id,
@@ -111,15 +103,13 @@ def _role_to_read(db: Session, role: ProjectRole) -> ProjectRoleRead:
 @router.get("/{project_id}/access-context", response_model=ProjectAccessContextRead)
 def get_access_context(
     project_id: UUID,
-    user_id: UUID | None = None,
-    auth: AuthContext | None = Depends(get_optional_auth),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    effective_user = _resolve_user_id(auth, user_id)
 
-    assignments = get_user_role_assignments(db, project.id, effective_user)
-    raw_caps = get_effective_capabilities(db, project.id, effective_user)
+    assignments = get_user_role_assignments(db, project.id, actor_user_id)
+    raw_caps = get_effective_capabilities(db, project.id, actor_user_id)
     caps = sorted(expand_nav_capabilities(raw_caps))
 
     workflows: dict[str, WorkflowSummaryRead] = {}
@@ -131,6 +121,20 @@ def get_access_context(
         workflows[entity_type] = workflow_summary_from_definition(
             entity_type, version, defn
         )
+
+    from app.domain.project_mode import is_scrum_mode
+    from app.domain.workflow_templates import (
+        default_task_workflow_scrum_story_cliente,
+        default_task_workflow_scrum_story_interno,
+    )
+
+    if is_scrum_mode(project):
+        slug = project.template_slug or ""
+        if slug == "t7_scrum_cliente":
+            story_wf = default_task_workflow_scrum_story_cliente()
+        else:
+            story_wf = default_task_workflow_scrum_story_interno()
+        workflows["story"] = workflow_summary_from_definition("story", 1, story_wf)
 
     wb_raw = get_workbenches(db, project.id)
     visible_workbenches: list[WorkbenchRead] = []
@@ -237,7 +241,7 @@ def get_access_context(
     views.sort(key=lambda v: v.orden)
 
     return ProjectAccessContextRead(
-        user_id=effective_user,
+        user_id=actor_user_id,
         roles=[_role_to_read(db, r) for r in assignments],
         capabilities=caps,
         workflows=workflows,
@@ -260,7 +264,7 @@ def get_access_context(
 @router.get("/{project_id}/pack/export")
 def export_project_pack(
     project_id: UUID,
-    actor_user_id: UUID,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     """Exporta configuración del proyecto (pack, roles, workflows, workbenches)."""
@@ -302,7 +306,7 @@ def export_project_pack(
 def import_project_pack(
     project_id: UUID,
     payload: dict,
-    actor_user_id: UUID,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     """Importa configuración exportada (workflows, workbenches, record_types)."""
@@ -323,10 +327,11 @@ def list_roles(project_id: UUID, db: Session = Depends(get_db)):
 def create_role(
     project_id: UUID,
     payload: ProjectRoleCreate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     role = create_custom_role(
         db,
         project,
@@ -346,10 +351,11 @@ def patch_role_capabilities(
     project_id: UUID,
     role_id: UUID,
     payload: ProjectRoleCapabilitiesUpdate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     role = db.get(ProjectRole, role_id)
     if not role or role.project_id != project.id:
         raise HTTPException(status_code=404, detail="Rol no encontrado")
@@ -363,7 +369,7 @@ def patch_role_capabilities(
 def delete_role(
     project_id: UUID,
     role_id: UUID,
-    actor_user_id: UUID,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
@@ -380,10 +386,11 @@ def put_workflow(
     project_id: UUID,
     entity_type: str,
     payload: ProjectWorkflowUpdate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     allowed = set(workflow_entity_types(db, project.id))
     if entity_type not in allowed:
         raise HTTPException(status_code=422, detail="entity_type inválido")
@@ -398,10 +405,11 @@ def put_workflow(
 def put_workbenches(
     project_id: UUID,
     payload: ProjectWorkbenchesUpdate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     update_workbench_definition(db, project, payload.workbenches)
     db.commit()
     return [
@@ -425,11 +433,11 @@ def put_workbenches(
 @router.get("/{project_id}/communication-rules", response_model=CommunicationRulesRead)
 def get_project_communication_rules(
     project_id: UUID,
-    user_id: UUID,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_member_of_project(db, project.id, user_id)
+    assert_member_of_project(db, project.id, actor_user_id)
     rules = get_communication_rules(db, project.id)
     return CommunicationRulesRead(project_id=project.id, rules=rules)
 
@@ -438,12 +446,13 @@ def get_project_communication_rules(
 def put_project_communication_rules(
     project_id: UUID,
     payload: CommunicationRulesUpdate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     rules = update_communication_rules(
-        db, project, payload.rules, actor_user_id=payload.actor_user_id
+        db, project, payload.rules, actor_user_id=actor_user_id
     )
     db.commit()
     return CommunicationRulesRead(project_id=project.id, rules=rules)
@@ -456,17 +465,18 @@ def put_project_communication_rules(
 def simulate_project_communication_rules(
     project_id: UUID,
     payload: CommunicationSimulateRequest,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     from app.models.entities import ProjectRecord
 
     record = db.get(ProjectRecord, payload.entity_id) if payload.entity_id else None
     ctx = CommunicationContext(
         event=payload.event,
         project=project,
-        author_id=payload.actor_user_id,
+        author_id=actor_user_id,
         entity_type=payload.entity_type or (record.record_type if record else None),
         record_type=payload.record_type,
         entity_id=payload.entity_id,
@@ -494,23 +504,23 @@ def simulate_project_communication_rules(
 @router.get("/{project_id}/studio-health")
 def get_studio_health(
     project_id: UUID,
-    user_id: UUID,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     return build_studio_health(db, project)
 
 
 @router.get("/{project_id}/config-snapshots")
 def get_config_snapshots(
     project_id: UUID,
-    user_id: UUID,
     kind: str | None = None,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     rows = list_config_snapshots(db, project.id, kind=kind)  # type: ignore[arg-type]
     return [
         {
@@ -527,7 +537,7 @@ def get_config_snapshots(
 def restore_config_snapshot(
     project_id: UUID,
     snapshot_id: UUID,
-    actor_user_id: UUID,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     from app.models.entities import ProjectConfigSnapshot
@@ -554,11 +564,11 @@ def get_workbench_sections():
 def get_workflow_template(
     project_id: UUID,
     entity_type: str,
-    user_id: UUID,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     allowed = set(workflow_entity_types(db, project.id))
     if entity_type not in allowed:
         raise HTTPException(status_code=422, detail="entity_type inválido")
@@ -579,10 +589,11 @@ def apply_workflow_template(
     project_id: UUID,
     entity_type: str,
     payload: WorkflowTemplateApply,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     allowed = set(workflow_entity_types(db, project.id))
     if entity_type not in allowed:
         raise HTTPException(status_code=422, detail="entity_type inválido")
@@ -608,9 +619,9 @@ def apply_workflow_template(
 @router.get("/{project_id}/workbench-template")
 def get_workbench_template(
     project_id: UUID,
-    user_id: UUID,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, user_id, PROJECT_ROLES_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_ROLES_MANAGE)
     return list(DEFAULT_WORKBENCHES)

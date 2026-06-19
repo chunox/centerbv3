@@ -295,14 +295,15 @@ def _handle_reparent_to_backlog(
     entidad_tipo: str,
 ) -> None:
     from app.services.scrum_v2_structure import (
-        ensure_product_backlog_milestone,
+        ensure_product_backlog_record,
         is_scrum_story,
+        is_sprint_record,
         list_dev_tasks_for_story,
     )
 
     row = _record(db, entity)
     previous_sprint_id = row.parent_id
-    backlog = ensure_product_backlog_milestone(db, project, created_by=actor_user_id)
+    backlog = ensure_product_backlog_record(db, project, created_by=actor_user_id)
     row.parent_id = backlog.id
     db.flush()
     if is_scrum_story(row):
@@ -315,8 +316,7 @@ def _handle_reparent_to_backlog(
         if (
             previous_sprint is not None
             and previous_sprint.project_id == project.id
-            and previous_sprint.record_type == "milestone"
-            and (previous_sprint.data or {}).get("tipo") == "sprint"
+            and is_sprint_record(previous_sprint)
         ):
             from app.services.scrum_metrics import sync_sprint_horas_planeadas
 
@@ -510,6 +510,27 @@ def _cancel_record_cascade(
         )
     except HTTPException:
         update_record_fields(db, record, estado="cancelado" if record.record_type != "task" else "cancel")
+
+
+def _handle_cancel_stories_cascade(
+    db: Session,
+    project: Project,
+    entity: Any,
+    entity_type: str,
+    action_id: str,
+    actor_user_id: uuid.UUID,
+    effect: dict[str, Any],
+    form_data: dict[str, Any] | None,
+    side_effect_context: dict[str, Any] | None,
+    entidad_tipo: str,
+) -> None:
+    from app.services.scrum_v2_structure import is_sprint_record, list_stories_for_sprint
+
+    row = _record(db, entity)
+    if not is_sprint_record(row):
+        return
+    for story in list_stories_for_sprint(db, row.project_id, row.id):
+        _cancel_record_cascade(db, project, story, actor_user_id)
 
 
 def _handle_cancel_features_cascade(
@@ -784,6 +805,7 @@ register_side_effect("notify_reporter", _handle_notify_reporter)
 register_side_effect("generate_feature_from_report", _handle_generate_feature_from_report)
 register_side_effect("sync_milestone_from_report", _handle_sync_milestone_from_report)
 register_side_effect("cancel_features_cascade", _handle_cancel_features_cascade)
+register_side_effect("cancel_stories_cascade", _handle_cancel_stories_cascade)
 register_side_effect("cancel_tasks_cascade", _handle_cancel_tasks_cascade)
 register_side_effect("sync_tasks", _handle_sync_tasks)
 register_side_effect("rework_tasks", _handle_rework_tasks)

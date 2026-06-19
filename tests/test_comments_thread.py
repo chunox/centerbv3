@@ -1,7 +1,7 @@
 """Tests hilo de comentarios en consultas/reportes."""
 
 from datetime import date
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -9,13 +9,16 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-
 from app.models.entities import AuditLog, Notification, User
-from app.services.comments import create_comment
 from app.schemas.comments import CommentCreate
+from app.services.comments import create_comment
 from app.services.records.repository import create_record
 from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
 from tests.record_helpers import create_milestone_record, create_query_record, create_report_record
+
+
+class CommentCreateWithUser(CommentCreate):
+    user_id: UUID
 
 
 @pytest.fixture
@@ -85,7 +88,7 @@ def test_comentario_reporte_audit_guarda_parent(db_session: Session):
 
     create_comment(
         db_session,
-        CommentCreate(
+        CommentCreateWithUser(
             entidad_tipo="feature_report",
             entidad_id=report.id,
             user_id=pm_id,
@@ -120,7 +123,7 @@ def test_comentario_reporte_notifica_cliente(db_session: Session):
 
     create_comment(
         db_session,
-        CommentCreate(
+        CommentCreateWithUser(
             entidad_tipo="feature_report",
             entidad_id=report.id,
             user_id=pm_id,
@@ -154,7 +157,7 @@ def test_comentario_consulta_notifica_autor(db_session: Session):
 
     create_comment(
         db_session,
-        CommentCreate(
+        CommentCreateWithUser(
             entidad_tipo="feature_query",
             entidad_id=query.id,
             user_id=pm_id,

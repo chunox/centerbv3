@@ -9,6 +9,7 @@ from typing import Any
 from app.domain.capabilities import (
     KANBAN_TASK_CANCEL,
     SCOPE_MILESTONE_CANCEL,
+    SCOPE_SPRINT_CANCEL,
     FEATURE_TRANSITION_CANCELAR,
     FEATURE_TRANSITION_COMPLETAR,
     FEATURE_TRANSITION_COMPROMETER_SPRINT,
@@ -20,6 +21,17 @@ from app.domain.capabilities import (
     FEATURE_TRANSITION_PASAR_A_UAT,
     FEATURE_TRANSITION_RECHAZAR_LIBERACION,
     FEATURE_TRANSITION_VOLVER_BACKLOG,
+    STORY_TRANSITION_CANCELAR,
+    STORY_TRANSITION_COMPLETAR,
+    STORY_TRANSITION_COMPROMETER_SPRINT,
+    STORY_TRANSITION_CONFIRMAR,
+    STORY_TRANSITION_DEVOLVER_REWORK,
+    STORY_TRANSITION_ENVIAR_AL_PM,
+    STORY_TRANSITION_LIBERAR_CLIENTE,
+    STORY_TRANSITION_NO_FUNCIONA,
+    STORY_TRANSITION_PASAR_A_UAT,
+    STORY_TRANSITION_RECHAZAR_LIBERACION,
+    STORY_TRANSITION_VOLVER_BACKLOG,
     KANBAN_TASK_MOVE,
 )
 
@@ -267,6 +279,28 @@ def default_feature_workflow_scrum_cliente() -> dict[str, Any]:
     return default_feature_workflow_scrum_base()
 
 
+def _map_feature_caps_to_story(wf: dict[str, Any]) -> dict[str, Any]:
+    """Reemplaza caps feature.transition.* por story.transition.* en workflow Scrum."""
+    mapping = {
+        FEATURE_TRANSITION_PASAR_A_UAT: STORY_TRANSITION_PASAR_A_UAT,
+        FEATURE_TRANSITION_CANCELAR: STORY_TRANSITION_CANCELAR,
+        FEATURE_TRANSITION_ENVIAR_AL_PM: STORY_TRANSITION_ENVIAR_AL_PM,
+        FEATURE_TRANSITION_DEVOLVER_REWORK: STORY_TRANSITION_DEVOLVER_REWORK,
+        FEATURE_TRANSITION_LIBERAR_CLIENTE: STORY_TRANSITION_LIBERAR_CLIENTE,
+        FEATURE_TRANSITION_RECHAZAR_LIBERACION: STORY_TRANSITION_RECHAZAR_LIBERACION,
+        FEATURE_TRANSITION_CONFIRMAR: STORY_TRANSITION_CONFIRMAR,
+        FEATURE_TRANSITION_NO_FUNCIONA: STORY_TRANSITION_NO_FUNCIONA,
+        FEATURE_TRANSITION_COMPLETAR: STORY_TRANSITION_COMPLETAR,
+        FEATURE_TRANSITION_COMPROMETER_SPRINT: STORY_TRANSITION_COMPROMETER_SPRINT,
+        FEATURE_TRANSITION_VOLVER_BACKLOG: STORY_TRANSITION_VOLVER_BACKLOG,
+    }
+    out = copy.deepcopy(wf)
+    for transition in out.get("transitions", []):
+        caps = transition.get("required_capabilities") or []
+        transition["required_capabilities"] = [mapping.get(c, c) for c in caps]
+    return out
+
+
 def default_task_workflow_scrum_story_base() -> dict[str, Any]:
     """Historia Scrum como task: workflow ex-feature con reparent al sprint."""
     wf = copy.deepcopy(default_feature_workflow_con_cliente())
@@ -286,7 +320,7 @@ def default_task_workflow_scrum_story_base() -> dict[str, Any]:
             "label": "Comprometer al Sprint",
             "from": ["product_backlog"],
             "to": "pendiente",
-            "required_capabilities": [FEATURE_TRANSITION_COMPROMETER_SPRINT],
+            "required_capabilities": [STORY_TRANSITION_COMPROMETER_SPRINT],
             "side_effects": [
                 {
                     "type": "reparent_to_sprint",
@@ -301,12 +335,12 @@ def default_task_workflow_scrum_story_base() -> dict[str, Any]:
             "label": "Volver al Product Backlog",
             "from": ["pendiente"],
             "to": "product_backlog",
-            "required_capabilities": [FEATURE_TRANSITION_VOLVER_BACKLOG],
+            "required_capabilities": [STORY_TRANSITION_VOLVER_BACKLOG],
             "side_effects": [{"type": "reparent_to_backlog"}],
         },
     ]
     wf["transitions"] = transitions
-    return wf
+    return _map_feature_caps_to_story(wf)
 
 
 def default_task_workflow_scrum_story_interno() -> dict[str, Any]:
@@ -321,7 +355,7 @@ def default_task_workflow_scrum_story_interno() -> dict[str, Any]:
             "label": "Completar",
             "from": ["esperando_liberacion_pm"],
             "to": "completado",
-            "required_capabilities": [FEATURE_TRANSITION_COMPLETAR],
+            "required_capabilities": [STORY_TRANSITION_COMPLETAR],
             "conditions": [_COND_NO_CLIENTE],
             "gates": [_QUERY_BLOCK_GATE],
         }
@@ -574,6 +608,59 @@ def default_milestone_workflow() -> dict[str, Any]:
     }
 
 
+def default_sprint_workflow() -> dict[str, Any]:
+    """Workflow de sprint Scrum (independiente del milestone waterfall)."""
+    return {
+        "states": [
+            _state("pendiente", "Pendiente", category="pending"),
+            _state("en_progreso", "En progreso", category="active"),
+            _state("completado", "Completado", category="terminal", badge="success", is_terminal=True),
+            _state("cancelado", "Cancelado", category="terminal", badge="muted", is_terminal=True),
+        ],
+        "initial_state": "pendiente",
+        "terminal_states": ["completado", "cancelado"],
+        "transitions": [
+            {
+                "id": "cancelar",
+                "label": "Cancelar sprint",
+                "from": ["pendiente", "en_progreso", "completado"],
+                "to": "cancelado",
+                "required_capabilities": [SCOPE_SPRINT_CANCEL],
+                "side_effects": [{"type": "cancel_stories_cascade"}],
+            },
+            {
+                "id": "sync",
+                "label": "Sync automático",
+                "from": ["*"],
+                "to": "*",
+                "required_capabilities": [],
+                "dynamic_to": True,
+            },
+        ],
+    }
+
+
+def default_product_backlog_workflow() -> dict[str, Any]:
+    """Contenedor raíz del Product Backlog (Scrum)."""
+    return {
+        "states": [
+            _state("activo", "Activo", category="active"),
+        ],
+        "initial_state": "activo",
+        "terminal_states": [],
+        "transitions": [
+            {
+                "id": "sync",
+                "label": "Sync automático",
+                "from": ["*"],
+                "to": "*",
+                "required_capabilities": [],
+                "dynamic_to": True,
+            },
+        ],
+    }
+
+
 def _expand_project_tipo_in_workflow(
     wf: dict[str, Any], extra_tipo: str
 ) -> dict[str, Any]:
@@ -704,11 +791,17 @@ _TEMPLATE_TO_TIPO: dict[str, str] = {
 
 def workflow_for_template(template_slug: str, entity_type: str) -> dict[str, Any]:
     """Resuelve el workflow por template_slug."""
+    from app.domain.project_templates import SCRUM_TEMPLATE_SLUGS
+
     if entity_type == "feature":
         if template_slug == "t6_scrum_interno":
             return default_feature_workflow_scrum_interno()
         if template_slug == "t7_scrum_cliente":
             return default_feature_workflow_scrum_cliente()
+    if entity_type == "sprint" and template_slug in SCRUM_TEMPLATE_SLUGS:
+        return default_sprint_workflow()
+    if entity_type == "product_backlog" and template_slug in SCRUM_TEMPLATE_SLUGS:
+        return default_product_backlog_workflow()
     tipo = _TEMPLATE_TO_TIPO.get(template_slug, "interno")
     return workflow_for_project_tipo(tipo, entity_type)
 

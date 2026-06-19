@@ -6,6 +6,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.project_mode import is_record_type_allowed
 from app.domain.packs.catalog import LEGACY_ENTITY_TYPES
 from app.domain.records.types import RecordDTO, RecordRef
 from app.models.entities import ProjectRecord, ProjectRecordType
@@ -13,8 +14,11 @@ from app.services.records import generic_store
 
 
 class RecordTypeRegistry:
-    def is_legacy(self, record_type: str) -> bool:
-        return False
+    def is_legacy(self, record_type: str, project=None) -> bool:
+        if project is None:
+            return False
+        allowed, _ = is_record_type_allowed(project, record_type)
+        return not allowed
 
     def audit_entidad_tipo(self, record_type: str) -> str:
         legacy_map = {
@@ -38,21 +42,6 @@ class RecordTypeRegistry:
         )
         if not types:
             types = list(LEGACY_ENTITY_TYPES)
-        else:
-            from app.models.entities import Project, ProjectWorkflowDefinition
-            from app.services.scrum_v2_structure import is_scrum_template
-
-            project = db.get(Project, project_id)
-            if project is not None and is_scrum_template(project.template_slug):
-                has_story_wf = db.scalar(
-                    select(ProjectWorkflowDefinition.id).where(
-                        ProjectWorkflowDefinition.project_id == project_id,
-                        ProjectWorkflowDefinition.entity_type == "feature",
-                        ProjectWorkflowDefinition.is_active.is_(True),
-                    )
-                )
-                if has_story_wf is not None and "feature" not in types:
-                    types = [*types, "feature"]
         return types
 
     def get(

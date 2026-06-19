@@ -15,6 +15,7 @@ from app.models.entities import Project, User
 from app.services.deletions import delete_project
 from app.services.feature_reports import apply_report_action
 from app.services.records.repository import create_record, get_field
+from tests.conftest import auth_headers
 from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
 from tests.record_helpers import create_milestone_record, create_report_record
 
@@ -106,7 +107,7 @@ def test_delete_project_api_con_reporte_aprobado(db_session: Session, api_client
 
     response = api_client.delete(
         f"/api/v1/projects/{project.id}",
-        params={"actor_user_id": str(pm_id)},
+        headers=auth_headers(pm_id, project.organization_id),
     )
     assert response.status_code == 204
     assert db_session.get(Project, project.id) is None

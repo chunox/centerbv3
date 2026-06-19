@@ -55,12 +55,10 @@ class CommunicationRulesRead(BaseModel):
 
 
 class CommunicationRulesUpdate(BaseModel):
-    actor_user_id: UUID
     rules: list[CommunicationRule]
 
 
 class CommunicationSimulateRequest(BaseModel):
-    actor_user_id: UUID
     event: CommunicationEvent
     entity_type: str | None = None
     record_type: str | None = None

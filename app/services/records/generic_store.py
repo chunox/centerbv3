@@ -90,15 +90,20 @@ def list_records(
     stmt = stmt.order_by(ProjectRecord.orden.asc(), ProjectRecord.created_at.asc())
     rows = list(db.scalars(stmt))
     if sprint_id is not None:
-        sprint_key = str(sprint_id)
-        from app.services.scrum_v2_structure import is_scrum_story
+        from app.services.delivery.resolve import get_delivery_service
 
-        rows = [
-            r
-            for r in rows
-            if str((r.data or {}).get("sprint_id") or "") == sprint_key
-            or (r.record_type == "task" and r.parent_id == sprint_id and is_scrum_story(r))
-        ]
+        project = db.get(Project, project_id)
+        if project is not None:
+            rows = get_delivery_service(project).filter_list_by_sprint(
+                db, rows, sprint_id
+            )
+        else:
+            sprint_key = str(sprint_id)
+            rows = [
+                r
+                for r in rows
+                if str((r.data or {}).get("sprint_id") or "") == sprint_key
+            ]
     if in_product_backlog:
         rows = [r for r in rows if _feature_in_product_backlog(db, r)]
     return [_to_dto(r) for r in rows]
@@ -171,13 +176,13 @@ def create_record(
     if assignee_ids:
         sync_assignees(db, row, assignee_ids)
 
-    from app.services.scrum_effort import is_scrum_project, maybe_sync_scrum_on_sprint_assignment
-
-    if record_type == "feature" and is_scrum_project(project):
-        maybe_sync_scrum_on_sprint_assignment(db, project, row)
-
     from app.config import settings
     from app.services.communication.engine import dispatch_record_created_rules
+    from app.services.delivery.resolve import get_delivery_service
+
+    get_delivery_service(project).after_create(
+        db, project, row, record_type=record_type
+    )
 
     if settings.communication_rules_only:
         dispatch_record_created_rules(
@@ -204,11 +209,7 @@ def update_record(
     reparent: bool = False,
 ) -> RecordDTO:
     from app.models.entities import Project
-    from app.services.scrum_effort import (
-        is_scrum_project,
-        maybe_propagate_scrum_sprint_dates,
-        maybe_sync_scrum_on_sprint_assignment,
-    )
+    from app.services.delivery.resolve import get_delivery_service
 
     project = db.get(Project, record.project_id)
     old_parent_id = record.parent_id
@@ -244,23 +245,16 @@ def update_record(
     if orden is not None:
         record.orden = orden
 
-    if (
-        project is not None
-        and record.record_type == "feature"
-        and data is not None
-        and is_scrum_project(project)
-    ):
-        maybe_sync_scrum_on_sprint_assignment(db, project, record)
-
     if project is not None:
-        if record.record_type == "milestone":
-            fecha_changed = (
-                record.fecha_inicio != old_fecha_inicio
-                or record.fecha_fin != old_fecha_fin
-            )
-            maybe_propagate_scrum_sprint_dates(
-                db, project, record, fecha_changed=fecha_changed
-            )
+        get_delivery_service(project).after_update(
+            db,
+            project,
+            record,
+            data=data,
+            old_parent_id=old_parent_id,
+            old_fecha_inicio=old_fecha_inicio,
+            old_fecha_fin=old_fecha_fin,
+        )
 
     return _to_dto(record)
 
@@ -363,19 +357,11 @@ def transition_record(
     )
     db.flush()
     db.refresh(record)
-    if record.record_type == "task":
-        from app.services.scrum_effort import is_scrum_project
-        from app.services.scrum_tasks import sync_story_from_dev_tasks
-        from app.services.scrum_v2_structure import get_story_task_id, is_scrum_dev_task
+    from app.services.delivery.resolve import get_delivery_service
 
-        if is_scrum_project(project) and is_scrum_dev_task(record):
-            story_id = get_story_task_id(record)
-            if story_id:
-                story = db.get(ProjectRecord, story_id)
-                if story is not None:
-                    sync_story_from_dev_tasks(
-                        db, story, project, actor_user_id=actor_user_id
-                    )
+    get_delivery_service(project).after_transition(
+        db, project, record, actor_user_id=actor_user_id
+    )
     return _to_dto(record)
 
 

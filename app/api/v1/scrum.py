@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth_deps import get_current_actor_id
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.domain.capabilities import (
@@ -42,7 +43,6 @@ router = APIRouter(prefix="/projects", tags=["scrum"])
 
 
 class ScrumImpedimentCreate(BaseModel):
-    actor_user_id: uuid.UUID
     titulo: str = Field(min_length=1, max_length=255)
     sprint_id: uuid.UUID | None = None
     owner_user_id: uuid.UUID | None = None
@@ -50,17 +50,14 @@ class ScrumImpedimentCreate(BaseModel):
 
 
 class ScrumImpedimentResolve(BaseModel):
-    actor_user_id: uuid.UUID
     resolucion: str | None = None
 
 
 class SprintCapacityUpdate(BaseModel):
-    actor_user_id: uuid.UUID
     capacity_plan: list[dict[str, Any]]
 
 
 class ScrumSessionCreate(BaseModel):
-    actor_user_id: uuid.UUID
     session_type: str
     title: str | None = None
     sprint_id: uuid.UUID | None = None
@@ -69,7 +66,6 @@ class ScrumSessionCreate(BaseModel):
 
 
 class ScrumSessionPatch(BaseModel):
-    actor_user_id: uuid.UUID
     session_type: str | None = None
     title: str | None = None
     sprint_id: uuid.UUID | None = None
@@ -78,13 +74,11 @@ class ScrumSessionPatch(BaseModel):
 
 
 class ScrumSessionEntryCreate(BaseModel):
-    actor_user_id: uuid.UUID
     entry_type: str = "note"
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScrumSessionEntryPatch(BaseModel):
-    actor_user_id: uuid.UUID
     entry_type: str | None = None
     payload: dict[str, Any] | None = None
 
@@ -138,7 +132,7 @@ def _serialize_entry(row: ScrumCeremonyEntry) -> dict[str, Any]:
 @router.get("/{project_id}/scrum/sprints")
 def list_sprints(
     project_id: uuid.UUID,
-    actor_user_id: uuid.UUID = Query(...),
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     project = get_project_or_404(project_id, db)
@@ -148,11 +142,13 @@ def list_sprints(
             select(ProjectRecord)
             .where(
                 ProjectRecord.project_id == project.id,
-                ProjectRecord.record_type == "milestone",
+                ProjectRecord.record_type.in_(("sprint", "milestone")),
             )
             .order_by(ProjectRecord.orden.asc(), ProjectRecord.created_at.asc())
         )
     )
+    from app.services.scrum_v2_structure import is_sprint_record
+
     return [
         {
             "id": str(s.id),
@@ -168,7 +164,7 @@ def list_sprints(
             "velocidad_real": (s.data or {}).get("horas_completadas"),
         }
         for s in sprints
-        if (s.data or {}).get("tipo") != "product_backlog"
+        if is_sprint_record(s)
     ]
 
 
@@ -176,7 +172,7 @@ def list_sprints(
 def get_sprint_burndown(
     project_id: uuid.UUID,
     sprint_id: uuid.UUID,
-    actor_user_id: uuid.UUID = Query(...),
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = get_project_or_404(project_id, db)
@@ -254,7 +250,7 @@ def get_sprint_burndown(
 @router.get("/{project_id}/scrum/velocity")
 def get_scrum_velocity(
     project_id: uuid.UUID,
-    actor_user_id: uuid.UUID = Query(...),
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     limit: int = Query(6, ge=1, le=24),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
@@ -266,7 +262,7 @@ def get_scrum_velocity(
 @router.get("/{project_id}/scrum/impediments")
 def get_scrum_impediments(
     project_id: uuid.UUID,
-    actor_user_id: uuid.UUID = Query(...),
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     sprint_id: uuid.UUID | None = Query(None),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
@@ -305,10 +301,11 @@ def get_scrum_impediments(
 def post_scrum_impediment(
     project_id: uuid.UUID,
     payload: ScrumImpedimentCreate,
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, WORKBENCH_SCRUM_IMPEDIMENTS)
+    assert_capability(db, project.id, actor_user_id, WORKBENCH_SCRUM_IMPEDIMENTS)
     now_iso = date.today().isoformat()
     data = {
         "titulo": payload.titulo.strip(),
@@ -327,7 +324,7 @@ def post_scrum_impediment(
         descripcion=payload.impacto,
         estado="open",
         data=data,
-        created_by=payload.actor_user_id,
+        created_by=actor_user_id,
     )
     db.add(row)
     db.commit()
@@ -340,10 +337,11 @@ def post_scrum_impediment_resolve(
     project_id: uuid.UUID,
     impediment_id: uuid.UUID,
     payload: ScrumImpedimentResolve,
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, WORKBENCH_SCRUM_IMPEDIMENTS)
+    assert_capability(db, project.id, actor_user_id, WORKBENCH_SCRUM_IMPEDIMENTS)
     row = db.get(ProjectRecord, impediment_id)
     if row is None or row.project_id != project.id or row.record_type != "impediment":
         raise HTTPException(status_code=404, detail="Impedimento no encontrado")
@@ -361,13 +359,15 @@ def post_scrum_impediment_resolve(
 def get_scrum_sprint_capacity(
     project_id: uuid.UUID,
     sprint_id: uuid.UUID,
-    actor_user_id: uuid.UUID = Query(...),
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = get_project_or_404(project_id, db)
     assert_capability(db, project.id, actor_user_id, WORKBENCH_SCRUM_CAPACITY)
+    from app.services.scrum_v2_structure import is_sprint_record
+
     sprint = db.get(ProjectRecord, sprint_id)
-    if sprint is None or sprint.project_id != project.id or sprint.record_type != "milestone":
+    if sprint is None or sprint.project_id != project.id or not is_sprint_record(sprint):
         raise HTTPException(status_code=404, detail="Sprint no encontrado")
     data = sprint.data or {}
     plan = data.get("capacity_plan") or []
@@ -387,12 +387,15 @@ def put_scrum_sprint_capacity(
     project_id: uuid.UUID,
     sprint_id: uuid.UUID,
     payload: SprintCapacityUpdate,
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, WORKBENCH_SCRUM_CAPACITY)
+    assert_capability(db, project.id, actor_user_id, WORKBENCH_SCRUM_CAPACITY)
+    from app.services.scrum_v2_structure import is_sprint_record
+
     sprint = db.get(ProjectRecord, sprint_id)
-    if sprint is None or sprint.project_id != project.id or sprint.record_type != "milestone":
+    if sprint is None or sprint.project_id != project.id or not is_sprint_record(sprint):
         raise HTTPException(status_code=404, detail="Sprint no encontrado")
     clean_plan = [dict(item) for item in payload.capacity_plan if isinstance(item, dict)]
     total = round(sum(_capacity_available_horas(p) for p in clean_plan), 2)
@@ -414,7 +417,7 @@ def put_scrum_sprint_capacity(
 def post_sync_sprint_velocity(
     project_id: uuid.UUID,
     sprint_id: uuid.UUID,
-    actor_user_id: uuid.UUID = Query(...),
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = get_project_or_404(project_id, db)
@@ -435,7 +438,7 @@ def post_sync_sprint_velocity(
 @router.get("/{project_id}/scrum/sessions")
 def get_scrum_sessions(
     project_id: uuid.UUID,
-    actor_user_id: uuid.UUID = Query(...),
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     session_type: str | None = Query(None),
     sprint_id: uuid.UUID | None = Query(None),
     db: Session = Depends(get_db),
@@ -450,14 +453,15 @@ def get_scrum_sessions(
 def post_scrum_session(
     project_id: uuid.UUID,
     payload: ScrumSessionCreate,
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, WORKBENCH_SPRINT_BOARD)
+    assert_capability(db, project.id, actor_user_id, WORKBENCH_SPRINT_BOARD)
     row = create_session(
         db,
         project_id=project.id,
-        actor_user_id=payload.actor_user_id,
+        actor_user_id=actor_user_id,
         session_type=payload.session_type,
         title=payload.title or payload.session_type.replace("_", " ").title(),
         sprint_id=payload.sprint_id,
@@ -474,15 +478,15 @@ def patch_scrum_session(
     project_id: uuid.UUID,
     session_id: uuid.UUID,
     payload: ScrumSessionPatch,
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, WORKBENCH_SPRINT_BOARD)
+    assert_capability(db, project.id, actor_user_id, WORKBENCH_SPRINT_BOARD)
     row = db.get(ScrumCeremonySession, session_id)
     if row is None or row.project_id != project.id:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
     patch = payload.model_dump(exclude_none=False)
-    patch.pop("actor_user_id", None)
     updated = update_session(db, session=row, patch=patch)
     db.commit()
     db.refresh(updated)
@@ -493,7 +497,7 @@ def patch_scrum_session(
 def delete_scrum_session(
     project_id: uuid.UUID,
     session_id: uuid.UUID,
-    actor_user_id: uuid.UUID = Query(...),
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
     project = get_project_or_404(project_id, db)
@@ -510,7 +514,7 @@ def delete_scrum_session(
 def get_scrum_session_entries(
     project_id: uuid.UUID,
     session_id: uuid.UUID,
-    actor_user_id: uuid.UUID = Query(...),
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     project = get_project_or_404(project_id, db)
@@ -527,17 +531,18 @@ def post_scrum_session_entry(
     project_id: uuid.UUID,
     session_id: uuid.UUID,
     payload: ScrumSessionEntryCreate,
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, WORKBENCH_SPRINT_BOARD)
+    assert_capability(db, project.id, actor_user_id, WORKBENCH_SPRINT_BOARD)
     session = db.get(ScrumCeremonySession, session_id)
     if session is None or session.project_id != project.id:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
     row = create_entry(
         db,
         session_id=session_id,
-        author_user_id=payload.actor_user_id,
+        author_user_id=actor_user_id,
         entry_type=payload.entry_type,
         payload=payload.payload,
     )
@@ -552,10 +557,11 @@ def patch_scrum_session_entry(
     session_id: uuid.UUID,
     entry_id: uuid.UUID,
     payload: ScrumSessionEntryPatch,
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, WORKBENCH_SPRINT_BOARD)
+    assert_capability(db, project.id, actor_user_id, WORKBENCH_SPRINT_BOARD)
     session = db.get(ScrumCeremonySession, session_id)
     if session is None or session.project_id != project.id:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
@@ -578,7 +584,7 @@ def delete_scrum_session_entry(
     project_id: uuid.UUID,
     session_id: uuid.UUID,
     entry_id: uuid.UUID,
-    actor_user_id: uuid.UUID = Query(...),
+    actor_user_id: uuid.UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
     project = get_project_or_404(project_id, db)

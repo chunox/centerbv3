@@ -44,6 +44,12 @@ SCOPE_MILESTONE_EDIT = "scope.milestone.edit"
 SCOPE_MILESTONE_REORDER = "scope.milestone.reorder"
 SCOPE_MILESTONE_CANCEL = "scope.milestone.cancel"
 SCOPE_MILESTONE_DELETE = "scope.milestone.delete"
+
+SCOPE_SPRINT_CREATE = "scope.sprint.create"
+SCOPE_SPRINT_EDIT = "scope.sprint.edit"
+SCOPE_SPRINT_REORDER = "scope.sprint.reorder"
+SCOPE_SPRINT_CANCEL = "scope.sprint.cancel"
+SCOPE_SPRINT_DELETE = "scope.sprint.delete"
 SCOPE_EPIC_CREATE = "scope.epic.create"
 SCOPE_EPIC_EDIT = "scope.epic.edit"
 SCOPE_EPIC_REORDER = "scope.epic.reorder"
@@ -90,6 +96,40 @@ FEATURE_TRANSITION_KEYS = frozenset(
         FEATURE_TRANSITION_COMPLETAR,
         FEATURE_TRANSITION_COMPROMETER_SPRINT,
         FEATURE_TRANSITION_VOLVER_BACKLOG,
+    }
+)
+
+# ── Historia Scrum (workflow-linked; record SQL = task) ─────────────────────
+
+SCOPE_STORY_CREATE = "scope.story.create"
+SCOPE_STORY_EDIT = "scope.story.edit"
+SCOPE_STORY_CANCEL = "scope.story.cancel"
+
+STORY_TRANSITION_PASAR_A_UAT = "story.transition.pasar_a_uat"
+STORY_TRANSITION_CANCELAR = "story.transition.cancelar"
+STORY_TRANSITION_ENVIAR_AL_PM = "story.transition.enviar_al_pm"
+STORY_TRANSITION_DEVOLVER_REWORK = "story.transition.devolver_rework"
+STORY_TRANSITION_LIBERAR_CLIENTE = "story.transition.liberar_cliente"
+STORY_TRANSITION_RECHAZAR_LIBERACION = "story.transition.rechazar_liberacion"
+STORY_TRANSITION_CONFIRMAR = "story.transition.confirmar"
+STORY_TRANSITION_NO_FUNCIONA = "story.transition.no_funciona"
+STORY_TRANSITION_COMPLETAR = "story.transition.completar"
+STORY_TRANSITION_COMPROMETER_SPRINT = "story.transition.comprometer_sprint"
+STORY_TRANSITION_VOLVER_BACKLOG = "story.transition.volver_backlog"
+
+STORY_TRANSITION_KEYS = frozenset(
+    {
+        STORY_TRANSITION_PASAR_A_UAT,
+        STORY_TRANSITION_CANCELAR,
+        STORY_TRANSITION_ENVIAR_AL_PM,
+        STORY_TRANSITION_DEVOLVER_REWORK,
+        STORY_TRANSITION_LIBERAR_CLIENTE,
+        STORY_TRANSITION_RECHAZAR_LIBERACION,
+        STORY_TRANSITION_CONFIRMAR,
+        STORY_TRANSITION_NO_FUNCIONA,
+        STORY_TRANSITION_COMPLETAR,
+        STORY_TRANSITION_COMPROMETER_SPRINT,
+        STORY_TRANSITION_VOLVER_BACKLOG,
     }
 )
 
@@ -162,6 +202,11 @@ CAPABILITY_CATALOG: tuple[CapabilityDef, ...] = (
     CapabilityDef(SCOPE_MILESTONE_REORDER, "Reordenar hitos", "scope"),
     CapabilityDef(SCOPE_MILESTONE_CANCEL, "Cancelar hitos", "scope"),
     CapabilityDef(SCOPE_MILESTONE_DELETE, "Eliminar hitos", "scope"),
+    CapabilityDef(SCOPE_SPRINT_CREATE, "Crear sprints", "scope"),
+    CapabilityDef(SCOPE_SPRINT_EDIT, "Editar sprints", "scope"),
+    CapabilityDef(SCOPE_SPRINT_REORDER, "Reordenar sprints", "scope"),
+    CapabilityDef(SCOPE_SPRINT_CANCEL, "Cancelar sprints", "scope"),
+    CapabilityDef(SCOPE_SPRINT_DELETE, "Eliminar sprints", "scope"),
     CapabilityDef(SCOPE_EPIC_CREATE, "Crear épicas", "scope"),
     CapabilityDef(SCOPE_EPIC_EDIT, "Editar épicas", "scope"),
     CapabilityDef(SCOPE_EPIC_REORDER, "Reordenar épicas", "scope"),
@@ -190,6 +235,20 @@ CAPABILITY_CATALOG: tuple[CapabilityDef, ...] = (
     CapabilityDef(FEATURE_TRANSITION_COMPLETAR, "Completar feature", "feature"),
     CapabilityDef(FEATURE_TRANSITION_COMPROMETER_SPRINT, "Comprometer historia al sprint", "feature"),
     CapabilityDef(FEATURE_TRANSITION_VOLVER_BACKLOG, "Devolver historia al backlog", "feature"),
+    CapabilityDef(SCOPE_STORY_CREATE, "Crear historias", "scope"),
+    CapabilityDef(SCOPE_STORY_EDIT, "Editar historias", "scope"),
+    CapabilityDef(SCOPE_STORY_CANCEL, "Cancelar historias", "scope"),
+    CapabilityDef(STORY_TRANSITION_PASAR_A_UAT, "Pasar historia a UAT", "feature"),
+    CapabilityDef(STORY_TRANSITION_CANCELAR, "Cancelar historia", "feature"),
+    CapabilityDef(STORY_TRANSITION_ENVIAR_AL_PM, "Enviar UAT al PM (historia)", "feature"),
+    CapabilityDef(STORY_TRANSITION_DEVOLVER_REWORK, "Devolver rework (historia)", "feature"),
+    CapabilityDef(STORY_TRANSITION_LIBERAR_CLIENTE, "Liberar historia al cliente", "feature"),
+    CapabilityDef(STORY_TRANSITION_RECHAZAR_LIBERACION, "Rechazar liberación (historia)", "feature"),
+    CapabilityDef(STORY_TRANSITION_CONFIRMAR, "Confirmar entrega (historia)", "feature"),
+    CapabilityDef(STORY_TRANSITION_NO_FUNCIONA, "Rechazar entrega (historia)", "feature"),
+    CapabilityDef(STORY_TRANSITION_COMPLETAR, "Completar historia", "feature"),
+    CapabilityDef(STORY_TRANSITION_COMPROMETER_SPRINT, "Comprometer historia al sprint", "feature"),
+    CapabilityDef(STORY_TRANSITION_VOLVER_BACKLOG, "Devolver historia al backlog", "feature"),
     CapabilityDef(QUERY_CREATE, "Crear consultas", "query"),
     CapabilityDef(QUERY_SEND, "Enviar consultas", "query"),
     CapabilityDef(QUERY_APPROVE, "Aprobar envío consulta", "query"),
@@ -250,6 +309,11 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             SCOPE_MILESTONE_REORDER,
             SCOPE_MILESTONE_CANCEL,
             SCOPE_MILESTONE_DELETE,
+            SCOPE_SPRINT_CREATE,
+            SCOPE_SPRINT_EDIT,
+            SCOPE_SPRINT_REORDER,
+            SCOPE_SPRINT_CANCEL,
+            SCOPE_SPRINT_DELETE,
             SCOPE_EPIC_CREATE,
             SCOPE_EPIC_EDIT,
             SCOPE_EPIC_REORDER,
@@ -266,6 +330,15 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
             FEATURE_TRANSITION_COMPLETAR,
             FEATURE_TRANSITION_COMPROMETER_SPRINT,
             FEATURE_TRANSITION_VOLVER_BACKLOG,
+            SCOPE_STORY_CREATE,
+            SCOPE_STORY_EDIT,
+            SCOPE_STORY_CANCEL,
+            STORY_TRANSITION_CANCELAR,
+            STORY_TRANSITION_LIBERAR_CLIENTE,
+            STORY_TRANSITION_RECHAZAR_LIBERACION,
+            STORY_TRANSITION_COMPLETAR,
+            STORY_TRANSITION_COMPROMETER_SPRINT,
+            STORY_TRANSITION_VOLVER_BACKLOG,
             QUERY_CREATE,
             QUERY_SEND,
             QUERY_APPROVE,
@@ -373,11 +446,20 @@ TECH_LEAD_CAPABILITIES: frozenset[str] = (
         SCOPE_MILESTONE_CREATE,
         SCOPE_MILESTONE_EDIT,
         SCOPE_MILESTONE_REORDER,
+        SCOPE_SPRINT_CREATE,
+        SCOPE_SPRINT_EDIT,
+        SCOPE_SPRINT_REORDER,
+        SCOPE_SPRINT_CANCEL,
         SCOPE_FEATURE_CREATE,
         SCOPE_FEATURE_EDIT,
         SCOPE_FEATURE_MIGRATE,
         FEATURE_TRANSITION_CANCELAR,
         FEATURE_TRANSITION_COMPROMETER_SPRINT,
+        SCOPE_STORY_CREATE,
+        SCOPE_STORY_EDIT,
+        STORY_TRANSITION_CANCELAR,
+        STORY_TRANSITION_COMPROMETER_SPRINT,
+        STORY_TRANSITION_PASAR_A_UAT,
         WORKBENCH_PRODUCT_BACKLOG,
         WORKBENCH_SPRINT_PLANNING,
         WORKBENCH_SCRUM_IMPEDIMENTS,
@@ -445,6 +527,7 @@ def validate_capability_keys(keys: list[str]) -> list[str]:
 
 
 _LEGACY_TRANSITION_PREFIX = "feature.transition."
+_STORY_TRANSITION_PREFIX = "story.transition."
 
 
 def resolve_capability_keys(keys: list[str]) -> list[str]:
@@ -452,9 +535,14 @@ def resolve_capability_keys(keys: list[str]) -> list[str]:
     expanded: list[str] = []
     for key in keys:
         expanded.append(key)
-        if key.startswith(_LEGACY_TRANSITION_PREFIX):
+        if key.startswith(_STORY_TRANSITION_PREFIX):
+            action = key[len(_STORY_TRANSITION_PREFIX) :]
+            expanded.append(f"record.task.transition.{action}")
+            expanded.append(f"{_LEGACY_TRANSITION_PREFIX}{action}")
+        elif key.startswith(_LEGACY_TRANSITION_PREFIX):
             action = key[len(_LEGACY_TRANSITION_PREFIX) :]
             expanded.append(f"record.feature.transition.{action}")
+            expanded.append(f"{_STORY_TRANSITION_PREFIX}{action}")
         elif key.startswith("record.feature.transition."):
             action = key.split(".")[-1]
             expanded.append(f"{_LEGACY_TRANSITION_PREFIX}{action}")
@@ -463,6 +551,11 @@ def resolve_capability_keys(keys: list[str]) -> list[str]:
             ms_suffix = key.split("scope.milestone.", 1)[1]
             if ms_suffix in ("create", "edit", "reorder", "cancel", "delete"):
                 expanded.append("record.milestone.read")
+        elif key.startswith("scope.sprint."):
+            expanded.append(key.replace("scope.sprint.", "record.sprint.", 1))
+            sp_suffix = key.split("scope.sprint.", 1)[1]
+            if sp_suffix in ("create", "edit", "reorder", "cancel", "delete"):
+                expanded.append("record.sprint.read")
         elif key.startswith("scope.epic."):
             expanded.append(key.replace("scope.epic.", "record.epic.", 1))
             epic_suffix = key.split("scope.epic.", 1)[1]
@@ -475,10 +568,23 @@ def resolve_capability_keys(keys: list[str]) -> list[str]:
         elif key.startswith("record.milestone.") and key.count(".") >= 2:
             suffix = key.split("record.milestone.", 1)[1]
             expanded.append(f"scope.milestone.{suffix}")
+        elif key.startswith("record.sprint.") and key.count(".") >= 2:
+            suffix = key.split("record.sprint.", 1)[1]
+            expanded.append(f"scope.sprint.{suffix}")
         elif key.startswith("scope.feature."):
             expanded.append(key.replace("scope.feature.", "record.feature.", 1))
             feat_suffix = key.split("scope.feature.", 1)[1]
             if feat_suffix in ("create", "edit", "migrate", "cancel"):
+                expanded.append("record.feature.read")
+            if feat_suffix == "create":
+                expanded.append(SCOPE_STORY_CREATE)
+        elif key.startswith("scope.story."):
+            expanded.append(key.replace("scope.story.", "record.task.", 1))
+            story_suffix = key.split("scope.story.", 1)[1]
+            if story_suffix in ("create", "edit", "cancel"):
+                expanded.append("record.task.read")
+            if story_suffix == "create":
+                expanded.append(SCOPE_FEATURE_CREATE)
                 expanded.append("record.feature.read")
         elif key.startswith("record.feature.") and not key.startswith("record.feature.transition."):
             suffix = key.split("record.feature.", 1)[1]

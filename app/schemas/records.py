@@ -27,7 +27,6 @@ class RecordRead(BaseModel):
 
 
 class RecordCreate(BaseModel):
-    actor_user_id: UUID
     record_type: str
     titulo: str = Field(min_length=1, max_length=255)
     descripcion: str | None = None
@@ -41,12 +40,10 @@ class RecordCreate(BaseModel):
 
 
 class RecordMigrateRequest(BaseModel):
-    actor_user_id: UUID
     target_milestone_id: UUID
 
 
 class RecordUpdate(BaseModel):
-    actor_user_id: UUID
     titulo: str | None = Field(default=None, min_length=1, max_length=255)
     descripcion: str | None = None
     parent_id: UUID | None = None
@@ -58,7 +55,6 @@ class RecordUpdate(BaseModel):
 
 
 class RecordTransitionRequest(BaseModel):
-    actor_user_id: UUID
     action_id: str
     target_state: str | None = None
     form_data: dict[str, Any] | None = None
@@ -73,7 +69,6 @@ class RecordTransitionRead(BaseModel):
 
 
 class RecordDependencyCreate(BaseModel):
-    actor_user_id: UUID
     predecessor_id: UUID
     successor_id: UUID
     dependency_type: str = "finish_to_start"

@@ -16,6 +16,7 @@ from app.schemas.project_structure import ProjectStructureDef, ProjectStructureE
 from app.services.packs import ensure_system_packs, list_record_types, seed_project_from_pack
 from app.services.project_structure import merge_pack_with_structure, validate_structure_entities
 from app.services.records import generic_store
+from tests.conftest import auth_headers
 from tests.org_helpers import create_organization, create_project_for_org, create_user
 
 
@@ -98,7 +99,6 @@ def test_create_project_with_custom_structure(db_session: Session, api_client: T
         "template_slug": "t3_interno_clasico",
         "fecha_inicio": "2026-01-01",
         "fecha_fin": "2026-12-31",
-        "created_by": str(owner.id),
         "project_structure": {
             "entity_types": [
                 {"key": "campana", "label": "Campaña", "orden": 1},
@@ -119,7 +119,11 @@ def test_create_project_with_custom_structure(db_session: Session, api_client: T
             "initial_roots": [{"titulo": "Lanzamiento Q1"}],
         },
     }
-    response = api_client.post("/api/v1/projects", json=payload)
+    response = api_client.post(
+        "/api/v1/projects",
+        json=payload,
+        headers=auth_headers(owner.id, org.id),
+    )
     assert response.status_code == 201, response.text
     project_id = response.json()["id"]
 
@@ -192,18 +196,19 @@ def test_entity_type_crud_api(db_session: Session, api_client: TestClient):
     create_resp = api_client.post(
         f"/api/v1/projects/{project.id}/entity-types",
         json={
-            "actor_user_id": str(pm.id),
             "key": "brief",
             "label": "Brief",
             "parent_type_keys": ["milestone"],
             "orden": 3,
         },
+        headers=auth_headers(pm.id),
     )
     assert create_resp.status_code == 201, create_resp.text
 
     patch_resp = api_client.patch(
         f"/api/v1/projects/{project.id}/entity-types/brief",
-        json={"actor_user_id": str(pm.id), "label": "Brief creativo"},
+        json={"label": "Brief creativo"},
+        headers=auth_headers(pm.id),
     )
     assert patch_resp.status_code == 200
     assert patch_resp.json()["label"] == "Brief creativo"
@@ -211,6 +216,7 @@ def test_entity_type_crud_api(db_session: Session, api_client: TestClient):
     delete_resp = api_client.request(
         "DELETE",
         f"/api/v1/projects/{project.id}/entity-types/brief",
-        json={"actor_user_id": str(pm.id)},
+        json={},
+        headers=auth_headers(pm.id),
     )
     assert delete_resp.status_code == 200

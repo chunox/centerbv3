@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.v1.auth_deps import AuthContext, get_current_auth, get_optional_auth
+from app.api.v1.auth_deps import AuthContext, get_current_auth
 from app.database import get_db
 from app.models.entities import User
 from app.schemas.auth import (
@@ -101,11 +101,9 @@ def switch_organization(
 
 @router.get("/session", response_model=AuthTokenResponse)
 def get_session(
-    auth: AuthContext | None = Depends(get_optional_auth),
+    auth: AuthContext = Depends(get_current_auth),
     db: Session = Depends(get_db),
 ):
-    if auth is None:
-        raise HTTPException(status_code=401, detail="No autenticado")
     return _token_response(db, auth.user, organization_id=auth.organization_id)
 
 

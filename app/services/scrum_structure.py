@@ -5,9 +5,9 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from app.models.entities import ProjectRecord
+from app.domain.project_templates import SCRUM_TEMPLATE_SLUGS
+from app.domain.project_mode import is_scrum_template  # re-export
 from app.services.scrum_v2_structure import (
-    SCRUM_TEMPLATE_SLUGS,
     apply_scrum_v2_structure,
     list_epic_tasks,
     list_stories_for_sprint,
@@ -24,10 +24,6 @@ __all__ = [
     "list_stories_in_backlog",
     "list_epic_tasks",
 ]
-
-
-def is_scrum_template(template_slug: str | None) -> bool:
-    return template_slug in SCRUM_TEMPLATE_SLUGS
 
 
 def apply_scrum_structure(db, project) -> None:

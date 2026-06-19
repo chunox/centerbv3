@@ -57,7 +57,7 @@ def test_sync_sprint_horas_completadas(db_session: Session):
     sprint = ProjectRecord(
         id=uuid4(),
         project_id=project_id,
-        record_type="milestone",
+        record_type="sprint",
         titulo="Sprint 1",
         estado="en_progreso",
         created_by=pm_id,
@@ -142,7 +142,7 @@ def test_sync_sprint_horas_planeadas(db_session: Session):
     sprint = ProjectRecord(
         id=uuid4(),
         project_id=project_id,
-        record_type="milestone",
+        record_type="sprint",
         titulo="Sprint 1",
         estado="en_progreso",
         created_by=pm_id,
@@ -205,7 +205,7 @@ def test_list_sprint_velocity_predictibilidad(db_session: Session):
     sprint = ProjectRecord(
         id=uuid4(),
         project_id=project_id,
-        record_type="milestone",
+        record_type="sprint",
         titulo="Sprint 1",
         estado="completado",
         created_by=pm_id,

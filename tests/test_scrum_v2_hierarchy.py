@@ -19,7 +19,7 @@ from app.services.scrum_v2_structure import (
     list_stories_in_backlog,
 )
 from tests.org_helpers import add_member_with_slug, create_organization
-from tests.record_helpers import create_milestone_record
+from tests.record_helpers import create_sprint_record
 
 
 @pytest.fixture
@@ -78,10 +78,11 @@ def _seed_scrum_project(session: Session):
     return project, pm_id, dev_id
 
 
-def test_product_backlog_milestone_and_epic_story_tasks(db_session: Session):
+def test_product_backlog_record_and_epic_story_tasks(db_session: Session):
     project, pm_id, _ = _seed_scrum_project(db_session)
     backlog = get_product_backlog_milestone(db_session, project.id)
     assert backlog is not None
+    assert backlog.record_type == "product_backlog"
 
     epic = create_epic_task(db_session, project, titulo="Inventario", created_by=pm_id)
     story = create_story_task(
@@ -108,16 +109,14 @@ def test_comprometer_sprint_reparents_story(db_session: Session):
         created_by=pm_id,
         epic_task_id=epic.id,
     )
-    sprint = create_milestone_record(
+    sprint = create_sprint_record(
         db_session,
         project,
         created_by=pm_id,
         nombre="Sprint 1",
         orden=1,
+        horas_planeadas=32,
     )
-    sprint.data = {"tipo": "sprint", "sprint_goal": "Goal", "horas_planeadas": 32}
-    sprint.fecha_inicio = date(2026, 3, 1)
-    sprint.fecha_fin = date(2026, 3, 14)
     db_session.commit()
 
     transition_record(
@@ -148,14 +147,13 @@ def test_dev_task_rollup_and_uat(db_session: Session):
         created_by=pm_id,
         epic_task_id=epic.id,
     )
-    sprint = create_milestone_record(
+    sprint = create_sprint_record(
         db_session,
         project,
         created_by=pm_id,
         nombre="Sprint 2",
         orden=2,
     )
-    sprint.data = {"tipo": "sprint"}
     db_session.commit()
 
     transition_record(

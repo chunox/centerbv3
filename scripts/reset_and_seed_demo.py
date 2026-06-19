@@ -1,5 +1,11 @@
 """
-Reinicia data/v3.db y carga 2 proyectos demo muy poblados (con_cliente + interno).
+Seed global Center v3: reset de BD + 4 proyectos demo.
+
+Plantillas:
+  • Portal Cliente Demo      — t1_cliente_clasico  (waterfall con cliente)
+  • Plataforma Interna Center — t3_interno_clasico  (waterfall interno)
+  • Logistics Hub            — t6_scrum_interno
+  • E-commerce Relaunch      — t7_scrum_cliente
 
 Uso (con API en :8000):
   .venv\\Scripts\\python.exe scripts/reset_and_seed_demo.py
@@ -15,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -29,9 +36,9 @@ sys.path.insert(0, str(ROOT))
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "v3.db"
 UPLOADS_DIR = DATA_DIR / "uploads"
-BASE = "http://127.0.0.1:8000/api/v1"
+BASE = os.environ.get("CENTER_API_BASE", "http://127.0.0.1:8000/api/v1")
 DEMO_PASSWORD = "demo12345"
-SEED_VERSION = "v12-project-profiles"
+SEED_VERSION = "v13-global-four-templates"
 # Procedimiento de wipe y smoke post-reset: docs/SMOKE_RESET_ROLES.md
 
 DEMO_USERS = [
@@ -40,14 +47,13 @@ DEMO_USERS = [
     ("dev2@center.demo", "Mía Dev2"),
     ("qa@center.demo", "Sofía QA"),
     ("cliente@center.demo", "Clara Cliente"),
-    ("copy@center.demo", "Tomás Copy"),
-    ("design@center.demo", "Valentina Diseño"),
-    ("social@center.demo", "Nico Social"),
 ]
 
 DEMO_PROJECTS = [
     "Portal Cliente Demo",
     "Plataforma Interna Center",
+    "Logistics Hub",
+    "E-commerce Relaunch",
 ]
 
 TASK_STATES = ["backlog", "to_do", "in_progress", "ready_for_test", "completed"]
@@ -84,21 +90,52 @@ def http(
             parsed = raw
         if expect_status is not None and e.code == expect_status:
             return e.code, parsed
-        raise RuntimeError(f"HTTP {e.code}: {raw[:400]}") from e
+        raise RuntimeError(f"HTTP {e.code} {method} {path}: {raw[:400]}") from e
+
+
+TEAM_ROLE_SLUGS = ["pm", "dev", "qa", "tech_lead", "pm_tecnico"]
+
+
+def visible_roles_for(visibilidad: str) -> list[str]:
+    """Mapeo legacy visibilidad → visible_roles del hub (vacío = todos los roles)."""
+    if visibilidad == "interno":
+        return list(TEAM_ROLE_SLUGS)
+    return []
+
+
+def hub_entry_body(
+    *,
+    tipo: str,
+    contenido: str,
+    titulo: str | None = None,
+    visibilidad: str = "publico",
+    record_id: str | None = None,
+) -> dict:
+    body: dict = {
+        "tipo": tipo,
+        "contenido": contenido,
+        "visible_roles": visible_roles_for(visibilidad),
+    }
+    if titulo:
+        body["titulo"] = titulo
+    if record_id:
+        body["record_id"] = record_id
+    return body
 
 
 def wait_for_api(timeout_sec: int = 90) -> None:
+    health_url = BASE.replace("/api/v1", "") + "/health"
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
         try:
-            req = urllib.request.Request("http://127.0.0.1:8000/health")
+            req = urllib.request.Request(health_url)
             with urllib.request.urlopen(req, timeout=5) as res:
                 if res.status == 200:
                     return
         except Exception:
             pass
         time.sleep(1)
-    raise RuntimeError("API no respondió en /health — iniciá uvicorn en :8000")
+    raise RuntimeError(f"API no respondió en {health_url} — iniciá uvicorn en :8000")
 
 
 def truncate_database() -> None:
@@ -170,17 +207,17 @@ def add_days(base: date, days: int) -> str:
 
 
 def ensure_user(email: str, nombre: str) -> dict:
-    _, users = http("GET", "/users")
-    for u in users:
-        if u["email"] == email:
-            return u
-    _, user = http(
+    try:
+        return login(email)["user"]
+    except RuntimeError:
+        pass
+    _, auth = http(
         "POST",
-        "/users",
+        "/auth/register",
         body={"email": email, "nombre": nombre, "password": DEMO_PASSWORD},
         expect_status=201,
     )
-    return user
+    return auth["user"]
 
 
 def login(email: str) -> dict:
@@ -193,12 +230,23 @@ def login(email: str) -> dict:
     return auth
 
 
-def add_member(project_id: str, pm_id: str, user_id: str, rol: str) -> None:
+def token_for_user(user_id: str, users: dict[str, dict], cache: dict[str, str]) -> str:
+    if user_id in cache:
+        return cache[user_id]
+    for email, u in users.items():
+        if u["id"] == user_id:
+            cache[user_id] = login(email)["access_token"]
+            return cache[user_id]
+    raise KeyError(f"Usuario no encontrado: {user_id}")
+
+
+def add_member(token: str, project_id: str, user_id: str, rol: str) -> None:
     try:
         http(
             "POST",
             f"/projects/{project_id}/members",
-            body={"actor_user_id": pm_id, "user_id": user_id, "rol": rol},
+            body={"user_id": user_id, "rol": rol},
+            token=token,
             expect_status=201,
         )
     except RuntimeError:
@@ -213,7 +261,6 @@ def post(token: str, path: str, body: dict, *, expect: int = 201) -> dict:
 def create_record_dependency(
     token: str,
     project_id: str,
-    actor_user_id: str,
     predecessor_id: str,
     successor_id: str,
 ) -> None:
@@ -221,15 +268,13 @@ def create_record_dependency(
         token,
         f"/projects/{project_id}/record-dependencies",
         {
-            "actor_user_id": actor_user_id,
             "predecessor_id": predecessor_id,
             "successor_id": successor_id,
         },
     )
 
 
-def create_project(token: str, org_id: str, pm_id: str, **kwargs) -> dict:
-    kwargs.setdefault("created_by", pm_id)
+def create_project(token: str, org_id: str, **kwargs) -> dict:
     kwargs.setdefault("organization_id", org_id)
     return post(token, "/projects", kwargs)
 
@@ -237,7 +282,6 @@ def create_project(token: str, org_id: str, pm_id: str, **kwargs) -> dict:
 def create_milestone(
     token: str,
     project_id: str,
-    pm_id: str,
     *,
     nombre: str,
     orden: int,
@@ -246,7 +290,6 @@ def create_milestone(
     descripcion: str = "",
 ) -> dict:
     body: dict = {
-        "actor_user_id": pm_id,
         "record_type": "milestone",
         "titulo": nombre,
         "descripcion": descripcion,
@@ -266,7 +309,6 @@ def create_feature(
     token: str,
     project_id: str,
     milestone_id: str,
-    pm_id: str,
     *,
     nombre: str,
     estado: str,
@@ -279,7 +321,6 @@ def create_feature(
         token,
         f"/projects/{project_id}/records",
         {
-            "actor_user_id": pm_id,
             "record_type": "feature",
             "titulo": nombre,
             "descripcion": descripcion,
@@ -300,12 +341,10 @@ def create_task(
     *,
     titulo: str,
     estado: str,
-    created_by: str,
     asignado_ids: list[str] | None = None,
     descripcion: str = "",
 ) -> dict:
     body: dict = {
-        "actor_user_id": created_by,
         "record_type": "task",
         "titulo": titulo,
         "parent_id": feature_id,
@@ -323,14 +362,16 @@ def transition_record(
     project_id: str,
     record_id: str,
     *,
-    actor_user_id: str,
     action_id: str,
     target_state: str | None = None,
+    side_effect_context: dict | None = None,
     ignore_errors: bool = False,
 ) -> dict | None:
-    body: dict = {"actor_user_id": actor_user_id, "action_id": action_id}
+    body: dict = {"action_id": action_id}
     if target_state is not None:
         body["target_state"] = target_state
+    if side_effect_context:
+        body["side_effect_context"] = side_effect_context
     try:
         _, data = http(
             "POST",
@@ -353,13 +394,11 @@ def create_query(
     *,
     titulo: str,
     descripcion: str,
-    author_id: str,
 ) -> dict:
     return post(
         token,
         f"/projects/{project_id}/records",
         {
-            "actor_user_id": author_id,
             "record_type": "query",
             "titulo": titulo,
             "descripcion": descripcion,
@@ -381,7 +420,6 @@ def create_report(
         token,
         f"/projects/{project_id}/records",
         {
-            "actor_user_id": reported_by,
             "record_type": "report",
             "titulo": descripcion[:120],
             "descripcion": descripcion,
@@ -396,7 +434,6 @@ def create_comment(
     *,
     entidad_tipo: str,
     entidad_id: str,
-    user_id: str,
     contenido: str,
     estado_momento: str,
 ) -> None:
@@ -406,7 +443,6 @@ def create_comment(
         {
             "entidad_tipo": entidad_tipo,
             "entidad_id": entidad_id,
-            "user_id": user_id,
             "contenido": contenido,
             "estado_momento": estado_momento,
         },
@@ -414,12 +450,13 @@ def create_comment(
 
 
 def seed_tasks_for_feature(
-    token: str,
     project_id: str,
     milestone_id: str,
     feature_id: str,
     feature_nombre: str,
     dev_ids: list[str],
+    users: dict[str, dict],
+    token_cache: dict[str, str],
     *,
     count: int = 10,
 ) -> int:
@@ -440,15 +477,15 @@ def seed_tasks_for_feature(
     created = 0
     for i in range(count):
         dev = dev_ids[i % len(dev_ids)]
+        dev_token = token_for_user(dev, users, token_cache)
         titulo = f"{prefixes[i % len(prefixes)]} {feature_nombre} #{i + 1}"
         create_task(
-            token,
+            dev_token,
             project_id,
             milestone_id,
             feature_id,
             titulo=titulo,
             estado=TASK_STATES[i % len(TASK_STATES)],
-            created_by=dev,
             asignado_ids=[dev] if i % 4 != 3 else None,
             descripcion=f"Tarea demo {i + 1} para {feature_nombre}.",
         )
@@ -468,11 +505,11 @@ def seed_portal_cliente(
     qa = users["qa@center.demo"]
     cliente = users["cliente@center.demo"]
     dev_ids = [dev["id"], dev2["id"]]
+    token_cache: dict[str, str] = {pm["id"]: token}
 
     portal = create_project(
         token,
         org_id,
-        pm["id"],
         nombre="Portal Cliente Demo",
         descripcion=(
             "Proyecto con cliente externo: inbox denso, reportes, consultas, "
@@ -489,7 +526,7 @@ def seed_portal_cliente(
         (qa["id"], "qa"),
         (cliente["id"], "cliente"),
     ]:
-        add_member(portal["id"], pm["id"], uid, rol)
+        add_member(token, portal["id"], uid, rol)
 
     milestones_spec = [
         ("Entrega 1 — MVP", 1, -45, 20, "Auth, dashboard, OAuth y notificaciones."),
@@ -503,7 +540,6 @@ def seed_portal_cliente(
         ms = create_milestone(
             token,
             portal["id"],
-            pm["id"],
             nombre=nombre,
             orden=orden,
             fecha_inicio=add_days(today, start),
@@ -516,7 +552,6 @@ def seed_portal_cliente(
         token,
         portal["id"],
         milestones[4]["id"],
-        actor_user_id=pm["id"],
         action_id="cancelar",
     )
 
@@ -550,7 +585,6 @@ def seed_portal_cliente(
             token,
             portal["id"],
             milestones[ms_idx]["id"],
-            pm["id"],
             nombre=nombre,
             estado=estado,
             prioridad=prioridad,
@@ -563,12 +597,13 @@ def seed_portal_cliente(
         if estado not in ("completado", "cancelado") and idx in active_feature_indices:
             n_tasks = 12 if prioridad in ("critica", "alta") else 8
             task_total += seed_tasks_for_feature(
-                token,
                 portal["id"],
                 milestones[ms_idx]["id"],
                 feat["id"],
                 nombre,
                 dev_ids,
+                users,
+                token_cache,
                 count=n_tasks,
             )
 
@@ -578,9 +613,9 @@ def seed_portal_cliente(
     dashboard = features[1]
     api_publica = features[9]
 
-    create_record_dependency(token, portal["id"], pm["id"], oauth["id"], dashboard["id"])
-    create_record_dependency(token, portal["id"], pm["id"], auth_feat["id"], oauth["id"])
-    create_record_dependency(token, portal["id"], pm["id"], webhooks["id"], api_publica["id"])
+    create_record_dependency(token, portal["id"], oauth["id"], dashboard["id"])
+    create_record_dependency(token, portal["id"], auth_feat["id"], oauth["id"])
+    create_record_dependency(token, portal["id"], webhooks["id"], api_publica["id"])
 
     queries_spec = [
         (0, "¿Usamos SSO corporativo?", "Cliente pregunta por IdP.", dev["id"], "activar"),
@@ -595,19 +630,17 @@ def seed_portal_cliente(
     for feat_idx, titulo, desc, author, action in queries_spec:
         feat = features[feat_idx]
         q = create_query(
-            token,
+            token_for_user(author, users, token_cache),
             portal["id"],
             feat["id"],
             titulo=titulo,
             descripcion=desc,
-            author_id=author,
         )
         actor = dev["id"] if action == "solicitar_envio" else pm["id"]
         transition_record(
-            token,
+            token_for_user(actor, users, token_cache),
             portal["id"],
             q["id"],
-            actor_user_id=actor,
             action_id=action,
         )
 
@@ -622,7 +655,7 @@ def seed_portal_cliente(
     for feat_idx, tipo, desc in reports_spec:
         feat = features[feat_idx]
         create_report(
-            token,
+            token_for_user(cliente["id"], users, token_cache),
             portal["id"],
             feat["id"],
             tipo=tipo,
@@ -630,51 +663,42 @@ def seed_portal_cliente(
             reported_by=cliente["id"],
         )
 
-    doc = post(
-        token,
-        f"/projects/{portal['id']}/document",
-        {
-            "titulo": "Especificación funcional Portal Cliente",
-            "contenido": (
-                "Alcance MVP: auth, dashboard, OAuth, notificaciones.\n\n"
-                "Integraciones: webhooks, Salesforce, API pública.\n\n"
-                "Analytics y mobile web en entregas posteriores."
-            ),
-            "visibilidad": "publico",
-            "created_by": pm["id"],
-        },
+    spec_contenido = (
+        "Alcance MVP: auth, dashboard, OAuth, notificaciones.\n\n"
+        "Integraciones: webhooks, Salesforce, API pública.\n\n"
+        "Analytics y mobile web en entregas posteriores."
     )
     post(
         token,
-        f"/projects/{portal['id']}/document-exposures",
-        {
-            "ambito": "proyecto",
-            "document_id": doc["id"],
-            "titulo_visible": "Especificación completa (cliente)",
-            "expuesto_por": pm["id"],
-        },
+        f"/projects/{portal['id']}/hub-entries",
+        hub_entry_body(
+            tipo="page",
+            titulo="Especificación funcional Portal Cliente",
+            contenido=spec_contenido,
+            visibilidad="publico",
+        ),
     )
     post(
         token,
-        f"/projects/{portal['id']}/document-exposures",
-        {
-            "ambito": "milestone",
-            "record_id": milestones[0]["id"],
-            "document_id": doc["id"],
-            "titulo_visible": "Alcance Entrega 1 — MVP",
-            "expuesto_por": pm["id"],
-        },
+        f"/projects/{portal['id']}/hub-entries",
+        hub_entry_body(
+            tipo="page",
+            titulo="Alcance Entrega 1 — MVP",
+            contenido="Detalle de alcance para la primera entrega (MVP).",
+            visibilidad="publico",
+            record_id=milestones[0]["id"],
+        ),
     )
     post(
         token,
-        f"/projects/{portal['id']}/document-exposures",
-        {
-            "ambito": "feature",
-            "record_id": webhooks["id"],
-            "document_id": doc["id"],
-            "titulo_visible": "Webhooks — anexo técnico",
-            "expuesto_por": pm["id"],
-        },
+        f"/projects/{portal['id']}/hub-entries",
+        hub_entry_body(
+            tipo="page",
+            titulo="Webhooks — anexo técnico",
+            contenido="Contratos y ejemplos de payload para webhooks salientes.",
+            visibilidad="publico",
+            record_id=webhooks["id"],
+        ),
     )
 
     hub_updates = [
@@ -694,34 +718,27 @@ def seed_portal_cliente(
     ]
     for contenido, author, vis, _ in hub_updates:
         post(
-            token,
+            token_for_user(author, users, token_cache),
             f"/projects/{portal['id']}/hub-entries",
-            {
-                "author_id": author,
-                "tipo": "update",
-                "contenido": contenido,
-                "visibilidad": vis,
-            },
+            hub_entry_body(tipo="update", contenido=contenido, visibilidad=vis),
         )
     for titulo, contenido, author, vis in hub_notes:
         post(
-            token,
+            token_for_user(author, users, token_cache),
             f"/projects/{portal['id']}/hub-entries",
-            {
-                "author_id": author,
-                "tipo": "note",
-                "titulo": titulo,
-                "contenido": contenido,
-                "visibilidad": vis,
-            },
+            hub_entry_body(
+                tipo="note",
+                titulo=titulo,
+                contenido=contenido,
+                visibilidad=vis,
+            ),
         )
 
     for i, feat in enumerate(features[:12]):
         create_comment(
-            token,
+            token_for_user(dev_ids[i % 2], users, token_cache),
             entidad_tipo="feature",
             entidad_id=feat["id"],
-            user_id=dev_ids[i % 2],
             contenido=f"Comentario demo #{i + 1} en {record_title(feat)[:40]}.",
             estado_momento=features_spec[i][2],
         )
@@ -747,11 +764,11 @@ def seed_plataforma_interna(
     dev2 = users["dev2@center.demo"]
     qa = users["qa@center.demo"]
     dev_ids = [dev["id"], dev2["id"]]
+    token_cache: dict[str, str] = {pm["id"]: token}
 
     interno = create_project(
         token,
         org_id,
-        pm["id"],
         nombre="Plataforma Interna Center",
         descripcion=(
             "Proyecto interno: múltiples sprints, UAT denso, consultas PM, "
@@ -767,7 +784,7 @@ def seed_plataforma_interna(
         (dev2["id"], "dev"),
         (qa["id"], "qa"),
     ]:
-        add_member(interno["id"], pm["id"], uid, rol)
+        add_member(token, interno["id"], uid, rol)
 
     milestones_spec = [
         ("Sprint 1 — Fundaciones", 1, -30, 0, "API, auth interna y layout."),
@@ -781,7 +798,6 @@ def seed_plataforma_interna(
         ms = create_milestone(
             token,
             interno["id"],
-            pm["id"],
             nombre=nombre,
             orden=orden,
             fecha_inicio=add_days(today, start),
@@ -819,7 +835,6 @@ def seed_plataforma_interna(
             token,
             interno["id"],
             milestones[ms_idx]["id"],
-            pm["id"],
             nombre=nombre,
             estado=estado,
             prioridad=prioridad,
@@ -831,12 +846,13 @@ def seed_plataforma_interna(
         if estado not in ("cancelado",):
             n_tasks = 14 if prioridad in ("critica", "alta") else 9
             task_total += seed_tasks_for_feature(
-                token,
                 interno["id"],
                 milestones[ms_idx]["id"],
                 feat["id"],
                 nombre,
                 dev_ids,
+                users,
+                token_cache,
                 count=n_tasks,
             )
 
@@ -852,33 +868,31 @@ def seed_plataforma_interna(
     for feat_idx, titulo, desc, author in queries_spec:
         feat = features[feat_idx]
         q = create_query(
-            token,
+            token_for_user(author, users, token_cache),
             interno["id"],
             feat["id"],
             titulo=titulo,
             descripcion=desc,
-            author_id=author,
         )
         transition_record(
             token,
             interno["id"],
             q["id"],
-            actor_user_id=pm["id"],
             action_id="activar",
         )
 
     post(
         token,
-        f"/projects/{interno['id']}/document",
-        {
-            "titulo": "Wiki técnica Plataforma Interna",
-            "contenido": (
+        f"/projects/{interno['id']}/hub-entries",
+        hub_entry_body(
+            tipo="page",
+            titulo="Wiki técnica Plataforma Interna",
+            contenido=(
                 "Contratos API, ADRs, runbooks y checklists de release.\n\n"
-                "Solo visible para el equipo (visibilidad interno)."
+                "Solo visible para el equipo (roles internos)."
             ),
-            "visibilidad": "interno",
-            "created_by": pm["id"],
-        },
+            visibilidad="interno",
+        ),
     )
 
     for contenido, author in [
@@ -892,14 +906,9 @@ def seed_plataforma_interna(
         ("Seed demo v10 desplegado.", pm["id"]),
     ]:
         post(
-            token,
+            token_for_user(author, users, token_cache),
             f"/projects/{interno['id']}/hub-entries",
-            {
-                "author_id": author,
-                "tipo": "update",
-                "contenido": contenido,
-                "visibilidad": "interno",
-            },
+            hub_entry_body(tipo="update", contenido=contenido, visibilidad="interno"),
         )
 
     for titulo, contenido, author in [
@@ -908,23 +917,21 @@ def seed_plataforma_interna(
         ("QA focus", "UAT gates por feature.", pm["id"]),
     ]:
         post(
-            token,
+            token_for_user(author, users, token_cache),
             f"/projects/{interno['id']}/hub-entries",
-            {
-                "author_id": author,
-                "tipo": "note",
-                "titulo": titulo,
-                "contenido": contenido,
-                "visibilidad": "interno",
-            },
+            hub_entry_body(
+                tipo="note",
+                titulo=titulo,
+                contenido=contenido,
+                visibilidad="interno",
+            ),
         )
 
     for i, feat in enumerate(features):
         create_comment(
-            token,
+            token_for_user(dev_ids[i % 2], users, token_cache),
             entidad_tipo="feature",
             entidad_id=feat["id"],
-            user_id=dev_ids[i % 2],
             contenido=f"Seguimiento interno #{i + 1}: {record_title(feat)[:35]}.",
             estado_momento=features_spec[i][2],
         )
@@ -937,385 +944,744 @@ def seed_plataforma_interna(
         "queries": len(queries_spec),
     }
 
+# ── Scrum demo (t6 + t7) ────────────────────────────────────────────────────
 
-def create_record(
+HistoriaSpec = tuple[str, str, str, str, list[float] | None]
+
+# (nombre, orden, start_offset, end_offset, goal, sprint_state, velocidad_planeada)
+SprintDef = tuple[str, int, int, int, str, str, int]
+
+SPRINTS: list[SprintDef] = [
+    (
+        "Sprint 1 — Fundamentos",
+        1,
+        -56,
+        -43,
+        "Modelo de almacenes, SKUs y API de inventario con UI operativa.",
+        "completado",
+        34,
+    ),
+    (
+        "Sprint 2 — Operaciones",
+        2,
+        -14,
+        -1,
+        "Recepciones, movimientos de stock y alertas de mínimos.",
+        "en_progreso",
+        31,
+    ),
+    (
+        "Sprint 3 — Tracking",
+        3,
+        0,
+        13,
+        "Trazabilidad de envíos, estados en tiempo real y notificaciones.",
+        "pendiente",
+        28,
+    ),
+    (
+        "Sprint 4 — Analytics",
+        4,
+        14,
+        27,
+        "Dashboards de rotación, SLA de entrega y exportaciones.",
+        "pendiente",
+        30,
+    ),
+]
+
+S1_SPEC: list[HistoriaSpec] = [
+    ("Modelo de almacenes y SKUs", "8", "alta", "completado", [4, 4, 2]),
+    ("API CRUD inventario", "5", "alta", "completado", [3, 3, 2]),
+    ("UI: lista de stock con filtros", "5", "alta", "completado", [3, 2, 2]),
+    ("Importación masiva CSV de productos", "3", "media", "completado", [2, 2]),
+    ("Tests integración capa repositorio", "3", "media", "completado", [2, 1.5]),
+    ("Documentación API inventario (OpenAPI)", "2", "baja", "completado", [1.5, 1]),
+]
+
+S2_SPEC: list[HistoriaSpec] = [
+    ("Recepción de mercadería con lote", "8", "alta", "uat", [4, 4, 2]),
+    ("Movimientos entre almacenes", "5", "alta", "en_progreso", [3, 3, 2]),
+    ("Alertas de stock mínimo por SKU", "5", "media", "en_progreso", [2.5, 2.5, 2]),
+    ("Historial de movimientos auditables", "3", "media", "esperando_liberacion_pm", [2, 2]),
+    ("Reserva de stock para pedidos", "5", "alta", "pendiente", [3, 3]),
+    ("UI: panel de operaciones diarias", "3", "media", "pendiente", [2, 1.5]),
+]
+
+S3_SPEC: list[HistoriaSpec] = [
+    ("Estados de envío y timeline", "8", "alta", "pendiente", [4, 4, 2]),
+    ("Tracking por código de seguimiento", "5", "alta", "pendiente", [3, 3]),
+    ("Notificaciones email en hitos clave", "5", "media", "pendiente", [2.5, 2.5]),
+    ("Webhook para integraciones TMS", "3", "media", "pendiente", [2, 2]),
+    ("Mapa de rutas activas (vista lista)", "3", "baja", "pendiente", [2, 1.5]),
+]
+
+S4_SPEC: list[HistoriaSpec] = [
+    ("Dashboard rotación de inventario", "8", "alta", "pendiente", None),
+    ("SLA de entrega por carrier", "5", "alta", "pendiente", None),
+    ("Export CSV de métricas semanales", "3", "media", "pendiente", None),
+    ("Gráficos de incidencias por hub", "5", "media", "pendiente", None),
+    ("Reporte de fill-rate por almacén", "3", "baja", "pendiente", None),
+]
+
+SPRINT_HISTORIAS: dict[int, list[HistoriaSpec]] = {
+    1: S1_SPEC,
+    2: S2_SPEC,
+    3: S3_SPEC,
+    4: S4_SPEC,
+}
+
+# (titulo, story_points, prioridad, horas_tareas | None)
+BACKLOG: list[tuple[str, str, str, list[float] | None]] = [
+    ("Integración ERP SAP (inventario)", "13", "alta", [8, 6]),
+    ("App móvil escaneo de códigos de barras", "8", "alta", [6, 4]),
+    ("Optimización de rutas con ML", "13", "media", None),
+    ("Multi-tenant para 3PL", "8", "alta", [4, 4]),
+    ("Portal cliente: tracking self-service", "5", "media", [3, 2]),
+    ("Gestión de devoluciones (RMA)", "5", "media", [3, 2.5]),
+    ("Etiquetado ZPL para impresoras térmicas", "3", "baja", [2, 1.5]),
+    ("Control de temperatura cadena frío", "8", "baja", None),
+    ("API GraphQL para partners", "5", "baja", None),
+    ("Automatización reabastecimiento predictivo", "13", "media", None),
+]
+
+TASK_TITLES = [
+    "Análisis y diseño",
+    "Implementación backend",
+    "Implementación frontend",
+    "Tests y revisión",
+]
+
+
+# ── Seed principal ────────────────────────────────────────────────────────────
+
+
+def mk_sprint(token, pid, *, nombre, orden, fi, ff, goal, horas_planeadas):
+    return post(token, f"/projects/{pid}/records", {
+        "record_type": "sprint",
+        "titulo": nombre,
+        "descripcion": goal,
+        "data": {
+            "sprint_goal": goal,
+            "horas_planeadas": horas_planeadas,
+        },
+        "orden": orden,
+        "fecha_inicio": fi,
+        "fecha_fin": ff,
+    })
+
+
+def mk_epic(token, pid, *, nombre):
+    return post(token, f"/projects/{pid}/records", {
+        "record_type": "task",
+        "titulo": nombre,
+        "data": {"scrum_role": "epic"},
+    })
+
+
+def mk_historia(token, pid, *, nombre, epic_id, prio, desc=""):
+    return post(token, f"/projects/{pid}/records", {
+        "record_type": "task",
+        "titulo": nombre,
+        "descripcion": desc,
+        "initial_state": "product_backlog",
+        "data": {
+            "scrum_role": "story",
+            "epic_task_id": epic_id,
+            "prioridad": prio,
+            "bloqueada": False,
+        },
+    })
+
+
+def mk_backlog(token, pid, *, nombre, epic_id, prio, desc=""):
+    return mk_historia(token, pid, nombre=nombre, epic_id=epic_id, prio=prio, desc=desc)
+
+
+def mk_tarea(token, pid, story_id, *, titulo, estado, asignee=None, horas=None):
+    body = {
+        "record_type": "task",
+        "titulo": titulo,
+        "data": {
+            "scrum_role": "dev",
+            "parent_task_id": story_id,
+        },
+        "initial_state": estado,
+    }
+    if horas is not None:
+        body["data"]["estimacion_horas"] = horas
+    if asignee:
+        body["assignee_ids"] = [asignee]
+    return post(token, f"/projects/{pid}/records", body)
+
+
+def mk_subtarea(token, pid, parent_dev_id, *, titulo, estado, asignee=None, horas=None):
+    body = {
+        "record_type": "task",
+        "titulo": titulo,
+        "data": {
+            "scrum_role": "dev",
+            "parent_task_id": parent_dev_id,
+        },
+        "initial_state": estado,
+    }
+    if horas is not None:
+        body["data"]["estimacion_horas"] = horas
+    if asignee:
+        body["assignee_ids"] = [asignee]
+    return post(token, f"/projects/{pid}/records", body)
+
+
+def seed_subtareas(token, pid, parent_dev_id, *, asignee=None, count: int = 2):
+    estados = ["to_do", "in_progress", "completed"]
+    for i in range(count):
+        mk_subtarea(
+            token, pid, parent_dev_id,
+            titulo=f"Subtarea {i + 1}",
+            estado=estados[i % len(estados)],
+            asignee=asignee,
+            horas=1.5 + i,
+        )
+
+
+def seed_tareas(
+    token,
+    pid,
+    feature_id,
+    horas_list,
+    *,
+    asignee=None,
+    task_estado=None,
+):
+    estados_cycle = ["to_do", "in_progress", "completed", "ready_for_test"]
+    for i, horas in enumerate(horas_list):
+        titulo = TASK_TITLES[i % len(TASK_TITLES)]
+        if len(horas_list) > len(TASK_TITLES):
+            titulo = f"{titulo} ({i + 1})"
+        estado = task_estado or estados_cycle[i % len(estados_cycle)]
+        task = mk_tarea(
+            token, pid, feature_id,
+            titulo=titulo,
+            estado=estado,
+            asignee=asignee,
+            horas=horas,
+        )
+        if i == 0 and len(horas_list) >= 2:
+            seed_subtareas(token, pid, task["id"], asignee=asignee, count=2)
+
+
+def task_estado_for_final(estado_final: str) -> str | None:
+    if estado_final in ("completado", "uat", "esperando_liberacion_pm", "esperando_validacion_cliente"):
+        return "ready_for_test"
+    if estado_final == "pendiente":
+        return "to_do"
+    return None
+
+
+def advance_historia(
+    users,
+    token_cache,
+    pid,
+    pm_id,
+    tech_id,
+    qa_id,
+    feature_id,
+    sprint_id,
+    estado_final: str,
+    *,
+    horas_list: list[float] | None = None,
+    assignee=None,
+    task_estado: str | None = None,
+):
+    pm_token = token_for_user(pm_id, users, token_cache)
+    tech_token = token_for_user(tech_id, users, token_cache)
+    qa_token = token_for_user(qa_id, users, token_cache)
+    scrum_tr(
+        pm_token, pid, feature_id, action="comprometer_sprint",
+        side_effect_context={"sprint_id": sprint_id},
+    )
+    if horas_list:
+        seed_tareas(
+            tech_token, pid, feature_id, horas_list,
+            asignee=assignee,
+            task_estado=task_estado or task_estado_for_final(estado_final),
+        )
+    if estado_final == "completado":
+        scrum_tr(tech_token, pid, feature_id, action="pasar_a_uat")
+        scrum_tr(qa_token, pid, feature_id, action="enviar_al_pm")
+        scrum_tr(pm_token, pid, feature_id, action="completar")
+    elif estado_final in ("uat", "esperando_liberacion_pm"):
+        scrum_tr(tech_token, pid, feature_id, action="pasar_a_uat")
+        if estado_final == "esperando_liberacion_pm":
+            scrum_tr(qa_token, pid, feature_id, action="enviar_al_pm")
+
+
+def scrum_tr(token, pid, rid, *, action, target=None, side_effect_context=None, silent=True):
+    return transition_record(
+        token, pid, rid,
+        action_id=action,
+        target_state=target,
+        side_effect_context=side_effect_context,
+        ignore_errors=silent,
+    )
+
+
+def scrum_hub_note(token, pid, *, titulo, contenido, visibilidad="interno"):
+    return post(
+        token,
+        f"/projects/{pid}/hub-entries",
+        hub_entry_body(tipo="note", titulo=titulo, contenido=contenido, visibilidad=visibilidad),
+    )
+
+
+def scrum_hub_update(token, pid, *, contenido, visibilidad="publico"):
+    return post(
+        token,
+        f"/projects/{pid}/hub-entries",
+        hub_entry_body(tipo="update", contenido=contenido, visibilidad=visibilidad),
+    )
+
+def seed_logistics_hub(token, users, org_id, today: date) -> dict[str, int | str]:
+
+    pm = users["pm@center.demo"]
+    tech = users["dev@center.demo"]
+    dev = users["dev2@center.demo"]
+    qa = users["qa@center.demo"]
+    pm_id = pm["id"]
+    token_cache: dict[str, str] = {pm_id: token}
+
+    print("  Creando Logistics Hub (t6_scrum_interno)...")
+    p = post(token, "/projects", {
+        "organization_id": org_id,
+        "nombre": "Logistics Hub",
+        "descripcion": (
+            "Plataforma de operaciones logísticas: inventario multi-almacén, "
+            "movimientos, tracking de envíos y analíticas de rendimiento."
+        ),
+        "pack_slug": "software",
+        "template_slug": "t6_scrum_interno",
+        "fecha_inicio": add_days(today, -56),
+        "fecha_fin": add_days(today, 84),
+    })
+    pid = p["id"]
+
+    for uid, rol in [(pm_id, "pm"), (tech["id"], "tech_lead"), (dev["id"], "dev"), (qa["id"], "qa")]:
+        add_member(token, pid, uid, rol)
+
+    assignees = [tech["id"], dev["id"]]
+    historia_count = 0
+    task_count = 0
+
+    epics = {
+        "inventario": mk_epic(token, pid, nombre="Inventario")["id"],
+        "operaciones": mk_epic(token, pid, nombre="Operaciones")["id"],
+        "tracking": mk_epic(token, pid, nombre="Tracking")["id"],
+        "analytics": mk_epic(token, pid, nombre="Analytics")["id"],
+        "plataforma": mk_epic(token, pid, nombre="Plataforma")["id"],
+    }
+    epic_by_sprint = {
+        1: epics["inventario"],
+        2: epics["operaciones"],
+        3: epics["tracking"],
+        4: epics["analytics"],
+    }
+
+    for nombre, orden, start_off, end_off, goal, sprint_state, horas_plan in SPRINTS:
+        sprint = mk_sprint(
+            token, pid,
+            nombre=nombre,
+            orden=orden,
+            fi=add_days(today, start_off),
+            ff=add_days(today, end_off),
+            goal=goal,
+            horas_planeadas=horas_plan,
+        )
+        if sprint_state == "en_progreso":
+            scrum_tr(token, pid, sprint["id"], action="sync", target="en_progreso")
+
+        specs = SPRINT_HISTORIAS[orden]
+        epic_id = epic_by_sprint.get(orden, epics["plataforma"])
+        for idx, (titulo, _sp, prio, estado_final, horas_list) in enumerate(specs):
+            h = mk_historia(
+                token, pid,
+                nombre=titulo,
+                epic_id=epic_id,
+                prio=prio,
+            )
+            historia_count += 1
+            assignee = assignees[idx % len(assignees)]
+            if horas_list:
+                task_count += len(horas_list)
+
+            advance_historia(
+                users, token_cache, pid, pm_id, tech["id"], qa["id"], h["id"], sprint["id"], estado_final,
+                horas_list=horas_list,
+                assignee=assignee,
+            )
+
+        if sprint_state == "completado":
+            scrum_tr(token, pid, sprint["id"], action="sync", target="completado")
+
+    backlog_count = 0
+    backlog_epics = [epics["plataforma"], epics["tracking"], epics["analytics"], epics["operaciones"]]
+    for idx, (titulo, _sp, prio, horas_list) in enumerate(BACKLOG):
+        epic_id = backlog_epics[idx % len(backlog_epics)]
+        h = mk_backlog(token, pid, nombre=titulo, epic_id=epic_id, prio=prio)
+        backlog_count += 1
+        if horas_list:
+            seed_tareas(
+                token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list,
+                asignee=assignees[idx % len(assignees)],
+                task_estado="to_do",
+            )
+            task_count += len(horas_list)
+
+    scrum_hub_update(token, pid, contenido="Sprint 1 completado. Inventario base operativo en staging.")
+    scrum_hub_note(token, pid,
+        titulo="Retro Sprint 1 — Fundamentos",
+        contenido=(
+            "**Bien:** Modelo de datos sólido; import CSV superó expectativas de volumen.\n\n"
+            "**Mejorar:** Tests de integración tardaron; reservar buffer en Sprint 2.\n\n"
+            "**Acción:** Documentar convenciones de SKU antes del grooming de operaciones."
+        ),
+    )
+    scrum_hub_note(token, pid,
+        titulo="Sprint 2 — Definition of Done",
+        contenido=(
+            "Historia Done cuando:\n"
+            "- Código mergeado y revisado\n"
+            "- Movimientos auditables con trazabilidad\n"
+            "- QA en staging sin blockers\n"
+            "- Alertas de mínimos validadas con datos reales"
+        ),
+    )
+    scrum_hub_update(token_for_user(tech["id"], users, token_cache), pid,
+        contenido="Recepción de mercadería en UAT. Movimientos entre almacenes ~70% front.")
+    scrum_hub_update(token_for_user(dev["id"], users, token_cache), pid,
+        contenido="Grooming Sprint 3: estimación tracking y webhooks TMS el jueves.")
+    scrum_hub_note(token, pid,
+        titulo="Planning Sprint 3 y 4",
+        contenido=(
+            "Sprint 3 foco en tracking visible para operaciones.\n"
+            "Sprint 4 reservado para analytics; no iniciar tareas hasta cerrar S3.\n"
+            "Velocity objetivo S3: 28h · S4: 30h."
+        ),
+    )
+
+    return {
+        "project_id": pid,
+        "sprints": len(SPRINTS),
+        "historias_sprint": historia_count,
+        "backlog": backlog_count,
+        "tasks": task_count,
+    }
+
+
+def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
+    pm = users["pm@center.demo"]
+    tech = users["dev@center.demo"]
+    dev = users["dev2@center.demo"]
+    qa = users["qa@center.demo"]
+    cliente = users["cliente@center.demo"]
+    pm_id = pm["id"]
+
+    token_cache: dict[str, str] = {
+        pm_id: token_pm,
+        cliente["id"]: token_cliente,
+    }
+
+    print("  Creando E-commerce Relaunch (t7_scrum_cliente)...")
+    p = post(token_pm, "/projects", {
+        "organization_id": org_id,
+        "nombre": "E-commerce Relaunch",
+        "descripcion": "Rediseno completo del ecommerce. Catalogo, carrito, checkout y panel de cliente.",
+        "pack_slug": "software",
+        "template_slug": "t7_scrum_cliente",
+        "fecha_inicio": add_days(today, -42),
+        "fecha_fin": add_days(today, 98),
+    })
+    pid = p["id"]
+
+    for uid, rol in [
+        (pm_id, "pm"), (tech["id"], "tech_lead"),
+        (dev["id"], "dev"), (qa["id"], "qa"),
+        (cliente["id"], "cliente"),
+    ]:
+        add_member(token_pm, pid, uid, rol)
+
+    epics = {
+        "catalogo": mk_epic(token_pm, pid, nombre="Catálogo")["id"],
+        "checkout": mk_epic(token_pm, pid, nombre="Checkout")["id"],
+        "cliente": mk_epic(token_pm, pid, nombre="Panel cliente")["id"],
+        "plataforma": mk_epic(token_pm, pid, nombre="Plataforma")["id"],
+    }
+
+    s1 = mk_sprint(token_pm, pid,
+        nombre="Sprint 1 — Catalogo de productos",
+        orden=1,
+        fi=add_days(today, -42),
+        ff=add_days(today, -29),
+        goal="Catalogo publico con filtros, busqueda y detalle de producto.",
+        horas_planeadas=32,
+    )
+    s1_spec = [
+        ("Pagina de catalogo con grilla de productos", "alta", [4, 4]),
+        ("Filtros por categoria, precio y disponibilidad", "alta", [2.5, 2.5]),
+        ("Pagina de detalle de producto con galeria", "alta", [4, 4]),
+        ("Busqueda por nombre y descripcion", "media", [2.5, 2.5]),
+    ]
+    for nombre, prio, horas_list in s1_spec:
+        h = mk_historia(token_pm, pid, nombre=nombre, epic_id=epics["catalogo"], prio=prio)
+        scrum_tr(token_pm, pid, h["id"], action="comprometer_sprint", side_effect_context={"sprint_id": s1["id"]})
+        seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=tech["id"], task_estado="ready_for_test")
+        scrum_tr(token_for_user(tech["id"], users, token_cache), pid, h["id"], action="pasar_a_uat")
+        scrum_tr(token_for_user(qa["id"], users, token_cache), pid, h["id"], action="enviar_al_pm")
+        scrum_tr(token_pm, pid, h["id"], action="liberar_cliente")
+        scrum_tr(token_cliente, pid, h["id"], action="confirmar")
+    scrum_tr(token_pm, pid, s1["id"], action="sync", target="completado")
+
+    s2 = mk_sprint(token_pm, pid,
+        nombre="Sprint 2 — Carrito y checkout",
+        orden=2,
+        fi=add_days(today, -14),
+        ff=add_days(today, -1),
+        goal="Flujo completo de compra: agregar al carrito, checkout, pago y confirmacion de pedido.",
+        horas_planeadas=28,
+    )
+    scrum_tr(token_pm, pid, s2["id"], action="sync", target="en_progreso")
+
+    s2_spec = [
+        ("Carrito persistente (localStorage + API)", "alta", "esperando_validacion_cliente", [2.5, 2.5]),
+        ("Checkout: datos de envio y resumen", "alta", "esperando_liberacion_pm", [4, 4]),
+        ("Integracion con pasarela de pago (Stripe)", "alta", "uat", [4, 4]),
+        ("Pagina de confirmacion y email transaccional", "media", "en_progreso", [2.5, 2.5]),
+        ("Validaciones de stock en checkout", "media", "pendiente", [1.5, 1.5]),
+    ]
+    for nombre, prio, estado_final, horas_list in s2_spec:
+        h = mk_historia(token_pm, pid, nombre=nombre, epic_id=epics["checkout"], prio=prio)
+        scrum_tr(token_pm, pid, h["id"], action="comprometer_sprint", side_effect_context={"sprint_id": s2["id"]})
+        task_estado = (
+            "ready_for_test"
+            if estado_final in ("uat", "esperando_liberacion_pm", "esperando_validacion_cliente")
+            else None
+        )
+        seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=dev["id"], task_estado=task_estado)
+        if estado_final in ("uat", "esperando_liberacion_pm", "esperando_validacion_cliente"):
+            scrum_tr(token_for_user(tech["id"], users, token_cache), pid, h["id"], action="pasar_a_uat")
+        if estado_final in ("esperando_liberacion_pm", "esperando_validacion_cliente"):
+            scrum_tr(token_for_user(qa["id"], users, token_cache), pid, h["id"], action="enviar_al_pm")
+        if estado_final == "esperando_validacion_cliente":
+            scrum_tr(token_pm, pid, h["id"], action="liberar_cliente")
+
+    s3 = mk_sprint(token_pm, pid,
+        nombre="Sprint 3 — Panel de cliente",
+        orden=3,
+        fi=add_days(today, 0),
+        ff=add_days(today, 13),
+        goal="Historial de pedidos, estado en tiempo real y gestion de direcciones del cliente.",
+        horas_planeadas=26,
+    )
+    s3_spec = [
+        ("Historial de pedidos con filtros", "alta", [4, 4]),
+        ("Estado de pedido en tiempo real (polling)", "alta", [2.5, 2.5]),
+        ("Gestion de direcciones de envio", "media", [2.5, 2.5]),
+        ("Descarga de factura en PDF", "baja", [1.5, 1.5]),
+    ]
+    for nombre, prio, horas_list in s3_spec:
+        h = mk_historia(token_pm, pid, nombre=nombre, epic_id=epics["cliente"], prio=prio)
+        scrum_tr(token_pm, pid, h["id"], action="comprometer_sprint", side_effect_context={"sprint_id": s3["id"]})
+        seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=dev["id"])
+
+    backlog_ec = [
+        ("Panel de administracion de productos", "alta", [6, 4]),
+        ("Wishlist / lista de deseos", "media", [3, 2]),
+        ("Reviews y valoraciones de productos", "media", [4, 4]),
+        ("Programa de puntos y fidelizacion", "baja", [8]),
+        ("Integracion con ERP de inventario", "alta", None),
+        ("App movil con React Native", "baja", None),
+    ]
+    backlog_epics = [epics["plataforma"], epics["catalogo"], epics["checkout"], epics["cliente"]]
+    for idx, (nombre, prio, horas_list) in enumerate(backlog_ec):
+        epic_id = backlog_epics[idx % len(backlog_epics)]
+        h = mk_backlog(token_pm, pid, nombre=nombre, epic_id=epic_id, prio=prio)
+        if horas_list:
+            seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=dev["id"])
+
+    scrum_hub_update(token_pm, pid, contenido="Sprint 1 cerrado. Catalogo live en staging, aprobado por cliente.")
+    scrum_hub_note(token_pm, pid,
+        titulo="Feedback cliente — Sprint 1",
+        contenido=(
+            "El cliente solicita:\n"
+            "- Filtro por marca en el catalogo (P2)\n"
+            "- Galeria con zoom en detalle de producto (P1)\n\n"
+            "El zoom se agrega como historia en el backlog. El filtro por marca en Sprint 2 si hay capacidad."
+        ),
+    )
+    scrum_hub_note(token_pm, pid,
+        titulo="Sprint 2 — Riesgos",
+        contenido=(
+            "**Integracion Stripe:** Primera vez que el equipo trabaja con esta API. "
+            "Tech Lead investigara docs 1 dia antes de estimar tareas.\n\n"
+            "**Buffer de QA:** Checkout requiere pruebas E2E en distintos browsers. "
+            "Reservar 2 dias extra para QA en la segunda semana del sprint."
+        ),
+    )
+    scrum_hub_update(token_for_user(tech["id"], users, token_cache), pid,
+        contenido="Carrito validado por cliente. Checkout en UAT, pendiente aprobacion del PM.")
+    scrum_hub_update(token_pm, pid,
+        contenido="Feedback del cliente: Carrito funciona bien en desktop. Pendiente prueba en mobile.")
+
+    print(f"  [OK] E-commerce Relaunch — id: {pid}")
+    return pid
+
+
+def sync_sprint_velocity(token: str, project_id: str, sprint_id: str) -> None:
+    path = f"/projects/{project_id}/scrum/sprints/{sprint_id}/sync-velocity"
+    http("POST", path, token=token, expect_status=200)
+
+
+def seed_scrum_support_data(
     token: str,
     project_id: str,
     pm_id: str,
-    *,
-    record_type: str,
-    titulo: str,
-    parent_id: str | None = None,
-    fecha_inicio: str | None = None,
-    fecha_fin: str | None = None,
-    data: dict | None = None,
-) -> dict:
-    body: dict = {
-        "actor_user_id": pm_id,
-        "record_type": record_type,
-        "titulo": titulo,
-    }
-    if parent_id:
-        body["parent_id"] = parent_id
-    if fecha_inicio:
-        body["fecha_inicio"] = fecha_inicio
-    if fecha_fin:
-        body["fecha_fin"] = fecha_fin
-    if data:
-        body["data"] = data
-    return post(token, f"/projects/{project_id}/records", body)
-
-
-def seed_generic_pack_projects(
-    token: str,
-    org_id: str,
-    pm_id: str,
-    today: date,
-    users: dict,
-) -> list[dict]:
-    """Proyectos evento, creativo y simple con muchos registros genéricos."""
-    stats: list[dict] = []
-
-    evento = create_project(
-        token,
-        org_id,
-        pm_id,
-        nombre="Conferencia Producto 2026",
-        descripcion="Pack evento — checklist y timeline",
-        pack_slug="evento",
-        template_slug="default",
-        fecha_inicio=add_days(today, 0),
-        fecha_fin=add_days(today, 90),
-    )
-    ev_root = create_record(
-        token,
-        evento["id"],
-        pm_id,
-        record_type="evento",
-        titulo="Conferencia anual",
-        fecha_inicio=add_days(today, 0),
-        fecha_fin=add_days(today, 90),
-        data={"lugar": "Centro de Convenciones"},
-    )
-    tareas_evento = [
-        "Contratar venue",
-        "Catering y coffee breaks",
-        "Speakers internacionales",
-        "Streaming en vivo",
-        "Acreditaciones",
-        "Señalética",
-        "Seguros del evento",
-        "Merchandising",
-        "After party",
-        "Encuesta post-evento",
-        "Fotógrafo oficial",
-        "DJ / música",
-        "Registro de asistentes",
-        "Patrocinadores tier 1",
-        "Patrocinadores tier 2",
-        "Prensa y comunicados",
-        "Badge design",
-        "WiFi invitados",
-        "Protocolo COI",
-        "Transporte speakers",
-        "Green room",
-        "Ensayo general",
-        "Checklist seguridad",
-        "Desmontaje",
-        "Informe final",
-    ]
-    for i, titulo in enumerate(tareas_evento):
-        rec = create_record(
-            token,
-            evento["id"],
-            pm_id,
-            record_type="tarea",
-            titulo=titulo,
-            parent_id=ev_root["id"],
-            fecha_fin=add_days(today, 7 + i * 2),
-            data={"proveedor": f"Proveedor {i % 5 + 1}"},
-        )
-        if i % 4 == 1:
-            transition_record(
-                token, evento["id"], rec["id"],
-                actor_user_id=pm_id, action_id="iniciar", ignore_errors=True,
-            )
-        if i % 7 == 0:
-            transition_record(
-                token, evento["id"], rec["id"],
-                actor_user_id=pm_id, action_id="iniciar", ignore_errors=True,
-            )
-            transition_record(
-                token, evento["id"], rec["id"],
-                actor_user_id=pm_id, action_id="completar", ignore_errors=True,
-            )
-    stats.append(
-        {
-            "nombre": evento["nombre"],
-            "pack": "evento",
-            "records": 1 + len(tareas_evento),
-        }
-    )
-
-    creativo = create_project(
-        token,
-        org_id,
-        pm_id,
-        nombre="Campaña Verano Creativo",
-        descripcion="Pack creativo — board e inbox de aprobaciones",
-        pack_slug="creativo",
-        template_slug="default",
-        fecha_inicio=add_days(today, -14),
-        fecha_fin=add_days(today, 60),
-    )
-    add_member(creativo["id"], pm_id, users["cliente@center.demo"]["id"], "cliente")
-    campana = create_record(
-        token,
-        creativo["id"],
-        pm_id,
-        record_type="campana",
-        titulo="Campaña verano 2026",
-        fecha_inicio=add_days(today, -14),
-        fecha_fin=add_days(today, 60),
-    )
-    entregables = [
-        "Key visual",
-        "Spot 15s TV",
-        "Spot 30s digital",
-        "Banners display",
-        "Landing promo",
-        "Email nurturing #1",
-        "Email nurturing #2",
-        "Posts redes x12",
-        "Storyboard video",
-        "Guía de estilo",
-        "Packaging mockup",
-        "OOH vía pública",
-        "Presentación cliente",
-        "Versión B key visual",
-        "Ajustes finales",
-    ]
-    for i, titulo in enumerate(entregables):
-        rec = create_record(
-            token,
-            creativo["id"],
-            pm_id,
-            record_type="entregable",
-            titulo=titulo,
-            parent_id=campana["id"],
-            data={"version": i + 1},
-        )
-        if i % 5 == 0:
-            transition_record(
-                token, creativo["id"], rec["id"],
-                actor_user_id=pm_id, action_id="enviar_revision", ignore_errors=True,
-            )
-        elif i % 5 == 1:
-            transition_record(
-                token, creativo["id"], rec["id"],
-                actor_user_id=pm_id, action_id="enviar_revision", ignore_errors=True,
-            )
-            transition_record(
-                token, creativo["id"], rec["id"],
-                actor_user_id=pm_id, action_id="solicitar_aprobacion", ignore_errors=True,
-            )
-        elif i % 5 == 2:
-            transition_record(
-                token, creativo["id"], rec["id"],
-                actor_user_id=pm_id, action_id="enviar_revision", ignore_errors=True,
-            )
-            transition_record(
-                token, creativo["id"], rec["id"],
-                actor_user_id=pm_id, action_id="solicitar_aprobacion", ignore_errors=True,
-            )
-            cliente_id = users["cliente@center.demo"]["id"]
-            cliente_auth = login("cliente@center.demo")
-            transition_record(
-                cliente_auth["access_token"],
-                creativo["id"],
-                rec["id"],
-                actor_user_id=cliente_id,
-                action_id="aprobar",
-                ignore_errors=True,
-            )
-    stats.append(
-        {
-            "nombre": creativo["nombre"],
-            "pack": "creativo",
-            "records": 1 + len(entregables),
-        }
-    )
-
-    simple = create_project(
-        token,
-        org_id,
-        pm_id,
-        nombre="Consultoría ONG Demo",
-        descripcion="Pack simple — fases, gantt y checklist",
-        pack_slug="simple",
-        template_slug="default",
-        fecha_inicio=add_days(today, 0),
-        fecha_fin=add_days(today, 120),
-    )
-    fases = [
-        ("Diagnóstico", 0, 21),
-        ("Plan de acción", 22, 45),
-        ("Implementación", 46, 90),
-        ("Cierre y reporte", 91, 120),
-    ]
-    record_total = 0
-    for orden, (nombre_fase, d0, d1) in enumerate(fases):
-        fase = create_record(
-            token,
-            simple["id"],
-            pm_id,
-            record_type="fase",
-            titulo=nombre_fase,
-            fecha_inicio=add_days(today, d0),
-            fecha_fin=add_days(today, d1),
-        )
-        record_total += 1
-        for j in range(8):
-            titulo = f"{nombre_fase} — actividad {j + 1}"
-            rec = create_record(
-                token,
-                simple["id"],
-                pm_id,
-                record_type="tarea",
-                titulo=titulo,
-                parent_id=fase["id"],
-                fecha_inicio=add_days(today, d0 + j * 2),
-                fecha_fin=add_days(today, d0 + j * 2 + 3),
-                data={"proveedor": "Consultor externo" if j % 2 else "Equipo interno"},
-            )
-            record_total += 1
-            if j % 3 == 0:
-                transition_record(
-                    token, simple["id"], rec["id"],
-                    actor_user_id=pm_id, action_id="iniciar", ignore_errors=True,
-                )
-            if j % 5 == 0:
-                transition_record(
-                    token, simple["id"], rec["id"],
-                    actor_user_id=pm_id, action_id="iniciar", ignore_errors=True,
-                )
-                transition_record(
-                    token, simple["id"], rec["id"],
-                    actor_user_id=pm_id, action_id="completar", ignore_errors=True,
-                )
-    stats.append(
-        {
-            "nombre": simple["nombre"],
-            "pack": "simple",
-            "records": record_total,
-        }
-    )
-
-    from scripts.seed_marketing360_demo import seed_marketing360_project
-
-    m360 = seed_marketing360_project(token, org_id, pm_id, today, users)
-    stats.append(m360)
-
-    _enrich_generic_projects_db(
-        evento_id=evento["id"],
-        ev_root_id=ev_root["id"],
-        creativo_id=creativo["id"],
-        campana_id=campana["id"],
-        simple_id=simple["id"],
-        pm_id=pm_id,
-        today=today,
-    )
-    return stats
-
-
-def _enrich_generic_projects_db(
-    *,
-    evento_id: str,
-    ev_root_id: str,
-    creativo_id: str,
-    campana_id: str,
-    simple_id: str,
-    pm_id: str,
-    today: date,
+    users: dict[str, dict],
 ) -> None:
-    """Tipos, vistas y registros extra vía modelo genérico (sin HTTP)."""
-    import uuid
+    sprints = http(
+        "GET",
+        f"/projects/{project_id}/scrum/sprints",
+        token=token,
+    )[1] or []
+    if not sprints:
+        return
+    sprint = next((s for s in sprints if s.get("estado") != "completado"), sprints[0])
+    sprint_id = sprint["id"]
+    dev_id = users.get("dev@center.demo", {}).get("id")
+    qa_id = users.get("qa@center.demo", {}).get("id")
 
-    from sqlalchemy import select
-
-    from app.database import SessionLocal
-    from app.models.entities import Project, ProjectRecord
-    from app.services.generic_enrichment import (
-        enrich_creativo_project,
-        enrich_evento_project,
-        enrich_simple_project,
+    capacity_plan = [
+        {"user_id": pm_id, "dias": 8, "pto_dias": 6, "focus_pct": 65, "committed_h": 31.2},
+        {"user_id": dev_id, "dias": 8, "pto_dias": 6.5, "focus_pct": 75, "committed_h": 39.0},
+        {"user_id": qa_id, "dias": 6, "pto_dias": 5.5, "focus_pct": 70, "committed_h": 23.1},
+    ]
+    http(
+        "PUT",
+        f"/projects/{project_id}/scrum/sprints/{sprint_id}/capacity",
+        token=token,
+        body={"capacity_plan": capacity_plan},
+        expect_status=200,
     )
 
-    with SessionLocal() as db:
-        pm_uuid = uuid.UUID(pm_id)
-        evento_p = db.get(Project, uuid.UUID(evento_id))
-        creativo_p = db.get(Project, uuid.UUID(creativo_id))
-        simple_p = db.get(Project, uuid.UUID(simple_id))
-        if evento_p:
-            enrich_evento_project(
-                db,
-                evento_p,
-                evento_root_id=uuid.UUID(ev_root_id),
-                pm_id=pm_uuid,
-                today=today,
-            )
-        if creativo_p:
-            enrich_creativo_project(
-                db,
-                creativo_p,
-                campana_root_id=uuid.UUID(campana_id),
-                pm_id=pm_uuid,
-            )
-        if simple_p:
-            fase_ids = [
-                r.id
-                for r in db.scalars(
-                    select(ProjectRecord).where(
-                        ProjectRecord.project_id == simple_p.id,
-                        ProjectRecord.record_type == "fase",
-                    )
-                )
-            ]
-            enrich_simple_project(db, simple_p, fase_ids=fase_ids, pm_id=pm_uuid)
-        db.commit()
-    print("[seed] Enriquecimiento genérico: vistas + tipos custom aplicados")
-
-
-def seed_users_and_org() -> tuple[str, str]:
-    """Usuarios demo + organización (sin proyectos). Retorna (token, pm_id)."""
-    wait_for_api()
-    users = {email: ensure_user(email, nombre) for email, nombre in DEMO_USERS}
-    pm = users["pm@center.demo"]
-
-    auth = login(pm["email"])
-    token = auth["access_token"]
-    org_id = auth.get("organization_id")
-    if not org_id:
-        org = post(
-            token,
-            "/organizations",
-            {"nombre": "Center Demo", "slug": "center-demo"},
+    impediments = [
+        {
+            "titulo": "Ambiente staging inestable",
+            "owner_user_id": dev_id,
+            "impacto": "Bloquea validaciones de integración en historias checkout.",
+        },
+        {
+            "titulo": "Proveedor de pagos demora respuesta",
+            "owner_user_id": pm_id,
+            "impacto": "Riesgo para cerrar objetivo del sprint actual.",
+        },
+    ]
+    created_imps: list[dict] = []
+    for item in impediments:
+        _, imp = http(
+            "POST",
+            f"/projects/{project_id}/scrum/impediments",
+            token=token,
+            body={
+                "titulo": item["titulo"],
+                "sprint_id": sprint_id,
+                "owner_user_id": item["owner_user_id"],
+                "impacto": item["impacto"],
+            },
+            expect_status=200,
         )
-        org_id = org["id"]
-        auth = login(pm["email"])
-        token = auth["access_token"]
+        created_imps.append(imp)
+    if created_imps:
+        http(
+            "POST",
+            f"/projects/{project_id}/scrum/impediments/{created_imps[0]['id']}/resolve",
+            token=token,
+            body={"resolucion": "Reinicio de pods + ventana de validación coordinada."},
+            expect_status=200,
+        )
 
-    print(f"[seed] Usuarios demo OK ({len(DEMO_USERS)} cuentas). Org: {org_id}")
-    print("  Cuentas: " + ", ".join(e for e, _ in DEMO_USERS))
-    print(f"  Password: {DEMO_PASSWORD}")
-    return token, pm["id"]
+    sessions = [
+        ("daily", "Daily de seguimiento", "active"),
+        ("planning_poker", "Planning Poker (horas)", "planned"),
+        ("sprint_review", "Sprint Review semanal", "planned"),
+        ("retro", "Retro del sprint", "planned"),
+    ]
+    for session_type, title, status in sessions:
+        _, session = http(
+            "POST",
+            f"/projects/{project_id}/scrum/sessions",
+            token=token,
+            body={
+                "session_type": session_type,
+                "title": title,
+                "status": status,
+                "sprint_id": sprint_id,
+            },
+            expect_status=200,
+        )
+        if session_type == "planning_poker":
+            for hours in [2, 3, 5]:
+                http(
+                    "POST",
+                    f"/projects/{project_id}/scrum/sessions/{session['id']}/entries",
+                    token=token,
+                    body={
+                        "entry_type": "vote",
+                        "payload": {"hours": hours, "story_hint": "Checkout mobile"},
+                    },
+                    expect_status=200,
+                )
+        else:
+            http(
+                "POST",
+                f"/projects/{project_id}/scrum/sessions/{session['id']}/entries",
+                token=token,
+                body={
+                    "entry_type": "note",
+                    "payload": {"text": f"Nota inicial para {title.lower()}"},
+                },
+                expect_status=200,
+            )
 
 
-def seed_rich_demo(*, scrum_only: bool = False) -> None:
-    if scrum_only:
-        seed_users_and_org()
-        print("[seed] Modo --scrum-only: sin proyectos waterfall. Ejecutá seed_scrum_pack.py")
-        return
+def seed_scrum_projects(
+    token: str,
+    token_cliente: str,
+    org_id: str,
+    today: date,
+    users: dict[str, dict],
+    pm_id: str,
+) -> dict:
+    """Sembrar Logistics Hub (t6) y E-commerce Relaunch (t7)."""
+    print("\n[seed] Proyectos Scrum (t6 + t7)...")
+    lh_stats = seed_logistics_hub(token, users, org_id, today)
+    logistics_id = lh_stats["project_id"]
+    seed_scrum_support_data(token, logistics_id, pm_id, users)
+
+    sprints = http("GET", f"/projects/{logistics_id}/scrum/sprints", token=token)[1]
+    if sprints:
+        s1 = next((s for s in sprints if s.get("orden") == 1), sprints[0])
+        try:
+            sync_sprint_velocity(token, logistics_id, s1["id"])
+        except RuntimeError as exc:
+            print(f"  [warn] sync velocity Logistics: {exc}")
+
+    ecommerce_id = seed_ecommerce(token, token_cliente, users, org_id, today)
+    seed_scrum_support_data(token, ecommerce_id, pm_id, users)
+
+    return {
+        "logistics": lh_stats,
+        "ecommerce_id": ecommerce_id,
+    }
+
+def seed_rich_demo() -> None:
 
     wait_for_api()
     today = date.today()
@@ -1335,50 +1701,52 @@ def seed_rich_demo(*, scrum_only: bool = False) -> None:
         auth = login(pm["email"])
         token = auth["access_token"]
 
+    token_cliente = login("cliente@center.demo")["access_token"]
+
     portal_stats = seed_portal_cliente(token, org_id, today, users)
     interno_stats = seed_plataforma_interna(token, org_id, today, users)
-    generic_stats = seed_generic_pack_projects(token, org_id, pm["id"], today, users)
+    scrum_stats = seed_scrum_projects(
+        token, token_cliente, org_id, today, users, pm["id"],
+    )
+    lh = scrum_stats["logistics"]
 
-    print(f"[seed] {SEED_VERSION} OK — {len(DEMO_USERS)} usuarios, {len(DEMO_PROJECTS) + len(generic_stats)} proyectos")
-    print(f"  • {portal_stats['project']['nombre']} (con_cliente):")
+    print(f"[seed] {SEED_VERSION} OK — {len(DEMO_USERS)} usuarios, {len(DEMO_PROJECTS)} proyectos")
+    print(f"  • {portal_stats['project']['nombre']} (t1_cliente_clasico):")
     print(
         f"      {portal_stats['milestones']} hitos, {portal_stats['features']} features, "
         f"{portal_stats['tasks']} tareas, {portal_stats['queries']} consultas, "
         f"{portal_stats['reports']} reportes"
     )
-    print(f"  • {interno_stats['project']['nombre']} (interno):")
+    print(f"  • {interno_stats['project']['nombre']} (t3_interno_clasico):")
     print(
         f"      {interno_stats['milestones']} hitos, {interno_stats['features']} features, "
         f"{interno_stats['tasks']} tareas, {interno_stats['queries']} consultas"
     )
-    for gs in generic_stats:
-        print(f"  • {gs['nombre']} (pack {gs['pack']}): {gs['records']} registros")
+    print("  • Logistics Hub (t6_scrum_interno):")
+    print(
+        f"      {lh['sprints']} sprints, {lh['historias_sprint']} historias en sprint, "
+        f"{lh['backlog']} backlog, {lh['tasks']} tareas dev"
+    )
+    print(f"  • E-commerce Relaunch (t7_scrum_cliente): id={scrum_stats['ecommerce_id']}")
     print("  Cuentas: " + ", ".join(e for e, _ in DEMO_USERS))
     print(f"  Password: {DEMO_PASSWORD}")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Reset + seed demo Center v3")
+    parser = argparse.ArgumentParser(description="Reset + seed demo Center v3 (4 plantillas)")
     parser.add_argument("--reset-only", action="store_true")
     parser.add_argument("--seed-only", action="store_true")
-    parser.add_argument(
-        "--scrum-only",
-        action="store_true",
-        help="Solo usuarios/org (sin proyectos waterfall). Usar con seed_scrum_pack.py",
-    )
     args = parser.parse_args()
 
     if not args.seed_only:
         reset_database()
         if args.reset_only:
             print("Reiniciá uvicorn y luego: python scripts/reset_and_seed_demo.py --seed-only")
-            if args.scrum_only:
-                print("  Luego: python scripts/seed_scrum_pack.py")
             return 0
 
     if not args.reset_only:
         try:
-            seed_rich_demo(scrum_only=args.scrum_only)
+            seed_rich_demo()
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             print("¿Está uvicorn en :8000? Tras --reset-only hay que reiniciar el servidor.", file=sys.stderr)

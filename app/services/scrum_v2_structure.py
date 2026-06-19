@@ -1,4 +1,4 @@
-"""Scrum v2: sprint raíz, épicas e historias como tasks (scrum_role)."""
+"""Scrum v2: sprint/backlog propios, épicas e historias como tasks (scrum_role)."""
 from __future__ import annotations
 
 import uuid
@@ -15,23 +15,25 @@ from app.models.entities import (
     ProjectRecordType,
     ProjectRole,
     ProjectRoleCapability,
+    ProjectWorkflowDefinition,
 )
 
-SCRUM_TEMPLATE_SLUGS = frozenset({"t6_scrum_interno", "t7_scrum_cliente"})
+from app.domain.project_templates import SCRUM_TEMPLATE_SLUGS, is_scrum_template_slug
 
 SCRUM_ROLE_EPIC = "epic"
 SCRUM_ROLE_STORY = "story"
 SCRUM_ROLE_DEV = "dev"
 
+# Legacy: milestones con data.tipo (pre-migración)
 MILESTONE_TIPO_BACKLOG = "product_backlog"
 MILESTONE_TIPO_SPRINT = "sprint"
 MILESTONE_TIPO_SPRINT_LEGACY = "entrega"
 
-BACKLOG_MILESTONE_TITLE = "Product Backlog"
+BACKLOG_TITLE = "Product Backlog"
 
 
 def is_scrum_template(template_slug: str | None) -> bool:
-    return template_slug in SCRUM_TEMPLATE_SLUGS
+    return is_scrum_template_slug(template_slug)
 
 
 def get_scrum_role(record: ProjectRecord) -> str | None:
@@ -74,25 +76,42 @@ def get_story_task_id(record: ProjectRecord) -> uuid.UUID | None:
         return None
 
 
-def milestone_tipo(milestone: ProjectRecord) -> str:
+def _milestone_tipo(milestone: ProjectRecord) -> str:
     data = milestone.data if isinstance(milestone.data, dict) else {}
     return str(data.get("tipo") or MILESTONE_TIPO_SPRINT_LEGACY)
 
 
-def is_backlog_milestone(milestone: ProjectRecord) -> bool:
-    return milestone.record_type == "milestone" and milestone_tipo(milestone) == MILESTONE_TIPO_BACKLOG
+def is_product_backlog_record(record: ProjectRecord) -> bool:
+    if record.record_type == "product_backlog":
+        return True
+    return record.record_type == "milestone" and _milestone_tipo(record) == MILESTONE_TIPO_BACKLOG
 
 
-def is_sprint_milestone(milestone: ProjectRecord) -> bool:
-    if milestone.record_type != "milestone":
+def is_sprint_record(record: ProjectRecord) -> bool:
+    if record.record_type == "sprint":
+        return True
+    if record.record_type != "milestone":
         return False
-    tipo = milestone_tipo(milestone)
+    tipo = _milestone_tipo(record)
     return tipo in (MILESTONE_TIPO_SPRINT, MILESTONE_TIPO_SPRINT_LEGACY)
 
 
-def get_product_backlog_milestone(
+# Aliases legacy
+is_backlog_milestone = is_product_backlog_record
+is_sprint_milestone = is_sprint_record
+
+
+def get_product_backlog_record(
     db: Session, project_id: uuid.UUID
 ) -> ProjectRecord | None:
+    row = db.scalar(
+        select(ProjectRecord).where(
+            ProjectRecord.project_id == project_id,
+            ProjectRecord.record_type == "product_backlog",
+        )
+    )
+    if row is not None:
+        return row
     rows = list(
         db.scalars(
             select(ProjectRecord).where(
@@ -102,35 +121,53 @@ def get_product_backlog_milestone(
         )
     )
     for row in rows:
-        if is_backlog_milestone(row):
+        if is_product_backlog_record(row):
             return row
     return None
 
 
-def ensure_product_backlog_milestone(
+get_product_backlog_milestone = get_product_backlog_record
+
+
+def ensure_product_backlog_record(
     db: Session,
     project: Project,
     *,
     created_by: uuid.UUID | None = None,
 ) -> ProjectRecord:
-    existing = get_product_backlog_milestone(db, project.id)
+    existing = get_product_backlog_record(db, project.id)
     if existing is not None:
         return existing
     actor = created_by or project.created_by
     row = ProjectRecord(
         project_id=project.id,
-        record_type="milestone",
+        record_type="product_backlog",
         parent_id=None,
-        titulo=BACKLOG_MILESTONE_TITLE,
+        titulo=BACKLOG_TITLE,
         descripcion="Contenedor del Product Backlog (épicas e historias sin sprint).",
-        estado="pendiente",
-        data={"tipo": MILESTONE_TIPO_BACKLOG},
+        estado="activo",
+        data={},
         created_by=actor,
         orden=0,
     )
     db.add(row)
     db.flush()
     return row
+
+
+ensure_product_backlog_milestone = ensure_product_backlog_record
+
+
+def next_sprint_orden(db: Session, project_id: uuid.UUID) -> int:
+    from app.services.records.repository import list_records
+
+    sprints = list_records(db, project_id, entity_type="sprint")
+    legacy = [
+        r
+        for r in list_records(db, project_id, entity_type="milestone")
+        if is_sprint_record(r)
+    ]
+    return len(sprints) + len(legacy) + 1
 
 
 def list_stories_for_sprint(
@@ -151,7 +188,7 @@ def list_stories_for_sprint(
 
 
 def list_stories_in_backlog(db: Session, project_id: uuid.UUID) -> list[ProjectRecord]:
-    backlog = get_product_backlog_milestone(db, project_id)
+    backlog = get_product_backlog_record(db, project_id)
     if backlog is None:
         return []
     rows = list(
@@ -167,7 +204,7 @@ def list_stories_in_backlog(db: Session, project_id: uuid.UUID) -> list[ProjectR
 
 
 def list_epic_tasks(db: Session, project_id: uuid.UUID) -> list[ProjectRecord]:
-    backlog = get_product_backlog_milestone(db, project_id)
+    backlog = get_product_backlog_record(db, project_id)
     if backlog is None:
         return []
     rows = list(
@@ -211,10 +248,21 @@ def story_in_product_backlog(story: ProjectRecord, backlog: ProjectRecord | None
 
 
 def apply_scrum_v2_structure(db: Session, project: Project) -> None:
-    """Idempotente: task-first Scrum (sprint raíz, scrum_role en tasks)."""
+    """Idempotente: task-first Scrum con tipos sprint/product_backlog propios."""
     if not is_scrum_template(getattr(project, "template_slug", None)):
         return
 
+    _ensure_scrum_record_types(db, project)
+    _ensure_scrum_role_field(db, project)
+    _patch_query_report_parent_types(db, project)
+    _patch_scope_block_for_scrum_v2(db, project)
+    _sunset_legacy_scrum_entity_types(db, project)
+    _remove_legacy_feature_workflow(db, project)
+    ensure_product_backlog_record(db, project)
+    db.flush()
+
+
+def _ensure_scrum_record_types(db: Session, project: Project) -> None:
     task_rt = db.scalar(
         select(ProjectRecordType).where(
             ProjectRecordType.project_id == project.id,
@@ -222,8 +270,27 @@ def apply_scrum_v2_structure(db: Session, project: Project) -> None:
         )
     )
     if task_rt is not None:
-        task_rt.parent_types = ["milestone"]
+        task_rt.parent_types = ["product_backlog", "sprint"]
         task_rt.label = "Tarea"
+
+    for key, label in (("sprint", "Sprint"), ("product_backlog", "Product Backlog")):
+        rt = db.scalar(
+            select(ProjectRecordType).where(
+                ProjectRecordType.project_id == project.id,
+                ProjectRecordType.key == key,
+            )
+        )
+        if rt is None:
+            db.add(
+                ProjectRecordType(
+                    project_id=project.id,
+                    key=key,
+                    label=label,
+                    parent_types=None,
+                    is_system=True,
+                    orden=7 if key == "product_backlog" else 8,
+                )
+            )
 
     milestone_rt = db.scalar(
         select(ProjectRecordType).where(
@@ -232,19 +299,47 @@ def apply_scrum_v2_structure(db: Session, project: Project) -> None:
         )
     )
     if milestone_rt is not None:
-        milestone_rt.label = "Sprint"
+        db.delete(milestone_rt)
 
-    _ensure_scrum_role_field(db, project)
-    _patch_scope_block_for_scrum_v2(db, project)
-    _patch_milestone_tipo_field(db, project)
-    _sunset_legacy_scrum_entity_types(db, project)
-    ensure_product_backlog_milestone(db, project)
-    db.flush()
+    impediment_rt = db.scalar(
+        select(ProjectRecordType).where(
+            ProjectRecordType.project_id == project.id,
+            ProjectRecordType.key == "impediment",
+        )
+    )
+    if impediment_rt is not None:
+        impediment_rt.parent_types = ["sprint"]
+
+
+def _patch_query_report_parent_types(db: Session, project: Project) -> None:
+    """Query/report en Scrum: parent = task (historia), no feature."""
+    for entity_key in ("query", "report"):
+        rt = db.scalar(
+            select(ProjectRecordType).where(
+                ProjectRecordType.project_id == project.id,
+                ProjectRecordType.key == entity_key,
+            )
+        )
+        if rt is not None:
+            rt.parent_types = ["task"]
+
+
+def _remove_legacy_feature_workflow(db: Session, project: Project) -> None:
+    rows = list(
+        db.scalars(
+            select(ProjectWorkflowDefinition).where(
+                ProjectWorkflowDefinition.project_id == project.id,
+                ProjectWorkflowDefinition.entity_type == "feature",
+            )
+        )
+    )
+    for row in rows:
+        db.delete(row)
 
 
 def _sunset_legacy_scrum_entity_types(db: Session, project: Project) -> None:
-    """Oculta tipos legacy epic/feature en Scrum v2 (no usados en UI)."""
-    for legacy_key in ("epic", "feature"):
+    """Oculta tipos legacy epic/feature/milestone en Scrum v2."""
+    for legacy_key in ("epic", "feature", "milestone"):
         row = db.scalar(
             select(ProjectRecordType).where(
                 ProjectRecordType.project_id == project.id,
@@ -281,22 +376,6 @@ def _ensure_scrum_role_field(db: Session, project: Project) -> None:
     )
 
 
-def _patch_milestone_tipo_field(db: Session, project: Project) -> None:
-    row = db.scalar(
-        select(ProjectFieldDefinition).where(
-            ProjectFieldDefinition.project_id == project.id,
-            ProjectFieldDefinition.entity_type_key == "milestone",
-            ProjectFieldDefinition.field_key == "tipo",
-        )
-    )
-    if row is None:
-        return
-    config = dict(row.config or {})
-    config["options"] = [MILESTONE_TIPO_BACKLOG, MILESTONE_TIPO_SPRINT, MILESTONE_TIPO_SPRINT_LEGACY]
-    config["default"] = MILESTONE_TIPO_SPRINT
-    row.config = config
-
-
 def _patch_scope_block_for_scrum_v2(db: Session, project: Project) -> None:
     block = db.scalar(
         select(ProjectBlock).where(
@@ -308,7 +387,7 @@ def _patch_scope_block_for_scrum_v2(db: Session, project: Project) -> None:
         return
     config = dict(block.config or {})
     scope_config = dict(config.get("scope_config") or {})
-    scope_config["levels"] = ["milestone", "task"]
+    scope_config["levels"] = ["product_backlog", "sprint", "task"]
     config["scope_config"] = scope_config
     block.config = config
 

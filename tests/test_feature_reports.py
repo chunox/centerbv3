@@ -15,6 +15,7 @@ from app.main import app
 from app.models.entities import Notification, ProjectRecord, User
 from app.services.feature_reports import apply_report_action
 from app.services.records.repository import create_record, get_field
+from tests.conftest import auth_headers
 from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
 from tests.record_helpers import create_milestone_record, create_report_record
 
@@ -242,7 +243,8 @@ def test_inbox_lista_pendientes_con_contexto(db_session: Session, api_client: Te
 
     response = api_client.get(
         f"/api/v1/projects/{project.id}/records",
-        params={"record_type": "report", "actor_user_id": str(pm_id)},
+        params={"record_type": "report"},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 200
     data = [r for r in response.json() if r["estado"] == "pendiente"]
@@ -281,7 +283,8 @@ def test_inbox_filtra_por_reported_by(db_session: Session, api_client: TestClien
 
     response = api_client.get(
         f"/api/v1/projects/{project.id}/records",
-        params={"record_type": "report", "actor_user_id": str(pm_id)},
+        params={"record_type": "report"},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 200
     mine = [
@@ -309,7 +312,8 @@ def test_inbox_action_aprobar_bug(db_session: Session, api_client: TestClient):
 
     response = api_client.post(
         f"/api/v1/projects/{project.id}/records/{report.id}/transition",
-        json={"action_id": "aprobar", "actor_user_id": str(pm_id)},
+        json={"action_id": "aprobar"},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 200
     body = response.json()

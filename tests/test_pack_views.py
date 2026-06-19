@@ -66,7 +66,6 @@ def _workbench_custom_keys(access: dict) -> dict[str, str | None]:
                 "inbox_pm": "software.inbox_pm",
                 "inbox_dev": "software.inbox_dev",
                 "inbox_qa": "software.inbox_qa",
-                "inbox_client": "software.inbox_client",
                 "kanban": "software.kanban",
                 "uat": "software.uat",
                 "scope": "software.scope",

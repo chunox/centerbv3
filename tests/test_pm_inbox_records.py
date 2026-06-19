@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
+from tests.conftest import auth_headers
 from tests.record_helpers import seed_project_with_roles
 
 
@@ -106,17 +107,20 @@ def test_pm_lists_inbox_records_with_inbox_workbench_cap_only(
     for rt in ("report", "query", "feature"):
         res = api_client.get(
             f"/api/v1/projects/{pid}/records",
-            params={"record_type": rt, "actor_user_id": uid},
+            params={"record_type": rt},
+            headers=auth_headers(pm_id),
         )
         assert res.status_code == 200, f"{rt}: {res.text}"
 
     reports = api_client.get(
         f"/api/v1/projects/{pid}/records",
-        params={"record_type": "report", "actor_user_id": uid},
+        params={"record_type": "report"},
+        headers=auth_headers(pm_id),
     ).json()
     queries = api_client.get(
         f"/api/v1/projects/{pid}/records",
-        params={"record_type": "query", "actor_user_id": uid},
+        params={"record_type": "query"},
+        headers=auth_headers(pm_id),
     ).json()
 
     assert len(reports) == 1
@@ -182,7 +186,8 @@ def test_inbox_records_pm_queue(db_session: Session, api_client: TestClient):
     uid = str(pm_id)
     res = api_client.get(
         f"/api/v1/projects/{pid}/inbox-records",
-        params={"queue": "pm", "actor_user_id": uid},
+        params={"queue": "pm"},
+        headers=auth_headers(pm_id),
     )
     assert res.status_code == 200, res.text
     titles = {row["titulo"] for row in res.json()}
@@ -226,7 +231,8 @@ def test_dev_inbox_records_only_actor_queries(db_session: Session, api_client: T
     pid = str(project.id)
     res = api_client.get(
         f"/api/v1/projects/{pid}/inbox-records",
-        params={"queue": "dev", "actor_user_id": str(dev_id)},
+        params={"queue": "dev"},
+        headers=auth_headers(dev_id),
     )
     assert res.status_code == 200, res.text
     titles = {row["titulo"] for row in res.json()}

@@ -1,7 +1,6 @@
 """CRUD de personalización de espacio (entity types, fields, blocks, views)."""
 from __future__ import annotations
 
-import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,20 +8,24 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth_deps import get_current_actor_id
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.domain.capabilities import PROJECT_SETTINGS_EDIT
 from app.models.entities import (
     ProjectFieldDefinition,
     ProjectRecordType,
-    ProjectView,
 )
 from app.schemas.access_context import (
     EntityTypeRead,
     FieldDefinitionRead,
     ProjectViewRead,
 )
-from app.schemas.project_structure import EntityTypeCreate, EntityTypeDelete
+from app.schemas.project_structure import (
+    EntityTypeCreate,
+    EntityTypeDelete,
+    EntityTypePatch,
+)
 from app.services.blocks import list_project_views
 from app.services.packs import list_field_definitions, list_record_types
 from app.services.project_structure import (
@@ -35,18 +38,7 @@ from app.services.workflow.authorize import assert_capability
 router = APIRouter(prefix="/projects", tags=["project-customization"])
 
 
-class EntityTypeUpdate(BaseModel):
-    actor_user_id: UUID
-    label: str | None = None
-    icon: str | None = None
-    traits: dict | None = None
-    parent_type_keys: list[str] | None = None
-    field_schema: list[dict] | None = None
-    orden: int | None = None
-
-
 class FieldDefinitionCreate(BaseModel):
-    actor_user_id: UUID
     entity_type_key: str
     field_key: str = Field(min_length=1, max_length=40)
     label: str = Field(min_length=1, max_length=120)
@@ -56,7 +48,6 @@ class FieldDefinitionCreate(BaseModel):
 
 
 class ViewCreate(BaseModel):
-    actor_user_id: UUID
     key: str = Field(min_length=1, max_length=40)
     label: str = Field(min_length=1, max_length=120)
     route: str
@@ -104,10 +95,11 @@ def _entity_type_to_read(rt: ProjectRecordType) -> EntityTypeRead:
 def create_entity_type(
     project_id: UUID,
     payload: EntityTypeCreate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_SETTINGS_EDIT)
+    assert_capability(db, project.id, actor_user_id, PROJECT_SETTINGS_EDIT)
     existing = db.scalar(
         select(ProjectRecordType.id).where(
             ProjectRecordType.project_id == project.id,
@@ -141,11 +133,12 @@ def create_entity_type(
 def update_entity_type(
     project_id: UUID,
     key: str,
-    payload: EntityTypeUpdate,
+    payload: EntityTypePatch,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_SETTINGS_EDIT)
+    assert_capability(db, project.id, actor_user_id, PROJECT_SETTINGS_EDIT)
     try:
         row = update_entity_type_on_project(
             db,
@@ -170,10 +163,11 @@ def delete_entity_type(
     project_id: UUID,
     key: str,
     payload: EntityTypeDelete,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_SETTINGS_EDIT)
+    assert_capability(db, project.id, actor_user_id, PROJECT_SETTINGS_EDIT)
     delete_entity_type_from_project(db, project, key)
     db.commit()
     return {"ok": True}
@@ -200,10 +194,11 @@ def list_field_defs(project_id: UUID, db: Session = Depends(get_db)):
 def create_field_def(
     project_id: UUID,
     payload: FieldDefinitionCreate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_SETTINGS_EDIT)
+    assert_capability(db, project.id, actor_user_id, PROJECT_SETTINGS_EDIT)
     existing = db.scalar(
         select(ProjectFieldDefinition.id).where(
             ProjectFieldDefinition.project_id == project.id,

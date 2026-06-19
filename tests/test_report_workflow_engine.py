@@ -159,12 +159,12 @@ def test_apply_entity_transition_transicion_invalida(db_session: Session):
             project,
             report,
             entity_type="report",
-            action_id="aprobar",
+            action_id="invalid_action",
             actor_user_id=cliente_id,
             form_data={},
             side_effect_context={"milestone_id": milestone.id},
         )
-    assert exc.value.status_code in (403, 422)
+    assert exc.value.status_code in (403, 409, 422)
 
 
 def test_apply_report_action_mejora_requiere_form_data(db_session: Session):

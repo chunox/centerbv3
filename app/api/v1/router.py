@@ -5,7 +5,6 @@ from app.api.v1 import (
     attachments,
     auth,
     comments,
-    hub_entries,
     jobs,
     organizations,
     project_access,
@@ -29,7 +28,6 @@ api_router.include_router(projects.router)
 api_router.include_router(project_access.router)
 api_router.include_router(project_customization.router)
 api_router.include_router(project_records.router)
-api_router.include_router(hub_entries.router)
 api_router.include_router(comments.router)
 api_router.include_router(attachments.router)
 api_router.include_router(scrum.router)

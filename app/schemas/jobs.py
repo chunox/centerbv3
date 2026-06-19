@@ -6,7 +6,6 @@ from pydantic import BaseModel
 
 
 class MilestoneSyncJobRequest(BaseModel):
-    actor_user_id: UUID
     project_id: UUID | None = None
 
 

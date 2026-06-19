@@ -2,8 +2,7 @@
 Dependencias FastAPI para auth JWT.
 
 AuthContext = usuario autenticado + org_id embebida en el token.
-get_optional_auth: Bearer opcional (endpoints que también aceptan demo_mode + user_id).
-get_current_auth: exige token válido.
+get_current_auth: exige token válido en todas las rutas de dominio.
 """
 from __future__ import annotations
 
@@ -14,11 +13,10 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.database import get_db
 from app.models.entities import Organization, User
 from app.services.auth_tokens import decode_access_token
-from app.services.organizations import get_org_member, require_org_member
+from app.services.organizations import require_org_member
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -51,11 +49,6 @@ def get_current_auth(
     auth: AuthContext | None = Depends(get_optional_auth),
 ) -> AuthContext:
     if auth is None:
-        if settings.demo_mode:
-            raise HTTPException(
-                status_code=401,
-                detail="Se requiere Authorization Bearer (o demo_mode con query params)",
-            )
         raise HTTPException(status_code=401, detail="No autenticado")
     return auth
 
@@ -64,18 +57,8 @@ def get_current_user(auth: AuthContext = Depends(get_current_auth)) -> User:
     return auth.user
 
 
-def assert_actor_matches_token(
-    actor_user_id: UUID,
-    auth: AuthContext | None,
-) -> None:
-    """Con JWT válido, el actor del body debe coincidir con el usuario del token."""
-    if auth is None:
-        return
-    if auth.user.id != actor_user_id:
-        raise HTTPException(
-            status_code=403,
-            detail="actor_user_id no coincide con el usuario autenticado",
-        )
+def get_current_actor_id(auth: AuthContext = Depends(get_current_auth)) -> UUID:
+    return auth.user.id
 
 
 def get_current_org_id(auth: AuthContext = Depends(get_current_auth)) -> UUID:

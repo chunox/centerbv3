@@ -1,7 +1,7 @@
 """
 Registro de auditoría por proyecto.
 
-GET filtra por viewer_user_id según capacidades del usuario.
+GET filtra por capacidades del usuario autenticado.
 Usado por la vista Actividad del frontend PM.
 """
 from uuid import UUID
@@ -10,9 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth_deps import get_current_actor_id
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
-from app.models.entities import AuditLog, Comment, HubEntry, User
+from app.models.entities import AuditLog, Comment, HubEntry
 from app.schemas.audit_logs import AuditLogCreate, AuditLogRead
 from app.services.audit_display import audit_log_to_read, audit_logs_to_read
 from app.services.access import resolve_audit_logs_for_user
@@ -55,12 +56,9 @@ def list_audit_logs(
     entidad_tipo: AuditEntidadTipo | None = Query(default=None),
     entidad_id: UUID | None = Query(default=None),
     user_id: UUID | None = Query(default=None),
-    viewer_user_id: UUID | None = Query(
-        default=None,
-        description="Usuario demo que consulta (sin JWT)",
-    ),
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     get_project_or_404(project_id, db)
@@ -77,7 +75,7 @@ def list_audit_logs(
         db,
         logs,
         project_id=project_id,
-        viewer_user_id=viewer_user_id,
+        viewer_user_id=actor_user_id,
     )
     return audit_logs_to_read(db, visible)
 
@@ -86,12 +84,10 @@ def list_audit_logs(
 def create_audit_log(
     project_id: UUID,
     payload: AuditLogCreate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     get_project_or_404(project_id, db)
-    user = db.get(User, payload.user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     _validate_entidad_in_project(
         payload.entidad_tipo, payload.entidad_id, project_id, db
@@ -100,7 +96,7 @@ def create_audit_log(
     entry = record_audit_log(
         db,
         project_id=project_id,
-        user_id=payload.user_id,
+        user_id=actor_user_id,
         entidad_tipo=payload.entidad_tipo,
         entidad_id=payload.entidad_id,
         accion=payload.accion,
@@ -117,7 +113,7 @@ def create_audit_log(
 def get_audit_log(
     project_id: UUID,
     log_id: UUID,
-    viewer_user_id: UUID | None = Query(default=None),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     get_project_or_404(project_id, db)
@@ -128,7 +124,7 @@ def get_audit_log(
         db,
         [entry],
         project_id=project_id,
-        viewer_user_id=viewer_user_id,
+        viewer_user_id=actor_user_id,
     )
     if not visible:
         raise HTTPException(status_code=403, detail="Sin permiso para ver este registro")

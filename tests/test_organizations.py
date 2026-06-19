@@ -15,6 +15,7 @@ from app.main import app
 from app.models.entities import OrganizationInvite, OrganizationMember, Project, ProjectMember, User
 from app.security import hash_password
 from app.services.organizations import list_guest_projects, list_org_projects
+from tests.conftest import auth_headers
 from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org, create_user
 
 
@@ -149,8 +150,8 @@ def test_create_project_requiere_org_admin(api_client: TestClient, db_session: S
             "tipo": "interno",
             "fecha_inicio": "2026-01-01",
             "fecha_fin": "2026-12-31",
-            "created_by": str(outsider_id),
         },
+        headers=auth_headers(outsider_id),
     )
     assert resp.status_code == 403
 
@@ -229,7 +230,8 @@ def test_list_projects_guest_api(api_client: TestClient, db_session: Session):
 
     resp = api_client.get(
         "/api/v1/projects",
-        params={"user_id": str(cliente_id), "guest": "true"},
+        params={"guest": "true"},
+        headers=auth_headers(cliente_id),
     )
     assert resp.status_code == 200
     assert len(resp.json()) == 1

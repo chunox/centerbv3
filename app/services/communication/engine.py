@@ -87,6 +87,14 @@ def _rule_matches(rule: dict[str, Any], ctx: CommunicationContext) -> bool:
         ctx.comment_entity_type,
     ):
         return False
+    expected_scrum_role = match.get("scrum_role")
+    if expected_scrum_role is not None:
+        record = ctx.record
+        if record is None:
+            return False
+        data = record.data if isinstance(record.data, dict) else {}
+        if data.get("scrum_role") != expected_scrum_role:
+            return False
     return True
 
 

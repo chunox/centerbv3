@@ -49,17 +49,19 @@ def list_sprint_velocity(
     *,
     limit: int = 6,
 ) -> list[dict[str, Any]]:
+    from app.services.scrum_v2_structure import is_sprint_record
+
     sprints = list(
         db.scalars(
             select(ProjectRecord)
             .where(
                 ProjectRecord.project_id == project_id,
-                ProjectRecord.record_type == "milestone",
+                ProjectRecord.record_type.in_(("sprint", "milestone")),
             )
             .order_by(ProjectRecord.orden.asc(), ProjectRecord.created_at.asc())
         )
     )
-    completed = [s for s in sprints if s.estado == "completado"]
+    completed = [s for s in sprints if s.estado == "completado" and is_sprint_record(s)]
     tail = completed[-limit:] if len(completed) > limit else completed
     out: list[dict[str, Any]] = []
     for s in tail:

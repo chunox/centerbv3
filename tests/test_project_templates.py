@@ -5,64 +5,45 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.database import Base, get_db
 from app.domain.project_templates import PROJECT_TEMPLATES
-from app.main import app
 from app.models.entities import Project, ProjectMember, ProjectRole, User
 from app.services.records.repository import create_record
-from tests.record_helpers import create_feature_record, create_milestone_record
+from tests.conftest import auth_headers
 from tests.org_helpers import add_member_with_slug, create_organization, create_user
+from tests.record_helpers import create_feature_record, create_milestone_record
 
 
-@pytest.fixture
-def db_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-@pytest.fixture
-def api_client(db_session: Session):
-    def _override_get_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = _override_get_db
-    with TestClient(app) as client:
-        yield client
-    app.dependency_overrides.clear()
-
-
-def _create_project_payload(org_id, owner_id, template_slug: str) -> dict:
+def _create_project_payload(org_id, template_slug: str) -> dict:
     return {
         "organization_id": str(org_id),
         "nombre": f"Proyecto {template_slug}",
         "template_slug": template_slug,
         "fecha_inicio": "2026-01-01",
         "fecha_fin": "2026-12-31",
-        "created_by": str(owner_id),
     }
 
 
-def test_list_project_templates(api_client: TestClient):
-    response = api_client.get("/api/v1/project-templates")
+def test_list_project_templates(api_client: TestClient, db_session: Session):
+    owner = create_user(db_session, email="tpl-list@test.local")
+    org = create_organization(db_session, owner_id=owner.id)
+    db_session.commit()
+    response = api_client.get(
+        "/api/v1/project-templates",
+        headers=auth_headers(owner.id, org.id),
+    )
     assert response.status_code == 200
     body = response.json()
     assert len(body) == len(PROJECT_TEMPLATES)
     slugs = {item["slug"] for item in body}
     assert slugs == set(PROJECT_TEMPLATES.keys())
+    for item in body:
+        tpl = PROJECT_TEMPLATES[item["slug"]]
+        assert item["delivery_mode"] == tpl.delivery_mode
+    scrum = [i for i in body if i["delivery_mode"] == "scrum"]
+    assert {i["slug"] for i in scrum} == {"t6_scrum_interno", "t7_scrum_cliente"}
 
 
 @pytest.mark.parametrize(
@@ -114,7 +95,8 @@ def test_create_project_per_template(
 
     response = api_client.post(
         "/api/v1/projects",
-        json=_create_project_payload(org.id, owner.id, template_slug),
+        json=_create_project_payload(org.id, template_slug),
+        headers=auth_headers(owner.id, org.id),
     )
     assert response.status_code == 201, response.text
     body = response.json()
@@ -148,7 +130,8 @@ def test_t1_missing_pm_role(api_client: TestClient, db_session: Session):
 
     response = api_client.post(
         "/api/v1/projects",
-        json=_create_project_payload(org.id, owner.id, "t2_cliente_pm_tecnico"),
+        json=_create_project_payload(org.id, "t2_cliente_pm_tecnico"),
+        headers=auth_headers(owner.id, org.id),
     )
     assert response.status_code == 201
     project_id = UUID(response.json()["id"])
@@ -168,7 +151,8 @@ def test_tech_lead_can_create_milestone(api_client: TestClient, db_session: Sess
 
     created = api_client.post(
         "/api/v1/projects",
-        json=_create_project_payload(org.id, owner.id, "t1_cliente_clasico"),
+        json=_create_project_payload(org.id, "t1_cliente_clasico"),
+        headers=auth_headers(owner.id, org.id),
     )
     assert created.status_code == 201
     project_id = UUID(created.json()["id"])
@@ -179,7 +163,6 @@ def test_tech_lead_can_create_milestone(api_client: TestClient, db_session: Sess
     response = api_client.post(
         f"/api/v1/projects/{project_id}/records",
         json={
-            "actor_user_id": str(tl.id),
             "record_type": "milestone",
             "titulo": "Hito TL",
             "data": {"tipo": "entrega"},
@@ -187,6 +170,7 @@ def test_tech_lead_can_create_milestone(api_client: TestClient, db_session: Sess
             "fecha_inicio": "2026-01-01",
             "fecha_fin": "2026-06-30",
         },
+        headers=auth_headers(tl.id),
     )
     assert response.status_code == 201
 
@@ -242,10 +226,10 @@ def test_pm_task_move_requires_kanban_capability(
     pm_move = api_client.post(
         f"/api/v1/projects/{project.id}/records/{task.id}/transition",
         json={
-            "actor_user_id": str(pm_id),
             "action_id": "move",
             "target_state": "in_progress",
         },
+        headers=auth_headers(pm_id),
     )
     assert pm_move.status_code == 403
     assert "kanban.task.move" in pm_move.json()["detail"]
@@ -256,19 +240,19 @@ def test_pm_task_move_requires_kanban_capability(
     pm_move_ok = api_client.post(
         f"/api/v1/projects/{project.id}/records/{task.id}/transition",
         json={
-            "actor_user_id": str(pm_id),
             "action_id": "move",
             "target_state": "in_progress",
         },
+        headers=auth_headers(pm_id),
     )
     assert pm_move_ok.status_code == 200
 
     pmt_move = api_client.post(
         f"/api/v1/projects/{project.id}/records/{task.id}/transition",
         json={
-            "actor_user_id": str(pm_tecnico_id),
             "action_id": "move",
             "target_state": "ready_for_test",
         },
+        headers=auth_headers(pm_tecnico_id),
     )
     assert pmt_move.status_code == 200

@@ -15,6 +15,7 @@ from app.main import app
 from app.models.entities import AuditLog, User
 from app.services.features import migrate_feature
 from app.services.records.repository import create_record, set_field
+from tests.conftest import auth_headers
 from tests.org_helpers import create_organization, create_project_for_org
 from tests.record_helpers import create_milestone_record
 
@@ -142,10 +143,8 @@ def test_migrate_api(db_session: Session, api_client: TestClient):
 
     response = api_client.post(
         f"/api/v1/projects/{project.id}/records/{feature.id}/migrate",
-        json={
-            "actor_user_id": str(pm_id),
-            "target_milestone_id": str(h2.id),
-        },
+        json={"target_milestone_id": str(h2.id)},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 200
     assert response.json()["parent_id"] == str(h2.id)

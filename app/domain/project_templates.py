@@ -20,6 +20,7 @@ ProjectTemplateSlug = Literal[
 ]
 
 ProjectTipoFromTemplate = Literal["con_cliente", "interno", "freestyle"]
+TemplateDeliveryMode = Literal["waterfall", "scrum"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,7 @@ class ProjectTemplateDef:
     nombre: str
     descripcion: str
     tipo: ProjectTipoFromTemplate
+    delivery_mode: TemplateDeliveryMode
     roles: tuple[str, ...]
     creator_role: str
     orden: int
@@ -39,6 +41,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         nombre="Entrega con cliente",
         descripcion="PM, Tech Líder, Dev, QA y Cliente. Flujo completo con validación externa.",
         tipo="con_cliente",
+        delivery_mode="waterfall",
         roles=("pm", "tech_lead", "dev", "qa", "cliente"),
         creator_role="pm",
         orden=1,
@@ -48,6 +51,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         nombre="Cliente compacto",
         descripcion="PM Técnico, Dev, QA y Cliente. Gestión y desarrollo en un rol.",
         tipo="con_cliente",
+        delivery_mode="waterfall",
         roles=("pm_tecnico", "dev", "qa", "cliente"),
         creator_role="pm_tecnico",
         orden=2,
@@ -57,6 +61,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         nombre="Squad interno",
         descripcion="PM, Tech Líder, Dev y QA. Sin cliente en el flujo.",
         tipo="interno",
+        delivery_mode="waterfall",
         roles=("pm", "tech_lead", "dev", "qa"),
         creator_role="pm",
         orden=3,
@@ -66,6 +71,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         nombre="Interno compacto",
         descripcion="PM Técnico, Dev y QA. Equipo mínimo interno.",
         tipo="interno",
+        delivery_mode="waterfall",
         roles=("pm_tecnico", "dev", "qa"),
         creator_role="pm_tecnico",
         orden=4,
@@ -75,6 +81,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         nombre="Flexible",
         descripcion="Los 6 roles. Personalizable en Configuración.",
         tipo="freestyle",
+        delivery_mode="waterfall",
         roles=("pm", "pm_tecnico", "dev", "tech_lead", "qa", "cliente"),
         creator_role="pm",
         orden=5,
@@ -84,6 +91,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         nombre="Scrum Interno",
         descripcion="PM (PO), Tech Líder, Dev y QA. Sprints con Product Backlog. Sin cliente.",
         tipo="interno",
+        delivery_mode="scrum",
         roles=("pm", "tech_lead", "dev", "qa"),
         creator_role="pm",
         orden=6,
@@ -93,11 +101,16 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         nombre="Scrum con Cliente",
         descripcion="PM (PO), Tech Líder, Dev, QA y Cliente. Sprints con validación externa.",
         tipo="con_cliente",
+        delivery_mode="scrum",
         roles=("pm", "tech_lead", "dev", "qa", "cliente"),
         creator_role="pm",
         orden=7,
     ),
 }
+
+SCRUM_TEMPLATE_SLUGS: frozenset[str] = frozenset(
+    slug for slug, tpl in PROJECT_TEMPLATES.items() if tpl.delivery_mode == "scrum"
+)
 
 DEFAULT_TEMPLATE_SLUG: ProjectTemplateSlug = "t1_cliente_clasico"
 
@@ -107,6 +120,20 @@ def get_template(slug: str) -> ProjectTemplateDef:
     if tpl is None:
         raise HTTPException(status_code=422, detail=f"Template de proyecto inválido: {slug}")
     return tpl
+
+
+def delivery_mode_for_template_slug(template_slug: str | None) -> TemplateDeliveryMode:
+    """Delivery waterfall/scrum declarado en la plantilla (default waterfall)."""
+    if not template_slug or template_slug in ("default", ""):
+        return "waterfall"
+    tpl = PROJECT_TEMPLATES.get(template_slug)
+    if tpl is None:
+        return "waterfall"
+    return tpl.delivery_mode
+
+
+def is_scrum_template_slug(template_slug: str | None) -> bool:
+    return delivery_mode_for_template_slug(template_slug) == "scrum"
 
 
 def project_tipo_for_template(template_slug: str, *, pack_slug: str = "software") -> str:
@@ -153,6 +180,7 @@ def list_templates_for_api() -> list[dict]:
             "nombre": t.nombre,
             "descripcion": t.descripcion,
             "tipo": t.tipo,
+            "delivery_mode": t.delivery_mode,
             "roles": list(t.roles),
             "creator_role": t.creator_role,
             "orden": t.orden,

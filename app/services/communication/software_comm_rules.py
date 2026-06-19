@@ -321,6 +321,58 @@ def software_state_entered_rules() -> list[CommunicationRule]:
                 ],
             }
         ),
+        CommunicationRule.model_validate(
+            {
+                "id": "story_blocked",
+                "enabled": True,
+                "event": "on_state_entered",
+                "match": {
+                    "entity_type": "task",
+                    "to_state": "bloqueada",
+                    "scrum_role": "story",
+                },
+                "deliveries": [
+                    _delivery(
+                        recipient_type="capability",
+                        recipient_value=WORKBENCH_INBOX_PM,
+                        tipo="feature_bloqueada",
+                        workbench_key="inbox_pm",
+                    ),
+                    _delivery(
+                        recipient_type="capability",
+                        recipient_value=WORKBENCH_INBOX_DEV,
+                        tipo="feature_bloqueada",
+                        workbench_key="inbox_dev",
+                    ),
+                ],
+            }
+        ),
+        CommunicationRule.model_validate(
+            {
+                "id": "story_unblocked",
+                "enabled": True,
+                "event": "on_state_entered",
+                "match": {
+                    "entity_type": "task",
+                    "to_state": "desbloqueada",
+                    "scrum_role": "story",
+                },
+                "deliveries": [
+                    _delivery(
+                        recipient_type="capability",
+                        recipient_value=WORKBENCH_INBOX_PM,
+                        tipo="feature_desbloqueada",
+                        workbench_key="inbox_pm",
+                    ),
+                    _delivery(
+                        recipient_type="capability",
+                        recipient_value=WORKBENCH_INBOX_DEV,
+                        tipo="feature_desbloqueada",
+                        workbench_key="inbox_dev",
+                    ),
+                ],
+            }
+        ),
     ]
 
 

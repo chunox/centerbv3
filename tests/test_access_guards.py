@@ -6,15 +6,12 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.orm import Session
 
-from app.database import Base, get_db
-from app.main import app
-from app.models.entities import Project, User
+from app.models.entities import User
 from app.services.features import apply_feature_action, ensure_default_task
 from app.services.records.repository import create_record, list_children
+from tests.conftest import auth_headers
 from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
 from tests.record_helpers import (
     create_feature_record,
@@ -22,33 +19,6 @@ from tests.record_helpers import (
     create_query_record,
     seed_project_with_roles,
 )
-
-
-@pytest.fixture
-def db_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-@pytest.fixture
-def api_client(db_session: Session):
-    def _override_get_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = _override_get_db
-    with TestClient(app) as client:
-        yield client
-    app.dependency_overrides.clear()
 
 
 def _seed_interno_blocked(session: Session):
@@ -123,7 +93,6 @@ def test_create_milestone_en_proyecto_cerrado_falla(
     response = api_client.post(
         f"/api/v1/projects/{project.id}/records",
         json={
-            "actor_user_id": str(pm_id),
             "record_type": "milestone",
             "titulo": "H2",
             "data": {"tipo": "entrega"},
@@ -131,6 +100,7 @@ def test_create_milestone_en_proyecto_cerrado_falla(
             "fecha_inicio": "2026-07-01",
             "fecha_fin": "2026-12-31",
         },
+        headers=auth_headers(pm_id, org.id),
     )
     assert response.status_code == 409
 
@@ -153,7 +123,6 @@ def test_create_feature_sin_rol_pm_falla(db_session: Session, api_client: TestCl
     response = api_client.post(
         f"/api/v1/projects/{project.id}/records",
         json={
-            "actor_user_id": str(dev_id),
             "record_type": "feature",
             "titulo": "Nueva",
             "parent_id": str(milestone.id),
@@ -161,6 +130,7 @@ def test_create_feature_sin_rol_pm_falla(db_session: Session, api_client: TestCl
             "fecha_inicio": "2026-01-01",
             "fecha_fin": "2026-03-31",
         },
+        headers=auth_headers(dev_id),
     )
     assert response.status_code == 403
 
@@ -202,26 +172,26 @@ def test_reporte_solo_cliente(db_session: Session, api_client: TestClient):
     pm_report = api_client.post(
         f"/api/v1/projects/{project.id}/records",
         json={
-            "actor_user_id": str(pm_id),
             "record_type": "report",
             "titulo": "Reporte bug",
             "parent_id": str(feature.id),
             "descripcion": "PM no puede",
             "data": {"tipo": "bug", "reported_by": str(pm_id)},
         },
+        headers=auth_headers(pm_id, org.id),
     )
     assert pm_report.status_code == 403
 
     ok = api_client.post(
         f"/api/v1/projects/{project.id}/records",
         json={
-            "actor_user_id": str(cliente_id),
             "record_type": "report",
             "titulo": "Reporte bug",
             "parent_id": str(feature.id),
             "descripcion": "Cliente sí",
             "data": {"tipo": "bug", "reported_by": str(cliente_id)},
         },
+        headers=auth_headers(cliente_id),
     )
     assert ok.status_code == 201
 
@@ -263,29 +233,31 @@ def test_adjunto_patch_solo_autor_o_pm(db_session: Session, api_client: TestClie
             "nombre_original": "a.pdf",
             "mime_type": "application/pdf",
             "tamano_bytes": 10,
-            "uploaded_by": str(dev_id),
             "entidad_tipo": "feature",
             "entidad_id": str(feature.id),
         },
+        headers=auth_headers(dev_id),
     )
     assert created.status_code == 201
     att_id = created.json()["id"]
+    att_body = created.json()
+    db_session.commit()
 
     forbidden = api_client.patch(
         f"/api/v1/attachments/{att_id}",
-        json={
-            "actor_user_id": str(other_dev),
-            "nombre_original": "hack.pdf",
-        },
+        json={"nombre_original": "hack.pdf"},
+        headers=auth_headers(other_dev),
     )
     assert forbidden.status_code == 403
 
     allowed = api_client.patch(
         f"/api/v1/attachments/{att_id}",
         json={
-            "actor_user_id": str(pm_id),
             "nombre_original": "renombrado.pdf",
+            "url": att_body["url"],
+            "mime_type": att_body["mime_type"],
         },
+        headers=auth_headers(pm_id, org.id),
     )
     assert allowed.status_code == 200
     assert allowed.json()["nombre_original"] == "renombrado.pdf"

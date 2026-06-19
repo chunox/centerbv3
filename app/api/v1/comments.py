@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth_deps import get_current_actor_id
 from app.database import get_db
 from app.models.entities import Comment, ProjectRecord
 from app.schemas.comments import CommentCreate, CommentRead, EntidadTipo
@@ -11,6 +12,10 @@ from app.services.access import assert_member_of_project, get_project_id_for_com
 from app.services.comments import create_comment as create_comment_service
 
 router = APIRouter(prefix="/comments", tags=["comments"])
+
+
+class _CommentCreateWithUser(CommentCreate):
+    user_id: UUID
 
 
 def _ensure_entidad_exists(entidad_tipo: EntidadTipo, entidad_id: UUID, db: Session) -> UUID:
@@ -21,12 +26,11 @@ def _ensure_entidad_exists(entidad_tipo: EntidadTipo, entidad_id: UUID, db: Sess
 def list_comments(
     entidad_tipo: EntidadTipo = Query(...),
     entidad_id: UUID = Query(...),
-    viewer_user_id: UUID | None = Query(default=None),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project_id = _ensure_entidad_exists(entidad_tipo, entidad_id, db)
-    if viewer_user_id is not None:
-        assert_member_of_project(db, project_id, viewer_user_id)
+    assert_member_of_project(db, project_id, actor_user_id)
     stmt = (
         select(Comment)
         .where(
@@ -39,9 +43,14 @@ def list_comments(
 
 
 @router.post("", response_model=CommentRead, status_code=201)
-def create_comment(payload: CommentCreate, db: Session = Depends(get_db)):
+def create_comment(
+    payload: CommentCreate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
+    db: Session = Depends(get_db),
+):
     _ensure_entidad_exists(payload.entidad_tipo, payload.entidad_id, db)
-    comment = create_comment_service(db, payload)
+    internal = _CommentCreateWithUser(**payload.model_dump(), user_id=actor_user_id)
+    comment = create_comment_service(db, internal)
     db.commit()
     db.refresh(comment)
     return comment

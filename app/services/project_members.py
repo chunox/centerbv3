@@ -59,9 +59,11 @@ def add_project_member(
     db: Session,
     project: Project,
     payload: ProjectMemberCreate,
+    *,
+    actor_user_id: uuid.UUID,
 ) -> ProjectMember:
     assert_project_active(project)
-    assert_pm_or_org_admin_of_project(db, project, payload.actor_user_id)
+    assert_pm_or_org_admin_of_project(db, project, actor_user_id)
 
     role_id = _resolve_role_id(
         db, project.id, role_id=payload.role_id, rol=payload.rol
@@ -89,7 +91,7 @@ def add_project_member(
     record_audit_log(
         db,
         project_id=project.id,
-        user_id=payload.actor_user_id,
+        user_id=actor_user_id,
         entidad_tipo="project",
         entidad_id=member.id,
         accion="created",
@@ -104,9 +106,11 @@ def update_project_member_role(
     project: Project,
     member: ProjectMember,
     payload: ProjectMemberUpdate,
+    *,
+    actor_user_id: uuid.UUID,
 ) -> None:
     assert_project_active(project)
-    assert_capability(db, project.id, payload.actor_user_id, PROJECT_MEMBERS_MANAGE)
+    assert_capability(db, project.id, actor_user_id, PROJECT_MEMBERS_MANAGE)
 
     new_role_id = _resolve_role_id(
         db, project.id, role_id=payload.role_id, rol=payload.rol
@@ -137,7 +141,7 @@ def update_project_member_role(
     record_audit_log(
         db,
         project_id=project.id,
-        user_id=payload.actor_user_id,
+        user_id=actor_user_id,
         entidad_tipo="project",
         entidad_id=member.id,
         accion="updated",

@@ -6,15 +6,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.v1.deps import get_milestone_or_404, get_project_or_404
+from app.api.v1.auth_deps import get_current_actor_id
+from app.api.v1.deps import get_project_or_404
 from app.database import get_db
+from app.domain.project_mode import is_record_type_allowed
 from app.domain.capabilities import (
-    KANBAN_TASK_CREATE,
     KANBAN_TASK_EDIT,
     KANBAN_VIEW,
     PROJECT_ROLES_MANAGE,
-    SCOPE_EPIC_CREATE,
-    SCOPE_FEATURE_CREATE,
     WORKBENCH_INBOX_CLIENT,
     WORKBENCH_INBOX_DEV,
     WORKBENCH_INBOX_PM,
@@ -32,6 +31,8 @@ from app.schemas.records import (
     RecordTransitionRequest,
     RecordUpdate,
 )
+from app.services.delivery.caps import assert_record_cap
+from app.services.delivery.resolve import get_delivery_service
 from app.services.inbox_records import InboxQueue, list_inbox_records
 from app.services.records import generic_store, registry
 from app.services.workflow.authorize import assert_any_capability, assert_capability
@@ -69,62 +70,16 @@ def _dto_to_read(dto, *, esfuerzo_horas: float | None = None) -> RecordRead:
 
 
 def _assert_record_cap(db: Session, project_id: UUID, user_id: UUID, cap: str) -> None:
-    from app.services.workflow.capabilities import user_has_capability
-
-    if user_has_capability(db, project_id, user_id, cap):
-        return
-    if user_has_capability(db, project_id, user_id, PROJECT_ROLES_MANAGE):
-        return
-    assert_capability(db, project_id, user_id, cap)
+    assert_record_cap(db, project_id, user_id, cap)
 
 
 def _assert_task_create_capability(
     db: Session,
     project,
     payload: RecordCreate,
+    actor_user_id: UUID,
 ) -> None:
-    """Scrum v2: épicas/historias usan caps de alcance; dev tasks usan kanban."""
-    from app.services.scrum_effort import is_scrum_project
-    from app.services.scrum_v2_structure import SCRUM_ROLE_DEV, SCRUM_ROLE_EPIC, SCRUM_ROLE_STORY
-
-    task_data = dict(payload.data or {})
-    scrum_role = task_data.get("scrum_role")
-
-    if is_scrum_project(project):
-        if scrum_role == SCRUM_ROLE_EPIC:
-            assert_any_capability(
-                db,
-                project.id,
-                payload.actor_user_id,
-                [
-                    SCOPE_EPIC_CREATE,
-                    "record.epic.create",
-                    "record.task.create",
-                    KANBAN_TASK_CREATE,
-                ],
-                detail="Sin permisos para crear épicas",
-            )
-            return
-        if scrum_role == SCRUM_ROLE_STORY:
-            assert_any_capability(
-                db,
-                project.id,
-                payload.actor_user_id,
-                [
-                    SCOPE_FEATURE_CREATE,
-                    "record.feature.create",
-                    "record.task.create",
-                    KANBAN_TASK_CREATE,
-                ],
-                detail="Sin permisos para crear historias",
-            )
-            return
-        if scrum_role == SCRUM_ROLE_DEV or task_data.get("parent_task_id"):
-            assert_capability(db, project.id, payload.actor_user_id, KANBAN_TASK_CREATE)
-            return
-
-    _assert_record_cap(db, project.id, payload.actor_user_id, "record.task.create")
-    assert_capability(db, project.id, payload.actor_user_id, KANBAN_TASK_CREATE)
+    get_delivery_service(project).assert_task_create(db, project, payload, actor_user_id)
 
 
 def _assert_dependency_read(db: Session, project_id: UUID, user_id: UUID) -> None:
@@ -175,7 +130,7 @@ def list_project_records(
     sprint_id: UUID | None = None,
     in_product_backlog: bool | None = Query(default=None),
     estado: str | None = Query(default=None),
-    actor_user_id: UUID = Query(...),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
@@ -183,18 +138,9 @@ def list_project_records(
         db, project.id, actor_user_id, f"record.{record_type}.read"
     )
     if in_product_backlog:
-        from app.services.scrum_effort import is_scrum_project
-
-        if not is_scrum_project(project):
-            raise HTTPException(
-                status_code=422,
-                detail="in_product_backlog solo aplica a proyectos Scrum",
-            )
-        if record_type not in ("feature", "task"):
-            raise HTTPException(
-                status_code=422,
-                detail="in_product_backlog requiere record_type=feature o task",
-            )
+        get_delivery_service(project).validate_in_product_backlog_filter(
+            project, record_type
+        )
     rows = registry.list_records(
         db,
         project.id,
@@ -204,13 +150,9 @@ def list_project_records(
         in_product_backlog=in_product_backlog,
         estado=estado,
     )
-    effort_map: dict = {}
-    if record_type in ("feature", "task"):
-        from app.services.scrum_effort import batch_feature_effort_hours, is_scrum_project
-
-        if is_scrum_project(project):
-            item_ids = [r.id for r in rows]
-            effort_map = batch_feature_effort_hours(db, project.id, item_ids)
+    effort_map = get_delivery_service(project).list_effort_map(
+        db, project, record_type, rows
+    )
     return [
         _dto_to_read(
             r,
@@ -223,7 +165,7 @@ def list_project_records(
 @router.get("/{project_id}/inbox-records", response_model=list[RecordRead])
 def list_project_inbox_records(
     project_id: UUID,
-    actor_user_id: UUID = Query(...),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     queue: InboxQueue | None = Query(default=None),
     workbench_key: str | None = Query(default=None),
     db: Session = Depends(get_db),
@@ -261,209 +203,35 @@ def list_project_inbox_records(
 def create_project_record(
     project_id: UUID,
     payload: RecordCreate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
+    allowed, mode_msg = is_record_type_allowed(project, payload.record_type, data=payload.data)
+    if not allowed and mode_msg:
+        raise HTTPException(status_code=422, detail=mode_msg)
     if payload.record_type == "task":
-        _assert_task_create_capability(db, project, payload)
+        _assert_task_create_capability(db, project, payload, actor_user_id)
     else:
         _assert_record_cap(
-            db, project.id, payload.actor_user_id, f"record.{payload.record_type}.create"
+            db, project.id, actor_user_id, f"record.{payload.record_type}.create"
         )
-    if registry.is_legacy(payload.record_type):
+    if registry.is_legacy(payload.record_type, project):
         raise HTTPException(
             status_code=422,
             detail=f"Tipo '{payload.record_type}' usa API legacy",
         )
 
-    if payload.record_type == "report":
-        from app.domain.capabilities import REPORT_CREATE
-        from app.services.feature_reports import notify_pms_report_received
-        from app.services.project_profile import supports_reports
-        from app.services.workflow.authorize import assert_capability
-
-        if payload.parent_id is None:
-            raise HTTPException(status_code=422, detail="parent_id requerido para reportes")
-        feature = db.get(ProjectRecord, payload.parent_id)
-        if feature is None or feature.record_type != "feature":
-            raise HTTPException(status_code=404, detail="Feature no encontrada")
-        assert_capability(db, project.id, payload.actor_user_id, REPORT_CREATE)
-        if feature.estado != "completado":
-            raise HTTPException(
-                status_code=409,
-                detail="Solo se puede reportar sobre una feature en estado completado",
-            )
-        if not supports_reports(db, project):
-            raise HTTPException(
-                status_code=400,
-                detail="Los reportes solo aplican a proyectos con stakeholder externo",
-            )
-        data = dict(payload.data or {})
-        data.setdefault("reported_by", str(payload.actor_user_id))
-        dto = generic_store.create_record(
-            db,
-            project,
-            record_type=payload.record_type,
-            titulo=payload.titulo,
-            created_by=payload.actor_user_id,
-            descripcion=payload.descripcion,
-            parent_id=payload.parent_id,
-            data=data,
-            fecha_inicio=payload.fecha_inicio,
-            fecha_fin=payload.fecha_fin,
-            assignee_ids=payload.assignee_ids,
-            initial_state=payload.initial_state,
-            orden=payload.orden,
-        )
-        from app.config import settings
-
-        if not settings.communication_rules_only:
-            notify_pms_report_received(db, project, db.get(ProjectRecord, dto.id))
-    elif payload.record_type == "task":
-        from app.services.features import sync_feature_from_tasks
-        from app.services.records.repository import _data
-        from app.services.scrum_effort import is_scrum_project
-        from app.services.scrum_tasks import (
-            create_dev_subtask,
-            create_dev_task,
-            create_epic_task,
-            create_story_task,
-        )
-        from app.services.scrum_v2_structure import (
-            SCRUM_ROLE_DEV,
-            SCRUM_ROLE_EPIC,
-            SCRUM_ROLE_STORY,
-            is_scrum_dev_task,
-        )
-        from app.services.tasks import sync_task_assignees
-
-        task_data = dict(payload.data or {})
-        scrum_role = task_data.get("scrum_role")
-
-        if is_scrum_project(project) and scrum_role == SCRUM_ROLE_EPIC:
-            row = create_epic_task(
-                db,
-                project,
-                titulo=payload.titulo,
-                created_by=payload.actor_user_id,
-                descripcion=payload.descripcion,
-            )
-            dto = generic_store.get_record(db, row.id)
-            assert dto is not None
-        elif is_scrum_project(project) and scrum_role == SCRUM_ROLE_STORY:
-            epic_raw = task_data.get("epic_task_id")
-            if not epic_raw:
-                raise HTTPException(status_code=422, detail="epic_task_id requerido para historias")
-            row = create_story_task(
-                db,
-                project,
-                titulo=payload.titulo,
-                created_by=payload.actor_user_id,
-                epic_task_id=UUID(str(epic_raw)),
-                descripcion=payload.descripcion,
-                prioridad=str(task_data.get("prioridad") or "media"),
-                initial_state=payload.initial_state or "product_backlog",
-                data=task_data,
-            )
-            dto = generic_store.get_record(db, row.id)
-            assert dto is not None
-        elif is_scrum_project(project) and (
-            scrum_role == SCRUM_ROLE_DEV or task_data.get("parent_task_id")
-        ):
-            story_raw = task_data.get("parent_task_id")
-            if not story_raw:
-                raise HTTPException(status_code=422, detail="parent_task_id requerido para tareas dev")
-            parent_record = db.get(ProjectRecord, UUID(str(story_raw)))
-            if parent_record is not None and is_scrum_dev_task(parent_record):
-                row = create_dev_subtask(
-                    db,
-                    project,
-                    titulo=payload.titulo,
-                    created_by=payload.actor_user_id,
-                    parent_dev_id=parent_record.id,
-                    descripcion=payload.descripcion,
-                    data=task_data,
-                    initial_state=payload.initial_state,
-                    assignee_ids=payload.assignee_ids,
-                )
-            else:
-                row = create_dev_task(
-                    db,
-                    project,
-                    titulo=payload.titulo,
-                    created_by=payload.actor_user_id,
-                    story_id=UUID(str(story_raw)),
-                    descripcion=payload.descripcion,
-                    data=task_data,
-                    initial_state=payload.initial_state,
-                    assignee_ids=payload.assignee_ids,
-                )
-            dto = generic_store.get_record(db, row.id)
-            assert dto is not None
-        else:
-            if payload.parent_id is None:
-                raise HTTPException(status_code=422, detail="parent_id requerido para tareas")
-            feature = db.get(ProjectRecord, payload.parent_id)
-            if feature is None or feature.record_type != "feature":
-                raise HTTPException(status_code=404, detail="Feature no encontrada")
-            if _data(feature).get("bloqueada"):
-                raise HTTPException(
-                    status_code=409,
-                    detail="La feature está bloqueada; no se pueden crear tareas",
-                )
-            dto = generic_store.create_record(
-                db,
-                project,
-                record_type=payload.record_type,
-                titulo=payload.titulo,
-                created_by=payload.actor_user_id,
-                descripcion=payload.descripcion,
-                parent_id=payload.parent_id,
-                data=payload.data,
-                fecha_inicio=payload.fecha_inicio,
-                fecha_fin=payload.fecha_fin,
-                initial_state=payload.initial_state,
-                orden=payload.orden,
-            )
-            task = db.get(ProjectRecord, dto.id)
-            if payload.assignee_ids and task is not None:
-                sync_task_assignees(
-                    db,
-                    task,
-                    project,
-                    actor_user_id=payload.actor_user_id,
-                    user_ids=payload.assignee_ids,
-                )
-                sync_feature_from_tasks(
-                    db, feature, project, actor_user_id=payload.actor_user_id
-                )
-            db.refresh(task)
-            dto = generic_store.get_record(db, dto.id) or dto
-    elif payload.record_type == "milestone":
-        from app.services.milestones import next_milestone_orden
-
-        dto = generic_store.create_record(
-            db,
-            project,
-            record_type=payload.record_type,
-            titulo=payload.titulo,
-            created_by=payload.actor_user_id,
-            descripcion=payload.descripcion,
-            parent_id=payload.parent_id,
-            data=payload.data or {"tipo": "entrega"},
-            fecha_inicio=payload.fecha_inicio,
-            fecha_fin=payload.fecha_fin,
-            assignee_ids=payload.assignee_ids,
-            initial_state=payload.initial_state,
-            orden=payload.orden if payload.orden is not None else next_milestone_orden(db, project.id),
-        )
+    delivery = get_delivery_service(project)
+    if payload.record_type in ("report", "task", "milestone", "sprint"):
+        dto = delivery.create_record(db, project, payload, actor_user_id)
     else:
         dto = generic_store.create_record(
             db,
             project,
             record_type=payload.record_type,
             titulo=payload.titulo,
-            created_by=payload.actor_user_id,
+            created_by=actor_user_id,
             descripcion=payload.descripcion,
             parent_id=payload.parent_id,
             data=payload.data,
@@ -481,7 +249,7 @@ def create_project_record(
 def get_project_record(
     project_id: UUID,
     record_id: UUID,
-    actor_user_id: UUID = Query(...),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     record_type: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -510,6 +278,7 @@ def update_project_record(
     project_id: UUID,
     record_id: UUID,
     payload: RecordUpdate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
@@ -517,20 +286,53 @@ def update_project_record(
     if row is None or row.project_id != project.id:
         raise HTTPException(status_code=404, detail="Registro no encontrado")
     _assert_record_cap(
-        db, project.id, payload.actor_user_id, f"record.{row.record_type}.edit"
+        db, project.id, actor_user_id, f"record.{row.record_type}.edit"
     )
-    dto = generic_store.update_record(
-        db,
-        row,
-        titulo=payload.titulo,
-        descripcion=payload.descripcion,
-        parent_id=payload.parent_id,
-        data=payload.data,
-        fecha_inicio=payload.fecha_inicio,
-        fecha_fin=payload.fecha_fin,
-        orden=payload.orden,
-        reparent="parent_id" in payload.model_fields_set,
-    )
+    if row.record_type == "milestone":
+        from app.schemas.milestones import MilestoneUpdate
+        from app.services.milestones import update_milestone
+
+        if "parent_id" in payload.model_fields_set:
+            raise HTTPException(
+                status_code=422,
+                detail="Los hitos no admiten parent_id",
+            )
+
+        mu_fields: dict = {"actor_user_id": actor_user_id}
+        if "titulo" in payload.model_fields_set:
+            mu_fields["nombre"] = payload.titulo
+        if "descripcion" in payload.model_fields_set:
+            mu_fields["descripcion"] = payload.descripcion
+        if "fecha_inicio" in payload.model_fields_set:
+            mu_fields["fecha_inicio"] = payload.fecha_inicio
+        if "fecha_fin" in payload.model_fields_set:
+            mu_fields["fecha_fin"] = payload.fecha_fin
+        if "orden" in payload.model_fields_set:
+            mu_fields["orden"] = payload.orden
+
+        if len(mu_fields) > 1:
+            update_milestone(db, row, project, MilestoneUpdate(**mu_fields))
+
+        dto = None
+        if payload.data is not None:
+            dto = generic_store.update_record(db, row, data=payload.data)
+        if dto is None:
+            dto = generic_store.get_record(db, row.id)
+        if dto is None:
+            raise HTTPException(status_code=404, detail="Registro no encontrado")
+    else:
+        dto = generic_store.update_record(
+            db,
+            row,
+            titulo=payload.titulo,
+            descripcion=payload.descripcion,
+            parent_id=payload.parent_id,
+            data=payload.data,
+            fecha_inicio=payload.fecha_inicio,
+            fecha_fin=payload.fecha_fin,
+            orden=payload.orden,
+            reparent="parent_id" in payload.model_fields_set,
+        )
     if payload.assignee_ids is not None:
         if row.record_type == "task":
             from app.services.tasks import sync_task_assignees
@@ -539,7 +341,7 @@ def update_project_record(
                 db,
                 row,
                 project,
-                actor_user_id=payload.actor_user_id,
+                actor_user_id=actor_user_id,
                 user_ids=payload.assignee_ids,
             )
         else:
@@ -554,7 +356,7 @@ def update_project_record(
 def delete_project_record(
     project_id: UUID,
     record_id: UUID,
-    actor_user_id: UUID = Query(...),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
@@ -565,7 +367,12 @@ def delete_project_record(
     if not is_record_capability(cap):
         cap = f"record.{row.record_type}.edit"
     _assert_record_cap(db, project.id, actor_user_id, cap)
-    generic_store.delete_record(db, row)
+    if row.record_type == "milestone":
+        from app.services.deletions import delete_milestone
+
+        delete_milestone(db, row, project, actor_user_id=actor_user_id)
+    else:
+        generic_store.delete_record(db, row)
     db.commit()
 
 
@@ -574,6 +381,7 @@ def transition_project_record(
     project_id: UUID,
     record_id: UUID,
     payload: RecordTransitionRequest,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
@@ -595,7 +403,7 @@ def transition_project_record(
             feature,
             project,
             nuevo_estado=payload.target_state,
-            actor_user_id=payload.actor_user_id,
+            actor_user_id=actor_user_id,
         )
         db.commit()
         db.refresh(row)
@@ -607,7 +415,7 @@ def transition_project_record(
         project,
         row,
         action_id=payload.action_id,
-        actor_user_id=payload.actor_user_id,
+        actor_user_id=actor_user_id,
         target_state=payload.target_state,
         form_data=payload.form_data,
         side_effect_context=payload.side_effect_context,
@@ -621,44 +429,17 @@ def migrate_project_record(
     project_id: UUID,
     record_id: UUID,
     payload: RecordMigrateRequest,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    feature = db.get(ProjectRecord, record_id)
-    if feature is None or feature.project_id != project.id or feature.record_type != "feature":
-        raise HTTPException(status_code=404, detail="Feature no encontrada")
-    if feature.parent_id is None:
-        raise HTTPException(status_code=409, detail="Feature sin hito padre")
-    from app.services.scrum_effort import get_feature_sprint_id, is_scrum_project
-
-    if is_scrum_project(project):
-        sprint_id = get_feature_sprint_id(feature)
-        if sprint_id is None:
-            raise HTTPException(
-                status_code=409,
-                detail="La historia no está asignada a un sprint",
-            )
-        source_milestone = get_milestone_or_404(project_id, sprint_id, db)
-    else:
-        source_milestone = get_milestone_or_404(project_id, feature.parent_id, db)
-    target_milestone = get_milestone_or_404(
-        project_id, payload.target_milestone_id, db
-    )
-    from app.services.features import migrate_feature
-
-    migrate_feature(
-        db,
-        feature,
-        project,
-        source_milestone,
-        target_milestone,
-        actor_user_id=payload.actor_user_id,
+    work_item = db.get(ProjectRecord, record_id)
+    if work_item is None or work_item.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
+    dto = get_delivery_service(project).migrate_record(
+        db, project, work_item, payload, actor_user_id
     )
     db.commit()
-    db.refresh(feature)
-    dto = generic_store.get_record(db, feature.id)
-    if dto is None:
-        raise HTTPException(status_code=404, detail="Feature no encontrada")
     return _dto_to_read(dto)
 
 
@@ -669,7 +450,7 @@ def migrate_project_record(
 def list_record_transitions(
     project_id: UUID,
     record_id: UUID,
-    actor_user_id: UUID = Query(...),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     record_type: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -692,7 +473,7 @@ def list_record_transitions(
 )
 def list_record_dependencies(
     project_id: UUID,
-    actor_user_id: UUID = Query(...),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
@@ -709,6 +490,7 @@ def list_record_dependencies(
 def create_record_dependency(
     project_id: UUID,
     payload: RecordDependencyCreate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
@@ -723,10 +505,10 @@ def create_record_dependency(
             project,
             succ,
             pred,
-            actor_user_id=payload.actor_user_id,
+            actor_user_id=actor_user_id,
         )
     else:
-        _assert_dependency_write(db, project.id, payload.actor_user_id, pred, succ)
+        _assert_dependency_write(db, project.id, actor_user_id, pred, succ)
         dep = generic_store.add_dependency(
             db,
             project,
@@ -742,7 +524,7 @@ def create_record_dependency(
 def delete_record_dependency(
     project_id: UUID,
     dep_id: UUID,
-    actor_user_id: UUID = Query(...),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)

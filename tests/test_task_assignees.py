@@ -2,44 +2,13 @@
 
 from uuid import UUID, uuid4
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.database import Base, get_db
-from app.main import app
 from app.models.entities import Notification, User
+from tests.conftest import auth_headers
 from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
 from tests.record_helpers import create_feature_record, create_milestone_record
-
-
-@pytest.fixture
-def db_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-@pytest.fixture
-def api_client(db_session: Session):
-    def override_get_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = override_get_db
-    client = TestClient(app)
-    yield client
-    app.dependency_overrides.clear()
 
 
 def _records_base(project_id) -> str:
@@ -82,12 +51,12 @@ def test_create_task_with_multiple_assignees(db_session, api_client):
     response = api_client.post(
         base,
         json={
-            "actor_user_id": str(dev_a),
             "record_type": "task",
             "titulo": "Multi",
             "parent_id": str(feature.id),
             "assignee_ids": [str(dev_a), str(dev_b)],
         },
+        headers=auth_headers(dev_a),
     )
     assert response.status_code == 201
     ids = response.json()["assignee_ids"]
@@ -100,21 +69,19 @@ def test_patch_adds_assignee_notifies_only_new(db_session, api_client):
     create = api_client.post(
         base,
         json={
-            "actor_user_id": str(dev_a),
             "record_type": "task",
             "titulo": "T",
             "parent_id": str(feature.id),
             "assignee_ids": [str(dev_a), str(dev_b)],
         },
+        headers=auth_headers(dev_a),
     )
     task_id = create.json()["id"]
 
     response = api_client.patch(
         f"{base}/{task_id}",
-        json={
-            "actor_user_id": str(dev_a),
-            "assignee_ids": [str(dev_a), str(dev_b), str(dev_c)],
-        },
+        json={"assignee_ids": [str(dev_a), str(dev_b), str(dev_c)]},
+        headers=auth_headers(dev_a),
     )
     assert response.status_code == 200
     assert set(response.json()["assignee_ids"]) == {
@@ -149,21 +116,19 @@ def test_patch_remove_assignee_no_notification_to_removed(db_session, api_client
     create = api_client.post(
         base,
         json={
-            "actor_user_id": str(dev_a),
             "record_type": "task",
             "titulo": "T",
             "parent_id": str(feature.id),
             "assignee_ids": [str(dev_a), str(dev_b), str(dev_c)],
         },
+        headers=auth_headers(dev_a),
     )
     task_id = create.json()["id"]
 
     response = api_client.patch(
         f"{base}/{task_id}",
-        json={
-            "actor_user_id": str(dev_a),
-            "assignee_ids": [str(dev_a)],
-        },
+        json={"assignee_ids": [str(dev_a)]},
+        headers=auth_headers(dev_a),
     )
     assert response.status_code == 200
     assert response.json()["assignee_ids"] == [str(dev_a)]
@@ -186,18 +151,19 @@ def test_patch_empty_assignees(db_session, api_client):
     create = api_client.post(
         base,
         json={
-            "actor_user_id": str(dev_a),
             "record_type": "task",
             "titulo": "T",
             "parent_id": str(feature.id),
             "assignee_ids": [str(dev_b)],
         },
+        headers=auth_headers(dev_a),
     )
     task_id = create.json()["id"]
 
     response = api_client.patch(
         f"{base}/{task_id}",
-        json={"actor_user_id": str(dev_a), "assignee_ids": []},
+        json={"assignee_ids": []},
+        headers=auth_headers(dev_a),
     )
     assert response.status_code == 200
     assert response.json()["assignee_ids"] == []

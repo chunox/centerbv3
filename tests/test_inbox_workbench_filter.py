@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
+from tests.conftest import auth_headers
 from tests.record_helpers import (
     create_feature_record,
     create_milestone_record,
@@ -69,10 +70,8 @@ def test_inbox_records_by_workbench_key(db_session: Session, api_client: TestCli
     pid = str(project.id)
     res = api_client.get(
         f"/api/v1/projects/{pid}/inbox-records",
-        params={
-            "workbench_key": "inbox_dev",
-            "actor_user_id": str(dev_id),
-        },
+        params={"workbench_key": "inbox_dev"},
+        headers=auth_headers(dev_id),
     )
     assert res.status_code == 200, res.text
     titles = {row["titulo"] for row in res.json()}

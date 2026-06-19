@@ -5,8 +5,9 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.api.v1.auth_deps import get_current_actor_id
 from app.database import get_db
-from app.models.entities import Attachment, AttachmentRelation, User
+from app.models.entities import Attachment, AttachmentRelation
 from app.schemas.attachments import (
     AttachmentCreate,
     AttachmentEntidadTipo,
@@ -33,6 +34,10 @@ from app.config import settings
 router = APIRouter(prefix="/attachments", tags=["attachments"])
 
 
+class _AttachmentUpdateWithActor(AttachmentUpdate):
+    actor_user_id: UUID
+
+
 def _load_attachment(attachment_id: UUID, db: Session) -> Attachment | None:
     stmt = (
         select(Attachment)
@@ -46,10 +51,7 @@ def _load_attachment(attachment_id: UUID, db: Session) -> Attachment | None:
 def list_attachments(
     entidad_tipo: AttachmentEntidadTipo = Query(...),
     entidad_id: UUID = Query(...),
-    viewer_user_id: UUID = Query(
-        ...,
-        description="Miembro del proyecto que consulta (demo sin JWT)",
-    ),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     ensure_attachment_entidad_exists(entidad_tipo, entidad_id, db)
@@ -57,7 +59,7 @@ def list_attachments(
         db,
         entidad_tipo=entidad_tipo,
         entidad_id=entidad_id,
-        viewer_user_id=viewer_user_id,
+        viewer_user_id=actor_user_id,
     )
     stmt = (
         select(Attachment)
@@ -75,9 +77,9 @@ def list_attachments(
 @router.post("/upload", response_model=AttachmentRead, status_code=201)
 async def upload_attachment(
     file: UploadFile = File(...),
-    uploaded_by: UUID = Form(...),
     entidad_tipo: AttachmentEntidadTipo = Form(...),
     entidad_id: UUID = Form(...),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     """Sube un archivo binario y lo vincula a una entidad."""
@@ -93,7 +95,7 @@ async def upload_attachment(
         nombre_original=nombre_original,
         mime_type=mime_type,
         tamano_bytes=len(content),
-        uploaded_by=uploaded_by,
+        uploaded_by=actor_user_id,
         entidad_tipo=entidad_tipo,
         entidad_id=entidad_id,
         attachment_id=attachment_id,
@@ -108,7 +110,11 @@ async def upload_attachment(
 
 
 @router.post("", response_model=AttachmentRead, status_code=201)
-def create_attachment(payload: AttachmentCreate, db: Session = Depends(get_db)):
+def create_attachment(
+    payload: AttachmentCreate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
+    db: Session = Depends(get_db),
+):
     """Registra un adjunto por URL externa (sin upload binario)."""
     attachment = create_attachment_for_entity(
         db,
@@ -116,7 +122,7 @@ def create_attachment(payload: AttachmentCreate, db: Session = Depends(get_db)):
         nombre_original=payload.nombre_original,
         mime_type=payload.mime_type,
         tamano_bytes=payload.tamano_bytes,
-        uploaded_by=payload.uploaded_by,
+        uploaded_by=actor_user_id,
         entidad_tipo=payload.entidad_tipo,
         entidad_id=payload.entidad_id,
     )
@@ -131,10 +137,7 @@ def create_attachment(payload: AttachmentCreate, db: Session = Depends(get_db)):
 @router.get("/{attachment_id}/file")
 def download_attachment_file(
     attachment_id: UUID,
-    viewer_user_id: UUID = Query(
-        ...,
-        description="Miembro del proyecto que descarga (demo sin JWT)",
-    ),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     attachment = _load_attachment(attachment_id, db)
@@ -146,7 +149,7 @@ def download_attachment_file(
     project_id = get_project_id_for_attachment_entity(
         db, relation.entidad_tipo, relation.entidad_id
     )
-    assert_member_of_project(db, project_id, viewer_user_id)
+    assert_member_of_project(db, project_id, actor_user_id)
     if not is_stored_attachment(attachment.url):
         raise HTTPException(
             status_code=404,
@@ -165,10 +168,7 @@ def download_attachment_file(
 @router.get("/{attachment_id}", response_model=AttachmentRead)
 def get_attachment(
     attachment_id: UUID,
-    viewer_user_id: UUID = Query(
-        ...,
-        description="Miembro del proyecto que consulta (demo sin JWT)",
-    ),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     attachment = _load_attachment(attachment_id, db)
@@ -181,7 +181,7 @@ def get_attachment(
         db,
         entidad_tipo=relation.entidad_tipo,  # type: ignore[arg-type]
         entidad_id=relation.entidad_id,
-        viewer_user_id=viewer_user_id,
+        viewer_user_id=actor_user_id,
     )
     return attachment
 
@@ -190,16 +190,15 @@ def get_attachment(
 def patch_attachment(
     attachment_id: UUID,
     payload: AttachmentUpdate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     attachment = _load_attachment(attachment_id, db)
     if not attachment:
         raise HTTPException(status_code=404, detail="Adjunto no encontrado")
-    actor = db.get(User, payload.actor_user_id)
-    if not actor:
-        raise HTTPException(status_code=404, detail="Usuario actor no encontrado")
 
-    update_attachment(db, attachment, payload)
+    internal = _AttachmentUpdateWithActor(**payload.model_dump(), actor_user_id=actor_user_id)
+    update_attachment(db, attachment, internal)
     db.commit()
     db.refresh(attachment)
     loaded = _load_attachment(attachment.id, db)
@@ -211,15 +210,12 @@ def patch_attachment(
 @router.delete("/{attachment_id}", status_code=204)
 def remove_attachment(
     attachment_id: UUID,
-    actor_user_id: UUID,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     attachment = _load_attachment(attachment_id, db)
     if not attachment:
         raise HTTPException(status_code=404, detail="Adjunto no encontrado")
-    actor = db.get(User, actor_user_id)
-    if not actor:
-        raise HTTPException(status_code=404, detail="Usuario actor no encontrado")
 
     delete_attachment(db, attachment, actor_user_id=actor_user_id)
     db.commit()

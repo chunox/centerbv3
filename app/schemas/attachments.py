@@ -25,7 +25,6 @@ class AttachmentCreate(BaseModel):
     nombre_original: str = Field(min_length=1, max_length=255)
     mime_type: str = Field(min_length=1, max_length=100)
     tamano_bytes: int = Field(ge=1)
-    uploaded_by: UUID
     entidad_tipo: AttachmentEntidadTipo
     entidad_id: UUID
 
@@ -40,7 +39,6 @@ class AttachmentRelationRead(BaseModel):
 
 
 class AttachmentUpdate(BaseModel):
-    actor_user_id: UUID
     url: str | None = Field(default=None, min_length=1, max_length=500)
     nombre_original: str | None = Field(default=None, min_length=1, max_length=255)
     mime_type: str | None = Field(default=None, min_length=1, max_length=100)

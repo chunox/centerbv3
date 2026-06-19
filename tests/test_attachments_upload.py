@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import Base, get_db
 from app.main import app
 from app.models.entities import User
+from tests.conftest import auth_headers
 from tests.org_helpers import create_organization, create_project_for_org
 from tests.record_helpers import create_feature_record, create_milestone_record
 
@@ -43,12 +44,12 @@ def _seed(session: Session):
         with_default_task=False,
     )
     session.commit()
-    return feature, pm_id
+    return feature, pm_id, org
 
 
 def test_upload_y_descarga(monkeypatch, tmp_path: Path):
     session = _session()
-    feature, pm_id = _seed(session)
+    feature, pm_id, org = _seed(session)
     monkeypatch.setattr(settings, "uploads_dir", str(tmp_path))
 
     def _override():
@@ -59,11 +60,11 @@ def test_upload_y_descarga(monkeypatch, tmp_path: Path):
         response = client.post(
             "/api/v1/attachments/upload",
             data={
-                "uploaded_by": str(pm_id),
                 "entidad_tipo": "feature",
                 "entidad_id": str(feature.id),
             },
             files={"file": ("evidencia.txt", b"hola handoff", "text/plain")},
+            headers=auth_headers(pm_id, org.id),
         )
         assert response.status_code == 201
         body = response.json()
@@ -73,7 +74,7 @@ def test_upload_y_descarga(monkeypatch, tmp_path: Path):
 
         download = client.get(
             f"/api/v1/attachments/{body['id']}/file",
-            params={"viewer_user_id": str(pm_id)},
+            headers=auth_headers(pm_id, org.id),
         )
         assert download.status_code == 200
         assert download.content == b"hola handoff"
@@ -83,7 +84,7 @@ def test_upload_y_descarga(monkeypatch, tmp_path: Path):
 
 def test_upload_archivo_vacio_falla(monkeypatch, tmp_path: Path):
     session = _session()
-    feature, pm_id = _seed(session)
+    feature, pm_id, org = _seed(session)
     monkeypatch.setattr(settings, "uploads_dir", str(tmp_path))
 
     def _override():
@@ -94,11 +95,11 @@ def test_upload_archivo_vacio_falla(monkeypatch, tmp_path: Path):
         response = client.post(
             "/api/v1/attachments/upload",
             data={
-                "uploaded_by": str(pm_id),
                 "entidad_tipo": "feature",
                 "entidad_id": str(feature.id),
             },
             files={"file": ("vacio.txt", b"", "text/plain")},
+            headers=auth_headers(pm_id, org.id),
         )
         assert response.status_code == 422
     app.dependency_overrides.clear()
@@ -107,7 +108,7 @@ def test_upload_archivo_vacio_falla(monkeypatch, tmp_path: Path):
 
 def test_url_externa_no_descarga_local():
     session = _session()
-    feature, pm_id = _seed(session)
+    feature, pm_id, org = _seed(session)
 
     def _override():
         yield session
@@ -121,17 +122,17 @@ def test_url_externa_no_descarga_local():
                 "nombre_original": "doc.pdf",
                 "mime_type": "application/pdf",
                 "tamano_bytes": 100,
-                "uploaded_by": str(pm_id),
                 "entidad_tipo": "feature",
                 "entidad_id": str(feature.id),
             },
+            headers=auth_headers(pm_id, org.id),
         )
         assert created.status_code == 201
         att_id = created.json()["id"]
 
         download = client.get(
             f"/api/v1/attachments/{att_id}/file",
-            params={"viewer_user_id": str(pm_id)},
+            headers=auth_headers(pm_id, org.id),
         )
         assert download.status_code == 404
     app.dependency_overrides.clear()
@@ -140,7 +141,7 @@ def test_url_externa_no_descarga_local():
 
 def test_patch_url_externa(monkeypatch, tmp_path: Path):
     session = _session()
-    feature, pm_id = _seed(session)
+    feature, pm_id, org = _seed(session)
     monkeypatch.setattr(settings, "uploads_dir", str(tmp_path))
 
     def _override():
@@ -155,19 +156,22 @@ def test_patch_url_externa(monkeypatch, tmp_path: Path):
                 "nombre_original": "old.pdf",
                 "mime_type": "application/pdf",
                 "tamano_bytes": 100,
-                "uploaded_by": str(pm_id),
                 "entidad_tipo": "feature",
                 "entidad_id": str(feature.id),
             },
+            headers=auth_headers(pm_id, org.id),
         )
+        assert created.status_code == 201
         att_id = created.json()["id"]
+        session.commit()
         response = client.patch(
             f"/api/v1/attachments/{att_id}",
             json={
-                "actor_user_id": str(pm_id),
                 "url": "https://example.com/new.pdf",
                 "nombre_original": "new.pdf",
+                "mime_type": "application/pdf",
             },
+            headers=auth_headers(pm_id, org.id),
         )
         assert response.status_code == 200
         assert response.json()["url"] == "https://example.com/new.pdf"
@@ -178,7 +182,7 @@ def test_patch_url_externa(monkeypatch, tmp_path: Path):
 
 def test_patch_url_en_upload_falla(monkeypatch, tmp_path: Path):
     session = _session()
-    feature, pm_id = _seed(session)
+    feature, pm_id, org = _seed(session)
     monkeypatch.setattr(settings, "uploads_dir", str(tmp_path))
 
     def _override():
@@ -189,19 +193,17 @@ def test_patch_url_en_upload_falla(monkeypatch, tmp_path: Path):
         created = client.post(
             "/api/v1/attachments/upload",
             data={
-                "uploaded_by": str(pm_id),
                 "entidad_tipo": "feature",
                 "entidad_id": str(feature.id),
             },
             files={"file": ("doc.txt", b"data", "text/plain")},
+            headers=auth_headers(pm_id, org.id),
         )
         att_id = created.json()["id"]
         response = client.patch(
             f"/api/v1/attachments/{att_id}",
-            json={
-                "actor_user_id": str(pm_id),
-                "url": "https://example.com/hack.pdf",
-            },
+            json={"url": "https://example.com/hack.pdf"},
+            headers=auth_headers(pm_id, org.id),
         )
         assert response.status_code == 409
     app.dependency_overrides.clear()
@@ -210,7 +212,7 @@ def test_patch_url_en_upload_falla(monkeypatch, tmp_path: Path):
 
 def test_delete_adjunto_y_archivo(monkeypatch, tmp_path: Path):
     session = _session()
-    feature, pm_id = _seed(session)
+    feature, pm_id, org = _seed(session)
     monkeypatch.setattr(settings, "uploads_dir", str(tmp_path))
 
     def _override():
@@ -221,29 +223,29 @@ def test_delete_adjunto_y_archivo(monkeypatch, tmp_path: Path):
         created = client.post(
             "/api/v1/attachments/upload",
             data={
-                "uploaded_by": str(pm_id),
                 "entidad_tipo": "feature",
                 "entidad_id": str(feature.id),
             },
             files={"file": ("borrar.txt", b"x", "text/plain")},
+            headers=auth_headers(pm_id, org.id),
         )
         att_id = created.json()["id"]
         response = client.delete(
             f"/api/v1/attachments/{att_id}",
-            params={"actor_user_id": str(pm_id)},
+            headers=auth_headers(pm_id, org.id),
         )
         assert response.status_code == 204
         assert (
             client.get(
                 f"/api/v1/attachments/{att_id}",
-                params={"viewer_user_id": str(pm_id)},
+                headers=auth_headers(pm_id, org.id),
             ).status_code
             == 404
         )
         assert (
             client.get(
                 f"/api/v1/attachments/{att_id}/file",
-                params={"viewer_user_id": str(pm_id)},
+                headers=auth_headers(pm_id, org.id),
             ).status_code
             == 404
         )

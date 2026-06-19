@@ -15,7 +15,7 @@ from app.services.scrum_effort import get_scrum_item_sprint_id
 from app.services.scrum_tasks import create_epic_task, create_story_task
 from app.services.scrum_v2_structure import get_product_backlog_milestone
 from tests.org_helpers import add_member_with_slug, create_organization
-from tests.record_helpers import create_milestone_record
+from tests.record_helpers import create_sprint_record
 
 
 @pytest.fixture
@@ -76,16 +76,13 @@ def test_comprometer_y_volver_reparent_story(db_session: Session):
         created_by=pm_id,
         epic_task_id=epic.id,
     )
-    sprint = create_milestone_record(
+    sprint = create_sprint_record(
         db_session,
         project,
         created_by=pm_id,
         nombre="Sprint 1",
         orden=1,
     )
-    sprint.data = {"tipo": "sprint", "sprint_goal": "Goal"}
-    sprint.fecha_inicio = date(2026, 3, 1)
-    sprint.fecha_fin = date(2026, 3, 14)
     db_session.commit()
 
     assert story.parent_id == backlog.id
@@ -124,8 +121,8 @@ def test_comprometer_y_volver_reparent_story(db_session: Session):
 def test_list_records_sprint_id_filter(db_session: Session):
     project, pm_id = _seed_scrum_project(db_session)
     backlog = get_product_backlog_milestone(db_session, project.id)
-    sprint_a = create_milestone_record(db_session, project, created_by=pm_id, nombre="S1", orden=1)
-    sprint_b = create_milestone_record(db_session, project, created_by=pm_id, nombre="S2", orden=2)
+    sprint_a = create_sprint_record(db_session, project, created_by=pm_id, nombre="S1", orden=1)
+    sprint_b = create_sprint_record(db_session, project, created_by=pm_id, nombre="S2", orden=2)
     epic = create_epic_task(db_session, project, titulo="Epic", created_by=pm_id)
 
     story_a = create_story_task(
@@ -160,7 +157,7 @@ def test_list_records_sprint_id_filter(db_session: Session):
 
 def test_list_records_in_product_backlog_filter(db_session: Session):
     project, pm_id = _seed_scrum_project(db_session)
-    sprint = create_milestone_record(db_session, project, created_by=pm_id, nombre="S1", orden=1)
+    sprint = create_sprint_record(db_session, project, created_by=pm_id, nombre="S1", orden=1)
     epic = create_epic_task(db_session, project, titulo="Epic", created_by=pm_id)
 
     in_backlog = create_story_task(

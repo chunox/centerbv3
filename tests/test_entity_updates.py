@@ -55,7 +55,8 @@ def test_update_project_nombre_y_audit(db_session: Session):
     update_project(
         db_session,
         project,
-        ProjectUpdate(actor_user_id=pm_id, nombre="Renombrado"),
+        ProjectUpdate(nombre="Renombrado"),
+        actor_user_id=pm_id,
     )
     db_session.commit()
 
@@ -81,7 +82,8 @@ def test_update_project_cerrado_falla(db_session: Session):
         update_project(
             db_session,
             project,
-            ProjectUpdate(actor_user_id=pm_id, nombre="X"),
+            ProjectUpdate(nombre="X"),
+            actor_user_id=pm_id,
         )
     assert exc.value.status_code == 409
 
@@ -94,10 +96,10 @@ def test_update_project_fechas_invalidas(db_session: Session):
             db_session,
             project,
             ProjectUpdate(
-                actor_user_id=pm_id,
                 fecha_inicio=date(2026, 12, 1),
                 fecha_fin=date(2026, 1, 1),
             ),
+            actor_user_id=pm_id,
         )
     assert exc.value.status_code == 422
 

@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import Base, get_db
 from app.main import app
 from app.models.entities import User
+from tests.conftest import auth_headers
 from tests.org_helpers import create_organization, create_project_for_org
 from tests.record_helpers import (
     create_feature_record,
@@ -60,11 +61,11 @@ def test_upload_adjunto_en_consulta(monkeypatch, tmp_path: Path):
         response = client.post(
             "/api/v1/attachments/upload",
             data={
-                "uploaded_by": str(pm_id),
                 "entidad_tipo": "feature_query",
                 "entidad_id": str(query.id),
             },
             files={"file": ("evidencia.txt", b"log consulta", "text/plain")},
+            headers=auth_headers(pm_id, org.id),
         )
         assert response.status_code == 201, response.text
         body = response.json()
@@ -75,9 +76,10 @@ def test_upload_adjunto_en_consulta(monkeypatch, tmp_path: Path):
             params={
                 "entidad_tipo": "feature_query",
                 "entidad_id": str(query.id),
-                "viewer_user_id": str(pm_id),
             },
+            headers=auth_headers(pm_id, org.id),
         )
         assert listed.status_code == 200
         assert len(listed.json()) == 1
     app.dependency_overrides.clear()
+    session.close()

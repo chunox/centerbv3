@@ -3,45 +3,15 @@
 from datetime import date
 from uuid import uuid4
 
-import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.database import Base, get_db
-from app.main import app
 from app.models.entities import AuditLog, Notification, Project, User
 from app.services.records.repository import create_record
+from tests.conftest import auth_headers
 from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org
 from tests.record_helpers import create_feature_record, create_milestone_record
-
-
-@pytest.fixture
-def db_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-@pytest.fixture
-def api_client(db_session: Session):
-    def _override_get_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = _override_get_db
-    with TestClient(app) as client:
-        yield client
-    app.dependency_overrides.clear()
 
 
 def _seed_kanban(session: Session):
@@ -93,10 +63,10 @@ def test_patch_task_asignacion_y_notificacion(db_session: Session, api_client: T
     response = api_client.patch(
         f"/api/v1/projects/{project.id}/records/{task.id}",
         json={
-            "actor_user_id": str(dev_id),
             "titulo": "Tarea renombrada",
             "assignee_ids": [str(other_dev)],
         },
+        headers=auth_headers(dev_id),
     )
     assert response.status_code == 200
     assert response.json()["titulo"] == "Tarea renombrada"
@@ -117,11 +87,11 @@ def test_pm_no_puede_crear_tarea(db_session: Session, api_client: TestClient):
     response = api_client.post(
         f"/api/v1/projects/{project.id}/records",
         json={
-            "actor_user_id": str(pm_id),
             "record_type": "task",
             "titulo": "Nueva",
             "parent_id": str(feature.id),
         },
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 403
 
@@ -144,10 +114,10 @@ def test_dev_puede_crear_dependencia_entre_tareas(
     response = api_client.post(
         f"/api/v1/projects/{project.id}/record-dependencies",
         json={
-            "actor_user_id": str(dev_id),
             "predecessor_id": str(pred.id),
             "successor_id": str(task.id),
         },
+        headers=auth_headers(dev_id),
     )
     assert response.status_code == 201
     body = response.json()
@@ -156,7 +126,7 @@ def test_dev_puede_crear_dependencia_entre_tareas(
 
     list_response = api_client.get(
         f"/api/v1/projects/{project.id}/record-dependencies",
-        params={"actor_user_id": str(dev_id)},
+        headers=auth_headers(dev_id),
     )
     assert list_response.status_code == 200
     assert len(list_response.json()) == 1
@@ -180,7 +150,8 @@ def test_list_projects_filtrado_por_miembro(db_session: Session, api_client: Tes
     db_session.commit()
 
     response = api_client.get(
-        "/api/v1/projects", params={"user_id": str(dev_id)}
+        "/api/v1/projects",
+        headers=auth_headers(dev_id),
     )
     assert response.status_code == 200
     ids = {p["id"] for p in response.json()}
@@ -196,9 +167,9 @@ def test_comentario_mencion_notifica(db_session: Session, api_client: TestClient
         json={
             "entidad_tipo": "feature",
             "entidad_id": str(feature.id),
-            "user_id": str(dev_id),
             "contenido": f"Hola @{other_dev} revisa esto",
         },
+        headers=auth_headers(dev_id),
     )
     assert response.status_code == 201
 
@@ -212,8 +183,6 @@ def test_comentario_mencion_notifica(db_session: Session, api_client: TestClient
 
 
 def test_patch_y_delete_user(db_session: Session, api_client: TestClient):
-    from app.services.auth_tokens import create_access_token
-
     user_id = uuid4()
     db_session.add(
         User(
@@ -225,18 +194,17 @@ def test_patch_y_delete_user(db_session: Session, api_client: TestClient):
     )
     db_session.commit()
 
-    token = create_access_token(user_id=user_id)
     response = api_client.patch(
         f"/api/v1/users/{user_id}",
         json={"nombre": "Actualizado"},
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_headers(user_id),
     )
     assert response.status_code == 200
     assert response.json()["nombre"] == "Actualizado"
 
     response = api_client.delete(
         f"/api/v1/users/{user_id}",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_headers(user_id),
     )
     assert response.status_code == 204
 
@@ -267,7 +235,7 @@ def test_audit_logs_filtrados_por_rol_dev(
 
     response = api_client.get(
         f"/api/v1/projects/{project.id}/audit-logs",
-        params={"viewer_user_id": str(dev_id)},
+        headers=auth_headers(dev_id),
     )
     assert response.status_code == 200
     tipos = {row["entidad_tipo"] for row in response.json()}

@@ -7,6 +7,7 @@ from typing import Literal
 
 from sqlalchemy.orm import Session
 
+from app.domain.project_mode import is_software_work_item
 from app.models.entities import Project, ProjectRecord
 from app.services.records.repository import list_records
 
@@ -38,7 +39,7 @@ def is_pm_inbox_record(record: ProjectRecord) -> bool:
         return record.estado == "pendiente"
     if record.record_type == "query":
         return record.estado in PM_INBOX_QUERY_STATES
-    if record.record_type == "feature":
+    if is_software_work_item(record):
         return record.estado == "esperando_liberacion_pm"
     return False
 
@@ -46,7 +47,7 @@ def is_pm_inbox_record(record: ProjectRecord) -> bool:
 def is_client_inbox_record(record: ProjectRecord) -> bool:
     if record.record_type == "query":
         return record.estado in CLIENT_INBOX_QUERY_STATES
-    if record.record_type == "feature":
+    if is_software_work_item(record):
         return record.estado in CLIENT_VALIDATION_FEATURE_STATES
     if record.record_type == "report":
         return record.estado == "pendiente"
@@ -110,6 +111,8 @@ def count_pm_inbox_actionables(
 ) -> tuple[int, int, int, int]:
     pending_reports = sum(1 for r in reports if r.estado == "pendiente")
     pending_queries = sum(1 for q in queries if q.estado in PM_INBOX_QUERY_STATES)
-    pending_releases = sum(1 for f in features if f.estado == "esperando_liberacion_pm")
+    pending_releases = sum(
+        1 for f in features if f.estado == "esperando_liberacion_pm"
+    )
     inbox_action_count = pending_reports + pending_queries + pending_releases
     return inbox_action_count, pending_reports, pending_queries, pending_releases

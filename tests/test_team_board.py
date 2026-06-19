@@ -1,43 +1,13 @@
 """Tests vista Equipo PM — team-board endpoint."""
 
-import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.database import Base, get_db
-from app.main import app
 from app.models.entities import ProjectRole, ProjectRoleCapability
 from app.services.records.repository import create_record
+from tests.conftest import auth_headers
 from tests.record_helpers import create_feature_record, create_milestone_record, seed_project_with_roles
-
-
-@pytest.fixture
-def db_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-@pytest.fixture
-def api_client(db_session: Session):
-    def override_get_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = override_get_db
-    client = TestClient(app)
-    yield client
-    app.dependency_overrides.clear()
 
 
 def _team_board_url(project_id) -> str:
@@ -81,7 +51,7 @@ def test_team_board_shows_assigned_task_for_dev(db_session, api_client):
     )
     response = api_client.get(
         _team_board_url(project.id),
-        params={"viewer_user_id": str(pm_id)},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 200
     data = response.json()
@@ -104,7 +74,7 @@ def test_team_board_member_without_assignments_has_empty_items(db_session, api_c
     )
     response = api_client.get(
         _team_board_url(project.id),
-        params={"viewer_user_id": str(pm_id)},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 200
     qa_row = next(m for m in response.json()["members"] if m["user_id"] == str(qa_id))
@@ -116,7 +86,7 @@ def test_team_board_unassigned_bucket(db_session, api_client):
     project, pm_id, dev_id, _, _, _, task = _seed_task_on_feature(db_session)
     response = api_client.get(
         _team_board_url(project.id),
-        params={"viewer_user_id": str(pm_id)},
+        headers=auth_headers(pm_id),
     )
     assert response.status_code == 200
     data = response.json()
@@ -150,12 +120,12 @@ def test_team_board_forbidden_without_workbench_team(db_session, api_client):
 
     pm_ok = api_client.get(
         _team_board_url(project.id),
-        params={"viewer_user_id": str(pm_id)},
+        headers=auth_headers(pm_id),
     )
     assert pm_ok.status_code == 200
 
     denied = api_client.get(
         _team_board_url(project.id),
-        params={"viewer_user_id": str(dev_id)},
+        headers=auth_headers(dev_id),
     )
     assert denied.status_code == 403

@@ -20,7 +20,7 @@ from app.models.entities import (
 from app.services.records.repository import create_record
 from tests.record_helpers import create_milestone_record
 from app.services.auth_tokens import create_access_token
-from app.services.project_bundle import build_project_bundle
+from app.services.pm_portfolio import build_pm_portfolio
 from tests.org_helpers import add_member_with_slug, create_organization, create_project_for_org, create_user
 
 
@@ -150,9 +150,9 @@ def test_pm_portfolio_two_projects(api_client: TestClient, db_session: Session):
     assert alpha["featuresInProgress"] == 1
     assert alpha["featuresBlocked"] == 1
     assert alpha["progressPct"] == 33
-    assert alpha["inboxActionCount"] == 3  # 1 report + 1 query + 1 release
+    assert alpha["inboxActionCount"] == 2  # 1 query + 1 release (report no cuenta en bandeja PM)
     assert alpha["inboxBreakdown"] == {
-        "pendingReports": 1,
+        "pendingReports": 0,
         "pendingQueries": 1,
         "pendingReleases": 1,
     }
@@ -162,20 +162,20 @@ def test_pm_portfolio_two_projects(api_client: TestClient, db_session: Session):
     assert alpha["featuresPending"] == 0
     assert alpha["isStalled"] is False
 
-    assert len(data["attentionItems"]) == 3
+    assert len(data["attentionItems"]) == 2
     attention_projects = {item["projectNombre"] for item in data["attentionItems"]}
     assert attention_projects == {"Alpha"}
     attention_kinds = {item["kind"] for item in data["attentionItems"]}
-    assert attention_kinds == {"report", "query", "release"}
+    assert attention_kinds == {"query", "release"}
 
     assert data["totals"]["activeProjects"] == 2
-    assert data["totals"]["inboxTotal"] == 3
+    assert data["totals"]["inboxTotal"] == 2
     assert data["totals"]["needsAttention"] == 1
     assert data["totals"]["atRiskCount"] == 1
     assert data["totals"]["overdueCount"] == 0
     assert data["totals"]["blockedTotal"] == 1
     assert data["totals"]["inboxBreakdown"] == {
-        "pendingReports": 1,
+        "pendingReports": 0,
         "pendingQueries": 1,
         "pendingReleases": 1,
     }
@@ -281,13 +281,13 @@ def test_inbox_action_count_matches_bundle(db_session: Session):
     _seed_feature_graph(db_session, project, pm.id)
     db_session.commit()
 
-    bundle = build_project_bundle(db_session, project)
-    from app.services.pm_portfolio import build_pm_portfolio
-
     portfolio = build_pm_portfolio(db_session, org.id, pm.id)
     summary = portfolio.projects[0]
-    assert summary.inbox_action_count == bundle.inbox_action_count
-    assert summary.inbox_breakdown.pending_reports == 1
+    bd = summary.inbox_breakdown
+    assert summary.inbox_action_count == (
+        bd.pending_reports + bd.pending_queries + bd.pending_releases
+    )
+    assert summary.inbox_breakdown.pending_reports == 0
     assert summary.inbox_breakdown.pending_queries == 1
     assert summary.inbox_breakdown.pending_releases == 1
 

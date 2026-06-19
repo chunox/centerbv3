@@ -14,6 +14,7 @@ from app.models.entities import AuditLog, Comment, User
 from app.services.audit import record_audit_log
 from app.services.records.repository import create_record
 from app.services.timeline import build_project_timeline
+from tests.conftest import auth_headers
 from tests.org_helpers import create_organization, create_project_for_org
 from tests.record_helpers import create_milestone_record
 
@@ -123,7 +124,10 @@ def test_timeline_api():
 
     app.dependency_overrides[get_db] = _override
     with TestClient(app) as client:
-        response = client.get(f"/api/v1/projects/{project.id}/timeline")
+        response = client.get(
+            f"/api/v1/projects/{project.id}/timeline",
+            headers=auth_headers(pm_id),
+        )
         assert response.status_code == 200
         body = response.json()
         assert len(body["plan"]) == 3

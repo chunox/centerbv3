@@ -47,7 +47,6 @@ class ProjectStructureDef(BaseModel):
 
 
 class EntityTypeCreate(BaseModel):
-    actor_user_id: UUID
     key: str = Field(min_length=1, max_length=40)
     label: str = Field(min_length=1, max_length=120)
     parent_type_keys: list[str] = Field(default_factory=list)
@@ -59,7 +58,6 @@ class EntityTypeCreate(BaseModel):
 
 
 class EntityTypePatch(BaseModel):
-    actor_user_id: UUID
     label: str | None = None
     icon: str | None = None
     traits: dict[str, Any] | None = None
@@ -69,4 +67,4 @@ class EntityTypePatch(BaseModel):
 
 
 class EntityTypeDelete(BaseModel):
-    actor_user_id: UUID
+    pass

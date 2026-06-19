@@ -5,6 +5,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
+from app.domain.project_mode import filter_portfolio_work_items
 from app.models.entities import Project
 from app.schemas.inbox_summary import ProjectInboxSummaryRead
 from app.services.inbox_queue_filter import build_counts_by_workbench
@@ -19,7 +20,7 @@ def build_inbox_summary(
     viewer_user_id: uuid.UUID | None = None,
 ) -> ProjectInboxSummaryRead:
     all_rows = list_records(db, project.id)
-    features = [r for r in all_rows if r.record_type == "feature"]
+    features = filter_portfolio_work_items(project, all_rows)
     reports = [r for r in all_rows if r.record_type == "report"]
     queries = [r for r in all_rows if r.record_type == "query"]
 

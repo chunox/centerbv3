@@ -10,7 +10,6 @@ HubEntryTipo = Literal["update", "note", "shortcut", "page", "canvas"]
 
 
 class HubEntryCreate(BaseModel):
-    author_id: UUID
     tipo: HubEntryTipo
     titulo: str | None = Field(default=None, max_length=255)
     contenido: str = Field(default="", min_length=0)
@@ -29,7 +28,6 @@ class HubEntryCreate(BaseModel):
 
 
 class HubEntryUpdate(BaseModel):
-    actor_user_id: UUID
     titulo: str | None = Field(default=None, max_length=255)
     contenido: str | None = Field(default=None, min_length=0)
     visible_roles: list[str] | None = None

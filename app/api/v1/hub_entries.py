@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth_deps import get_current_actor_id
 from app.api.v1.deps import get_project_or_404
 from app.database import get_db
 from app.schemas.hub_entries import HubEntryCreate, HubEntryRead, HubEntryUpdate
@@ -22,25 +23,32 @@ router = APIRouter(tags=["hub-entries"])
 VALID_TIPOS = {"update", "note", "shortcut", "page", "canvas"}
 
 
+class _HubEntryCreateWithAuthor(HubEntryCreate):
+    author_id: UUID
+
+
+class _HubEntryUpdateWithActor(HubEntryUpdate):
+    actor_user_id: UUID
+
+
 @router.get("/{project_id}/hub-entries", response_model=list[HubEntryRead])
 def list_project_hub_entries(
     project_id: UUID,
-    viewer_user_id: UUID | None = Query(default=None),
     tipo: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    if viewer_user_id is not None:
-        assert_member_of_project(db, project.id, viewer_user_id)
+    assert_member_of_project(db, project.id, actor_user_id)
 
     tipo_filter = tipo if tipo in VALID_TIPOS else None
 
     entries = list_hub_entries(
         db,
         project.id,
-        viewer_user_id=viewer_user_id,
+        viewer_user_id=actor_user_id,
         tipo=tipo_filter,
         limit=limit,
         offset=offset,
@@ -52,10 +60,12 @@ def list_project_hub_entries(
 def create_project_hub_entry(
     project_id: UUID,
     payload: HubEntryCreate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    entry = create_hub_entry(db, project, payload)
+    internal = _HubEntryCreateWithAuthor(**payload.model_dump(), author_id=actor_user_id)
+    entry = create_hub_entry(db, project, internal)
     db.commit()
     db.refresh(entry)
     enriched = enrich_hub_entries_with_authors(db, [entry])
@@ -67,11 +77,13 @@ def patch_project_hub_entry(
     project_id: UUID,
     entry_id: UUID,
     payload: HubEntryUpdate,
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
     entry = get_hub_entry_or_404(db, project_id, entry_id)
-    update_hub_entry(db, entry, project, payload)
+    internal = _HubEntryUpdateWithActor(**payload.model_dump(), actor_user_id=actor_user_id)
+    update_hub_entry(db, entry, project, internal)
     db.commit()
     db.refresh(entry)
     enriched = enrich_hub_entries_with_authors(db, [entry])
@@ -82,7 +94,7 @@ def patch_project_hub_entry(
 def remove_project_hub_entry(
     project_id: UUID,
     entry_id: UUID,
-    actor_user_id: UUID = Query(...),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
@@ -95,20 +107,15 @@ def remove_project_hub_entry(
 def get_project_hub_entry(
     project_id: UUID,
     entry_id: UUID,
-    viewer_user_id: UUID | None = Query(default=None),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
     project = get_project_or_404(project_id, db)
-    if viewer_user_id is not None:
-        assert_member_of_project(db, project.id, viewer_user_id)
+    assert_member_of_project(db, project.id, actor_user_id)
     entry = get_hub_entry_or_404(db, project_id, entry_id)
-    role_slug = (
-        _viewer_role_slug(db, project.id, viewer_user_id)
-        if viewer_user_id is not None
-        else None
-    )
+    role_slug = _viewer_role_slug(db, project.id, actor_user_id)
     if not hub_entry_visible_for_user(
-        db, entry, viewer_user_id=viewer_user_id, viewer_role_slug=role_slug
+        db, entry, viewer_user_id=actor_user_id, viewer_role_slug=role_slug
     ):
         raise HTTPException(status_code=403, detail="No tienes permiso para ver esta entrada")
     enriched = enrich_hub_entries_with_authors(db, [entry])

@@ -12,7 +12,6 @@ EntidadTipo = Literal["feature", "tarea", "feature_query", "feature_report"]
 class CommentCreate(BaseModel):
     entidad_tipo: EntidadTipo
     entidad_id: UUID
-    user_id: UUID
     contenido: str = Field(min_length=1)
     estado_momento: str | None = Field(default=None, max_length=40)
 

@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import Project, ProjectRecord
 from app.services.records.repository import list_children, update_record_fields
+from app.domain.project_mode import is_scrum_mode
 from app.services.scrum_v2_structure import (
-    SCRUM_TEMPLATE_SLUGS,
-    get_product_backlog_milestone,
+    get_product_backlog_record,
     is_scrum_story,
-    is_sprint_milestone,
+    is_sprint_record,
     list_stories_for_sprint,
 )
 
@@ -21,7 +21,7 @@ TASK_CANCEL_STATE = "cancel"
 
 
 def is_scrum_project(project: Project) -> bool:
-    return getattr(project, "template_slug", None) in SCRUM_TEMPLATE_SLUGS
+    return is_scrum_mode(project)
 
 
 def _hours_value(raw: Any) -> float:
@@ -38,7 +38,7 @@ def get_scrum_item_sprint_id(db: Session, record: ProjectRecord) -> uuid.UUID | 
     """Sprint milestone id si el item está comprometido."""
     if is_scrum_story(record) and record.parent_id:
         parent = db.get(ProjectRecord, record.parent_id)
-        if parent is not None and is_sprint_milestone(parent):
+        if parent is not None and is_sprint_record(parent):
             return parent.id
         return None
     raw = (record.data or {}).get("sprint_id")
@@ -112,12 +112,26 @@ def batch_feature_effort_hours(
     return totals
 
 
+def batch_story_effort_hours(
+    db: Session,
+    project_id: uuid.UUID,
+    story_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, float]:
+    """Alias Scrum: historias (tasks) en lugar de features waterfall."""
+    return batch_feature_effort_hours(db, project_id, story_ids)
+
+
+def get_story_sprint_id(db: Session, record: ProjectRecord) -> uuid.UUID | None:
+    """Alias Scrum: sprint vía parent_id de historia."""
+    return get_scrum_item_sprint_id(db, record)
+
+
 def sync_feature_dates_from_sprint(
     db: Session,
     record: ProjectRecord,
     sprint: ProjectRecord,
 ) -> bool:
-    if sprint.record_type != "milestone" or not is_sprint_milestone(sprint):
+    if not is_sprint_record(sprint):
         return False
     if record.record_type not in ("feature", "task"):
         return False
@@ -136,7 +150,7 @@ def sync_feature_dates_from_sprint(
 
 
 def propagate_sprint_dates_to_features(db: Session, sprint: ProjectRecord) -> int:
-    if sprint.record_type != "milestone":
+    if not is_sprint_record(sprint):
         return 0
     updated = 0
     for story in list_stories_for_sprint(db, sprint.project_id, sprint.id):
@@ -155,7 +169,7 @@ def maybe_sync_scrum_on_sprint_assignment(
     sprint_id: uuid.UUID | None = None
     if record.record_type == "task" and is_scrum_story(record) and record.parent_id:
         parent = db.get(ProjectRecord, record.parent_id)
-        if parent is not None and is_sprint_milestone(parent):
+        if parent is not None and is_sprint_record(parent):
             sprint_id = parent.id
     elif record.record_type == "feature":
         raw = (record.data or {}).get("sprint_id")
@@ -167,7 +181,7 @@ def maybe_sync_scrum_on_sprint_assignment(
     if sprint_id is None:
         return
     sprint = db.get(ProjectRecord, sprint_id)
-    if sprint is None or sprint.record_type != "milestone":
+    if sprint is None or not is_sprint_record(sprint):
         return
     sync_feature_dates_from_sprint(db, record, sprint)
 
@@ -181,7 +195,7 @@ def maybe_propagate_scrum_sprint_dates(
 ) -> None:
     if not is_scrum_project(project) or not fecha_changed:
         return
-    if sprint.record_type != "milestone":
+    if not is_sprint_record(sprint):
         return
     propagate_sprint_dates_to_features(db, sprint)
 
@@ -192,7 +206,7 @@ def is_record_in_product_backlog(db: Session, record: ProjectRecord) -> bool:
     if is_scrum_epic_task(record) or is_scrum_dev_task(record):
         return False
     if is_scrum_story(record):
-        backlog = get_product_backlog_milestone(db, record.project_id)
+        backlog = get_product_backlog_record(db, record.project_id)
         return backlog is not None and record.parent_id == backlog.id
     raw = (record.data or {}).get("sprint_id")
     return raw is None or raw == ""

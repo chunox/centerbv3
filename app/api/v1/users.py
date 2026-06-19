@@ -1,10 +1,10 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.v1.auth_deps import AuthContext, get_current_auth
+from app.api.v1.auth_deps import get_current_actor_id
 from app.api.v1 import notifications as notifications_routes
 from app.database import get_db
 from app.models.entities import User
@@ -17,7 +17,10 @@ router.include_router(notifications_routes.router)
 
 
 @router.get("", response_model=list[UserRead])
-def list_users(db: Session = Depends(get_db)):
+def list_users(
+    actor_user_id: UUID = Depends(get_current_actor_id),
+    db: Session = Depends(get_db),
+):
     return list(db.scalars(select(User).order_by(User.created_at.desc())))
 
 
@@ -50,10 +53,10 @@ def get_user(user_id: UUID, db: Session = Depends(get_db)):
 def patch_user(
     user_id: UUID,
     payload: UserUpdate,
-    auth: AuthContext = Depends(get_current_auth),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
-    if auth.user.id != user_id:
+    if actor_user_id != user_id:
         raise HTTPException(status_code=403, detail="Solo podés editar tu propio perfil")
 
     user = db.get(User, user_id)
@@ -69,10 +72,10 @@ def patch_user(
 @router.delete("/{user_id}", status_code=204)
 def remove_user(
     user_id: UUID,
-    auth: AuthContext = Depends(get_current_auth),
+    actor_user_id: UUID = Depends(get_current_actor_id),
     db: Session = Depends(get_db),
 ):
-    if auth.user.id != user_id:
+    if actor_user_id != user_id:
         raise HTTPException(status_code=403, detail="Solo podés eliminar tu propia cuenta")
 
     user = db.get(User, user_id)
