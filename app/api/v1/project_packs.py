@@ -44,7 +44,7 @@ def get_pack(slug: str, db: Session = Depends(get_db)):
     row = db.scalar(select(ProjectPack).where(ProjectPack.slug == slug))
     if row is None:
         raise HTTPException(status_code=404, detail="Pack no encontrado")
-    manifest = PackManifest.model_validate_json(row.manifest)
+    manifest = PackManifest.model_validate(row.manifest)
     return PackContextRead(
         slug=manifest.slug,
         nombre=manifest.nombre,
