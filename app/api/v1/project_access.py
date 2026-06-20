@@ -85,6 +85,8 @@ from app.domain.capabilities import PROJECT_MEMBERS_MANAGE, PROJECT_ROLES_MANAGE
 
 router = APIRouter(prefix="/projects", tags=["project-access"])
 
+_SOFTWARE_PACK_SLUGS = frozenset({"software", "software-waterfall", "software-scrum"})
+
 
 def _role_to_read(db: Session, role: ProjectRole) -> ProjectRoleRead:
     return ProjectRoleRead(
@@ -112,29 +114,11 @@ def get_access_context(
     raw_caps = get_effective_capabilities(db, project.id, actor_user_id)
     caps = sorted(expand_nav_capabilities(raw_caps))
 
-    workflows: dict[str, WorkflowSummaryRead] = {}
-    for entity_type in workflow_entity_types(db, project.id):
-        defn = get_active_workflow(db, project.id, entity_type)
-        if defn is None:
-            continue
-        version = get_active_workflow_version(db, project.id, entity_type) or 1
-        workflows[entity_type] = workflow_summary_from_definition(
-            entity_type, version, defn
-        )
+    from app.services.delivery.resolve import delivery_mode_label, get_delivery_service
 
-    from app.domain.project_mode import is_scrum_mode
-    from app.domain.workflow_templates import (
-        default_task_workflow_scrum_story_cliente,
-        default_task_workflow_scrum_story_interno,
-    )
-
-    if is_scrum_mode(project):
-        slug = project.template_slug or ""
-        if slug == "t7_scrum_cliente":
-            story_wf = default_task_workflow_scrum_story_cliente()
-        else:
-            story_wf = default_task_workflow_scrum_story_interno()
-        workflows["story"] = workflow_summary_from_definition("story", 1, story_wf)
+    workflows: dict[str, WorkflowSummaryRead] = get_delivery_service(
+        project
+    ).build_access_workflows(db, project)
 
     wb_raw = get_workbenches(db, project.id)
     visible_workbenches: list[WorkbenchRead] = []
@@ -256,6 +240,7 @@ def get_access_context(
         pack_slug=project.pack_slug,
         template_slug=project.template_slug or "default",
         project_tipo=project_tipo_for_project(project),
+        delivery_mode=delivery_mode_label(project),
         project_role_slugs=list_project_role_slugs(db, project.id),
     member_role_slugs=[r.slug for r in assignments],
     )
@@ -573,10 +558,10 @@ def get_workflow_template(
     if entity_type not in allowed:
         raise HTTPException(status_code=422, detail="entity_type inválido")
     template_slug = project.template_slug or "default"
-    if project.pack_slug != "software":
+    if project.pack_slug not in _SOFTWARE_PACK_SLUGS:
         raise HTTPException(
             status_code=422,
-            detail="Plantillas de workflow solo aplican al pack software",
+            detail="Plantillas de workflow solo aplican a packs software",
         )
     return workflow_for_template(template_slug, entity_type)
 
@@ -603,7 +588,7 @@ def apply_workflow_template(
         template_slug = template_slug_for_legacy_tipo(payload.project_tipo)
     else:
         template_slug = project.template_slug or "default"
-    if project.pack_slug != "software":
+    if project.pack_slug not in _SOFTWARE_PACK_SLUGS:
         raise HTTPException(
             status_code=422,
             detail="Plantillas de workflow solo aplican al pack software",

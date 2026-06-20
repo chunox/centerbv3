@@ -623,9 +623,21 @@ def pack_creativo_manifest() -> PackManifest:
 
 
 def pack_software_manifest() -> PackManifest:
-    from app.domain.packs.software_pack import pack_software_manifest as _full
+    from app.domain.packs.software_pack import pack_software_manifest as _legacy
 
-    return _full()
+    return _legacy()
+
+
+def pack_software_waterfall_manifest() -> PackManifest:
+    from app.domain.packs.software_pack import pack_software_waterfall_manifest as _wf
+
+    return _wf()
+
+
+def pack_software_scrum_manifest() -> PackManifest:
+    from app.domain.packs.software_pack import pack_software_scrum_manifest as _sc
+
+    return _sc()
 
 
 def pack_marketing360_manifest() -> PackManifest:
@@ -636,6 +648,8 @@ def pack_marketing360_manifest() -> PackManifest:
 
 SYSTEM_PACKS: dict[str, PackManifest] = {
     "software": pack_software_manifest(),
+    "software-waterfall": pack_software_waterfall_manifest(),
+    "software-scrum": pack_software_scrum_manifest(),
     "simple": pack_simple_manifest(),
     "evento": pack_evento_manifest(),
     "creativo": pack_creativo_manifest(),

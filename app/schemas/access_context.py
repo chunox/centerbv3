@@ -143,6 +143,7 @@ class ProjectAccessContextRead(BaseModel):
     pack_slug: str = "software"
     template_slug: str = "default"
     project_tipo: str = "interno"
+    delivery_mode: str = "waterfall"
     project_role_slugs: list[str] = Field(default_factory=list)
     member_role_slugs: list[str] = Field(default_factory=list)
 

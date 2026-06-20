@@ -81,7 +81,7 @@ def test_patch_task_asignacion_y_notificacion(db_session: Session, api_client: T
     assert notif is not None
 
 
-def test_pm_no_puede_crear_tarea(db_session: Session, api_client: TestClient):
+def test_pm_puede_crear_tarea_con_kanban_task_create(db_session: Session, api_client: TestClient):
     project, milestone, feature, _, pm_id, _, _ = _seed_kanban(db_session)
 
     response = api_client.post(
@@ -93,7 +93,7 @@ def test_pm_no_puede_crear_tarea(db_session: Session, api_client: TestClient):
         },
         headers=auth_headers(pm_id),
     )
-    assert response.status_code == 403
+    assert response.status_code == 201
 
 
 def test_dev_puede_crear_dependencia_entre_tareas(

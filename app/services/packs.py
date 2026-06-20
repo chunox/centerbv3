@@ -462,9 +462,11 @@ def seed_project_from_manifest(
             )
 
     _seed_pack_workbenches_from_views(db, project)
+    from app.domain.project_mode import is_scrum_mode
     from app.services.scrum_v2_structure import apply_scrum_v2_structure
 
-    apply_scrum_v2_structure(db, project)
+    if is_scrum_mode(project):
+        apply_scrum_v2_structure(db, project)
     return roles
 
 
@@ -478,11 +480,19 @@ def seed_project_from_pack(
     initial_created_by=None,
 ) -> dict[str, ProjectRole]:
     """Aplica pack al proyecto: entity types, fields, roles, workflows, blocks, views."""
-    manifest = get_pack_manifest(pack_slug)
-    if manifest is None:
-        raise ValueError(f"Pack desconocido: {pack_slug}")
+    from app.domain.project_templates import pack_slug_for_template
+    from app.services.delivery.resolve import resolve_effective_pack_slug
 
-    project.pack_slug = pack_slug
+    slug = template_slug or project.template_slug or "t1_cliente_clasico"
+    effective_pack = resolve_effective_pack_slug(pack_slug, slug)
+    if effective_pack == "software":
+        effective_pack = pack_slug_for_template(slug)
+
+    manifest = get_pack_manifest(effective_pack)
+    if manifest is None:
+        raise ValueError(f"Pack desconocido: {effective_pack}")
+
+    project.pack_slug = effective_pack
     if template_slug:
         project.template_slug = template_slug
     elif manifest.maps_template_slug and not project.template_slug:

@@ -64,10 +64,10 @@ def _get_record_type(db: Session, project_id: uuid.UUID, key: str) -> ProjectRec
     return rt
 
 
-def _feature_in_product_backlog(db: Session, row: ProjectRecord) -> bool:
-    from app.services.scrum_effort import is_record_in_product_backlog
+def _feature_in_product_backlog(db: Session, project: Project, row: ProjectRecord) -> bool:
+    from app.services.delivery.resolve import get_delivery_service
 
-    return is_record_in_product_backlog(db, row)
+    return get_delivery_service(project).record_in_product_backlog(db, row)
 
 
 def list_records(
@@ -105,7 +105,11 @@ def list_records(
                 if str((r.data or {}).get("sprint_id") or "") == sprint_key
             ]
     if in_product_backlog:
-        rows = [r for r in rows if _feature_in_product_backlog(db, r)]
+        project = db.get(Project, project_id)
+        if project is not None:
+            rows = [
+                r for r in rows if _feature_in_product_backlog(db, project, r)
+            ]
     return [_to_dto(r) for r in rows]
 
 
@@ -290,10 +294,26 @@ def _task_transition_target_state(
     actor_user_id: uuid.UUID,
     target_state: str | None,
 ) -> str | None:
-    from app.services.workflow.engine import _find_transition
-    from app.services.workflow.store import get_active_workflow
+    from app.services.workflow.engine import (
+        _find_transition,
+        actor_can_pm_unrestricted_task_move,
+    )
+    from app.services.delivery.resolve import get_delivery_service
 
-    workflow = get_active_workflow(db, project.id, record.record_type)
+    resolve_workflow = get_delivery_service(project).resolve_record_workflow
+
+    if (
+        action_id == "move"
+        and target_state
+        and actor_can_pm_unrestricted_task_move(db, project, actor_user_id)
+    ):
+        workflow = resolve_workflow(db, project, record)
+        if workflow is None:
+            return None
+        valid = {s["key"] for s in workflow.get("states", [])}
+        return target_state if target_state in valid else None
+
+    workflow = resolve_workflow(db, project, record)
     if workflow is None:
         return None
     transition = _find_transition(
@@ -328,6 +348,7 @@ def transition_record(
 ) -> RecordDTO:
     if record.record_type == "task":
         from app.services.task_dependencies import assert_move_allowed_by_dependencies
+        from app.services.workflow.engine import actor_can_pm_unrestricted_task_move
 
         nuevo = _task_transition_target_state(
             db,
@@ -337,9 +358,12 @@ def transition_record(
             actor_user_id=actor_user_id,
             target_state=target_state,
         )
-        if nuevo:
+        if nuevo and not actor_can_pm_unrestricted_task_move(
+            db, project, actor_user_id
+        ):
             assert_move_allowed_by_dependencies(db, record.id, nuevo)
 
+    anterior_estado = record.estado
     apply_record_transition(
         db,
         project,
@@ -360,7 +384,7 @@ def transition_record(
     from app.services.delivery.resolve import get_delivery_service
 
     get_delivery_service(project).after_transition(
-        db, project, record, actor_user_id=actor_user_id
+        db, project, record, actor_user_id=actor_user_id, from_state=anterior_estado
     )
     return _to_dto(record)
 

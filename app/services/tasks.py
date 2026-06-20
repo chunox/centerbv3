@@ -114,55 +114,87 @@ def move_task(
     nuevo_estado: str,
     actor_user_id: uuid.UUID,
 ) -> None:
+    """Mueve tarea waterfall bajo feature. Preferir POST .../records/{id}/transition."""
     from app.domain.capabilities import KANBAN_TASK_MOVE
     from app.services.workflow.authorize import assert_capability
-    from app.services.workflow.categories import is_task_cancel_state, resolve_workflow
-    from app.services.workflow.engine import apply_entity_transition
+    from app.services.workflow.categories import is_task_cancel_state
+    from app.services.delivery.resolve import get_delivery_service
 
     assert_project_active(project)
-    _assert_valid_task_state(db, project, nuevo_estado)
+    _assert_valid_task_state_for_record(db, project, task, nuevo_estado)
+    assert_waterfall_task_move_allowed(
+        db,
+        task,
+        feature,
+        project,
+        nuevo_estado=nuevo_estado,
+        actor_user_id=actor_user_id,
+    )
 
-    task_wf = resolve_workflow(db, project.id, "task", project.template_slug or "default")
-
-    if _feature_bloqueada(feature) and not is_task_cancel_state(task_wf, nuevo_estado):
-        raise HTTPException(
-            status_code=409,
-            detail="La feature está bloqueada; no se pueden mover tareas",
-        )
     if task.estado == nuevo_estado:
         return
-    if is_task_cancel_state(task_wf, task.estado):
-        raise HTTPException(status_code=409, detail="La tarea está cancelada")
-    assert_move_allowed_by_dependencies(db, task.id, nuevo_estado)
 
-    if is_task_cancel_state(task_wf, nuevo_estado):
+    task_wf = get_delivery_service(project).resolve_record_workflow(db, project, task) or {}
+    from app.services.workflow.engine import actor_can_pm_unrestricted_task_move
+
+    pm_override = actor_can_pm_unrestricted_task_move(db, project, actor_user_id)
+
+    if not pm_override and is_task_cancel_state(task_wf, nuevo_estado):
         from app.domain.capabilities import KANBAN_TASK_CANCEL
 
         assert_capability(db, project.id, actor_user_id, KANBAN_TASK_CANCEL)
-        apply_entity_transition(
-            db,
-            project,
-            task,
-            entity_type="task",
-            action_id="cancel",
-            actor_user_id=actor_user_id,
-        )
+        action_id = "cancel"
+        target_state = None
     else:
         assert_capability(db, project.id, actor_user_id, KANBAN_TASK_MOVE)
-        apply_entity_transition(
-            db,
-            project,
-            task,
-            entity_type="task",
-            action_id="move",
-            actor_user_id=actor_user_id,
-            target_state=nuevo_estado,
-        )
+        action_id = "move"
+        target_state = nuevo_estado
 
-    sync_feature_from_tasks(
-        db, feature, project, actor_user_id=actor_user_id
+    generic_store.transition_record(
+        db,
+        project,
+        task,
+        action_id=action_id,
+        actor_user_id=actor_user_id,
+        target_state=target_state,
     )
-    for assignee_id in list_assignee_ids(db, task):
+
+
+def assert_waterfall_task_move_allowed(
+    db: Session,
+    task: ProjectRecord,
+    feature: ProjectRecord,
+    project: Project,
+    *,
+    nuevo_estado: str,
+    actor_user_id: uuid.UUID,
+) -> None:
+    from app.services.workflow.categories import is_task_cancel_state
+    from app.services.workflow.engine import actor_can_pm_unrestricted_task_move
+    from app.services.delivery.resolve import get_delivery_service
+
+    task_wf = get_delivery_service(project).resolve_record_workflow(db, project, task) or {}
+    pm_override = actor_can_pm_unrestricted_task_move(db, project, actor_user_id)
+
+    if not pm_override:
+        if _feature_bloqueada(feature) and not is_task_cancel_state(task_wf, nuevo_estado):
+            raise HTTPException(
+                status_code=409,
+                detail="La feature está bloqueada; no se pueden mover tareas",
+            )
+        if is_task_cancel_state(task_wf, task.estado):
+            raise HTTPException(status_code=409, detail="La tarea está cancelada")
+        assert_move_allowed_by_dependencies(db, task.id, nuevo_estado)
+
+
+def notify_task_state_changed(
+    db: Session,
+    task: ProjectRecord,
+    project: Project,
+    *,
+    assignee_ids: list[uuid.UUID],
+) -> None:
+    for assignee_id in assignee_ids:
         create_notification(
             db,
             user_id=assignee_id,
@@ -170,6 +202,27 @@ def move_task(
             tipo="estado_changed",
             entidad_tipo="tarea",
             entidad_id=task.id,
+        )
+
+
+def _assert_valid_task_state_for_record(
+    db: Session,
+    project: Project,
+    task: ProjectRecord,
+    state_key: str,
+) -> None:
+    from app.services.delivery.resolve import get_delivery_service
+
+    wf = get_delivery_service(project).resolve_record_workflow(db, project, task)
+    keys = {
+        s["key"]
+        for s in (wf or {}).get("states", [])
+        if isinstance(s, dict) and s.get("key")
+    }
+    if keys and state_key not in keys:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Estado de tarea inválido: {state_key}",
         )
 
 

@@ -265,3 +265,75 @@ def test_explicit_move_empty_roles_denies_everyone(db_session: Session):
             nuevo_estado="to_do",
             actor_user_id=dev_id,
         )
+
+    move_task(
+        db_session,
+        task,
+        feature,
+        project,
+        nuevo_estado="to_do",
+        actor_user_id=pm_id,
+    )
+    assert task.estado == "to_do"
+
+
+def test_pm_unrestricted_task_move_from_terminal_states(db_session: Session):
+    """PM puede mover tareas desde estados terminales a cualquier otro."""
+    from app.domain.capabilities import KANBAN_TASK_MOVE
+    from app.services.role_capabilities import ensure_role_capabilities
+
+    pm_id = uuid4()
+    db_session.add(User(id=pm_id, nombre="PM", email="pm-free@test", password_hash="x"))
+    org = create_organization(db_session, owner_id=pm_id)
+    project = create_project_for_org(db_session, pm_id, org)
+    ensure_role_capabilities(db_session, project.id, "pm", [KANBAN_TASK_MOVE])
+    milestone = create_milestone_record(db_session, project, created_by=pm_id)
+    feature = create_feature_record(
+        db_session,
+        project,
+        milestone,
+        created_by=pm_id,
+        nombre="F terminal",
+        with_default_task=False,
+    )
+    feature.estado = "en_progreso"
+    task = create_record(
+        db_session,
+        project,
+        entity_type="task",
+        titulo="T terminal",
+        created_by=pm_id,
+        parent_id=feature.id,
+        estado="completed",
+    )
+    db_session.commit()
+
+    move_task(
+        db_session,
+        task,
+        feature,
+        project,
+        nuevo_estado="backlog",
+        actor_user_id=pm_id,
+    )
+    assert task.estado == "backlog"
+
+    move_task(
+        db_session,
+        task,
+        feature,
+        project,
+        nuevo_estado="cancel",
+        actor_user_id=pm_id,
+    )
+    assert task.estado == "cancel"
+
+    move_task(
+        db_session,
+        task,
+        feature,
+        project,
+        nuevo_estado="in_progress",
+        actor_user_id=pm_id,
+    )
+    assert task.estado == "in_progress"

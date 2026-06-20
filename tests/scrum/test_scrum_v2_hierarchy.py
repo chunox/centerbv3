@@ -186,16 +186,122 @@ def test_dev_task_rollup_and_uat(db_session: Session):
     db_session.commit()
     db_session.refresh(story)
 
+    assert story.estado == "uat"
+
+
+def test_dev_task_rollup_completado(db_session: Session):
+    project, pm_id, _ = _seed_scrum_project(db_session)
+    epic = create_epic_task(db_session, project, titulo="Epic", created_by=pm_id)
+    story = create_story_task(
+        db_session,
+        project,
+        titulo="Historia done",
+        created_by=pm_id,
+        epic_task_id=epic.id,
+    )
+    sprint = create_sprint_record(
+        db_session,
+        project,
+        created_by=pm_id,
+        nombre="Sprint 2",
+        orden=2,
+    )
+    db_session.commit()
+
+    create_dev_task(
+        db_session,
+        project,
+        titulo="Task A",
+        created_by=pm_id,
+        story_id=story.id,
+    )
+    db_session.commit()
+
     transition_record(
         db_session,
         project,
         story,
-        action_id="pasar_a_uat",
-        actor_user_id=dev_id,
+        action_id="comprometer_sprint",
+        actor_user_id=pm_id,
+        side_effect_context={"sprint_id": str(sprint.id)},
     )
+    from app.services.scrum_v2_structure import list_dev_tasks_for_story
+    from app.services.scrum_tasks import sync_story_from_dev_tasks
+
+    dev = list_dev_tasks_for_story(db_session, project.id, story.id)[0]
+    dev.estado = "completed"
+    db_session.flush()
+
+    sync_story_from_dev_tasks(db_session, story, project, actor_user_id=pm_id)
     db_session.commit()
     db_session.refresh(story)
-    assert story.estado == "uat"
+
+    assert story.estado == "completado"
+
+
+def test_epic_sync_cerrada_when_all_stories_done(db_session: Session):
+    project, pm_id, _ = _seed_scrum_project(db_session)
+    epic = create_epic_task(db_session, project, titulo="Epic", created_by=pm_id)
+    story_a = create_story_task(
+        db_session,
+        project,
+        titulo="A",
+        created_by=pm_id,
+        epic_task_id=epic.id,
+    )
+    story_b = create_story_task(
+        db_session,
+        project,
+        titulo="B",
+        created_by=pm_id,
+        epic_task_id=epic.id,
+    )
+    db_session.commit()
+
+    story_a.estado = "completado"
+    story_b.estado = "completado"
+    db_session.flush()
+
+    from app.services.scrum_tasks import sync_epic_from_stories
+
+    sync_epic_from_stories(db_session, epic, project, actor_user_id=pm_id)
+    db_session.commit()
+    db_session.refresh(epic)
+
+    assert epic.estado == "cerrada"
+
+
+def test_epic_sync_abierta_while_stories_active(db_session: Session):
+    project, pm_id, _ = _seed_scrum_project(db_session)
+    epic = create_epic_task(db_session, project, titulo="Epic", created_by=pm_id)
+    story = create_story_task(
+        db_session,
+        project,
+        titulo="Historia",
+        created_by=pm_id,
+        epic_task_id=epic.id,
+    )
+    sprint = create_sprint_record(
+        db_session,
+        project,
+        created_by=pm_id,
+        nombre="Sprint 1",
+        orden=1,
+    )
+    db_session.commit()
+
+    transition_record(
+        db_session,
+        project,
+        story,
+        action_id="comprometer_sprint",
+        actor_user_id=pm_id,
+        side_effect_context={"sprint_id": str(sprint.id)},
+    )
+    db_session.commit()
+    db_session.refresh(epic)
+
+    assert epic.estado == "abierta"
 
 
 def test_create_story_does_not_spawn_dev_task(db_session: Session):
@@ -314,3 +420,36 @@ def test_scrum_rejects_cross_story_task_on_story(db_session: Session):
             actor_user_id=dev_id,
         )
     assert exc.value.status_code == 400
+
+
+def test_scrum_dev_task_move_via_transition_api(db_session: Session, api_client):
+    from app.domain.capabilities import KANBAN_TASK_MOVE
+    from app.services.role_capabilities import ensure_role_capabilities
+    from tests.conftest import auth_headers
+
+    project, pm_id, _dev_id = _seed_scrum_project(db_session)
+    ensure_role_capabilities(db_session, project.id, "pm", [KANBAN_TASK_MOVE])
+    epic = create_epic_task(db_session, project, titulo="Epic", created_by=pm_id)
+    story = create_story_task(
+        db_session,
+        project,
+        titulo="Historia",
+        created_by=pm_id,
+        epic_task_id=epic.id,
+    )
+    dev = create_dev_task(
+        db_session,
+        project,
+        titulo="Implementar",
+        created_by=pm_id,
+        story_id=story.id,
+    )
+    db_session.commit()
+
+    res = api_client.post(
+        f"/api/v1/projects/{project.id}/records/{dev.id}/transition",
+        json={"action_id": "move", "target_state": "in_progress"},
+        headers=auth_headers(pm_id, project.organization_id),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["estado"] == "in_progress"

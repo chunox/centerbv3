@@ -419,26 +419,17 @@ def transition_project_record(
     if row is None or row.project_id != project.id:
         raise HTTPException(status_code=404, detail="Registro no encontrado")
 
-    if row.record_type == "task" and payload.action_id == "move":
-        from app.services.tasks import move_task
+    from app.services.delivery.resolve import get_delivery_service
 
-        if payload.target_state is None:
-            raise HTTPException(status_code=422, detail="Se requiere target_state")
-        feature = db.get(ProjectRecord, row.parent_id)
-        if feature is None or feature.record_type != "feature":
-            raise HTTPException(status_code=404, detail="Feature no encontrada")
-        move_task(
+    if row.record_type == "task":
+        get_delivery_service(project).assert_task_transition(
             db,
-            row,
-            feature,
             project,
-            nuevo_estado=payload.target_state,
+            row,
+            action_id=payload.action_id,
+            target_state=payload.target_state,
             actor_user_id=actor_user_id,
         )
-        db.commit()
-        db.refresh(row)
-        dto = generic_store.get_record(db, row.id)
-        return _dto_to_read(dto)
 
     dto = generic_store.transition_record(
         db,

@@ -19,10 +19,14 @@ from app.models.entities import (
 )
 
 from app.domain.project_templates import SCRUM_TEMPLATE_SLUGS, is_scrum_template_slug
+from app.domain.records.types import RecordRef
 
 SCRUM_ROLE_EPIC = "epic"
 SCRUM_ROLE_STORY = "story"
 SCRUM_ROLE_DEV = "dev"
+
+SCRUM_STORY_STATE_BACKLOG = "product_backlog"
+SCRUM_STORY_STATE_PLANNED = "planificado"
 
 # Legacy: milestones con data.tipo (pre-migración)
 MILESTONE_TIPO_BACKLOG = "product_backlog"
@@ -44,6 +48,20 @@ def get_scrum_role(record: ProjectRecord) -> str | None:
 
 def is_scrum_story(record: ProjectRecord) -> bool:
     return record.record_type == "task" and get_scrum_role(record) == SCRUM_ROLE_STORY
+
+
+def is_scrum_story_planned(record: ProjectRecord) -> bool:
+    return is_scrum_story(record) and record.estado == SCRUM_STORY_STATE_PLANNED
+
+
+def is_scrum_story_on_sprint_board(record: ProjectRecord) -> bool:
+    """Historia activa en Sprint Board (excluye backlog y planificación pendiente)."""
+    if not is_scrum_story(record):
+        return False
+    return record.estado not in {
+        SCRUM_STORY_STATE_BACKLOG,
+        SCRUM_STORY_STATE_PLANNED,
+    }
 
 
 def is_scrum_epic_task(record: ProjectRecord) -> bool:
@@ -203,6 +221,28 @@ def list_stories_in_backlog(db: Session, project_id: uuid.UUID) -> list[ProjectR
     return [r for r in rows if get_scrum_role(r) == SCRUM_ROLE_STORY]
 
 
+def list_stories_for_epic(
+    db: Session,
+    project_id: uuid.UUID,
+    epic_id: uuid.UUID,
+) -> list[ProjectRecord]:
+    epic_key = str(epic_id)
+    rows = list(
+        db.scalars(
+            select(ProjectRecord).where(
+                ProjectRecord.project_id == project_id,
+                ProjectRecord.record_type == "task",
+            )
+        )
+    )
+    return [
+        r
+        for r in rows
+        if get_scrum_role(r) == SCRUM_ROLE_STORY
+        and str((r.data or {}).get("epic_task_id") or "") == epic_key
+    ]
+
+
 def list_epic_tasks(db: Session, project_id: uuid.UUID) -> list[ProjectRecord]:
     backlog = get_product_backlog_record(db, project_id)
     if backlog is None:
@@ -285,6 +325,56 @@ def reparent_scrum_story_to_sprint(
             and is_sprint_record(previous_sprint)
             and previous_sprint.id != sprint_id
         ):
+            sync_sprint_horas_planeadas(db, previous_sprint, commit=False)
+
+
+def reparent_scrum_story_to_backlog(
+    db: Session,
+    project: Project,
+    story: ProjectRecord,
+    actor_user_id: uuid.UUID,
+) -> None:
+    """Devuelve historia (y dev tasks) al Product Backlog listos para re-comprometer."""
+    from app.services.records.repository import update_record_fields
+    from app.services.workflow.engine import apply_record_transition
+
+    if story.estado in {"pendiente", SCRUM_STORY_STATE_PLANNED}:
+        apply_record_transition(
+            db,
+            project,
+            story,
+            record_ref=RecordRef(
+                id=story.id,
+                record_type=story.record_type,
+                project_id=project.id,
+            ),
+            action_id="volver_al_backlog",
+            actor_user_id=actor_user_id,
+        )
+        return
+
+    previous_sprint_id = story.parent_id
+    backlog = ensure_product_backlog_record(db, project, created_by=actor_user_id)
+    story.parent_id = backlog.id
+    db.flush()
+
+    if is_scrum_story(story):
+        for dev in list_dev_tasks_for_story(db, project.id, story.id):
+            dev.parent_id = backlog.id
+        db.flush()
+
+    if story.estado not in {"completado", "cancelado", "product_backlog"}:
+        update_record_fields(db, story, estado="product_backlog")
+
+    if previous_sprint_id is not None:
+        previous_sprint = db.get(ProjectRecord, previous_sprint_id)
+        if (
+            previous_sprint is not None
+            and previous_sprint.project_id == project.id
+            and is_sprint_record(previous_sprint)
+        ):
+            from app.services.scrum_metrics import sync_sprint_horas_planeadas
+
             sync_sprint_horas_planeadas(db, previous_sprint, commit=False)
 
 
@@ -441,6 +531,7 @@ def resolve_workflow_for_scrum_task(
     from app.domain.workflow_templates import (
         default_task_workflow,
         default_task_workflow_epic_container,
+        default_task_workflow_scrum_dev,
         default_task_workflow_scrum_story_cliente,
         default_task_workflow_scrum_story_interno,
     )
@@ -454,5 +545,7 @@ def resolve_workflow_for_scrum_task(
         return default_task_workflow_scrum_story_interno()
     if role == SCRUM_ROLE_EPIC:
         return default_task_workflow_epic_container()
+    if role == SCRUM_ROLE_DEV:
+        return default_task_workflow_scrum_dev()
     wf = get_active_workflow(db, project.id, "task")
-    return wf or default_task_workflow()
+    return wf or default_task_workflow_scrum_dev()

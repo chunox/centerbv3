@@ -385,3 +385,14 @@ def software_communication_rules() -> list[CommunicationRule]:
         + software_record_created_rules()
         + software_state_entered_rules()
     )
+
+
+_SCRUM_ONLY_RULE_IDS = frozenset({"story_blocked", "story_unblocked"})
+
+
+def waterfall_communication_rules() -> list[CommunicationRule]:
+    return [r for r in software_communication_rules() if r.id not in _SCRUM_ONLY_RULE_IDS]
+
+
+def scrum_communication_rules() -> list[CommunicationRule]:
+    return software_communication_rules()

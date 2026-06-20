@@ -1,6 +1,7 @@
 """Operaciones de entrega waterfall (milestone → feature → task)."""
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -204,3 +205,53 @@ class WaterfallRecordService(DeliveryService):
             db.refresh(task)
             dto = generic_store.get_record(db, dto.id) or dto
         return dto
+
+    def assert_task_transition(
+        self,
+        db: Session,
+        project: Project,
+        record: ProjectRecord,
+        *,
+        action_id: str,
+        target_state: str | None,
+        actor_user_id: UUID,
+    ) -> None:
+        from app.services.tasks import assert_waterfall_task_move_allowed
+
+        if record.record_type != "task" or action_id != "move" or not target_state:
+            return
+        parent = db.get(ProjectRecord, record.parent_id) if record.parent_id else None
+        if parent is None or parent.record_type != "feature":
+            return
+        assert_waterfall_task_move_allowed(
+            db,
+            record,
+            parent,
+            project,
+            nuevo_estado=target_state,
+            actor_user_id=actor_user_id,
+        )
+
+    def after_transition(
+        self,
+        db: Session,
+        project: Project,
+        record: ProjectRecord,
+        *,
+        actor_user_id: UUID,
+        from_state: str | None = None,
+    ) -> None:
+        if record.record_type != "task":
+            return
+        parent = db.get(ProjectRecord, record.parent_id) if record.parent_id else None
+        if parent is None or parent.record_type != "feature":
+            return
+        from app.services.records.repository import list_assignee_ids
+        from app.services.tasks import notify_task_state_changed
+
+        sync_feature_from_tasks(
+            db, parent, project, actor_user_id=actor_user_id
+        )
+        notify_task_state_changed(
+            db, record, project, assignee_ids=list_assignee_ids(db, record)
+        )

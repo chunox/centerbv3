@@ -23,7 +23,7 @@ from app.services.records.repository import (
     set_field,
     update_record_fields,
 )
-from app.services.scrum_effort import is_scrum_project
+from app.domain.project_mode import is_scrum_mode
 from app.services.workflow.authorize import assert_capability
 from app.services.workflow.categories import (
     is_task_cancel_state,
@@ -444,7 +444,7 @@ def update_feature(
             detail="fecha_fin debe ser mayor o igual que fecha_inicio",
         )
 
-    if _feature_tipo(feature) == "mejora" and not is_scrum_project(project):
+    if _feature_tipo(feature) == "mejora" and not is_scrum_mode(project):
         duracion = changes.get("duracion_estimada", get_field(feature, "duracion_estimada"))
         if duracion is None:
             raise HTTPException(
@@ -548,45 +548,20 @@ def migrate_feature(
             detail="La feature ya pertenece a ese hito",
         )
 
-    if is_scrum_project(project):
-        from app.services.scrum_effort import get_feature_sprint_id, maybe_sync_scrum_on_sprint_assignment
-
-        current_sprint = get_feature_sprint_id(feature)
-        if current_sprint == target_milestone.id:
-            raise HTTPException(
-                status_code=400,
-                detail="La historia ya pertenece a ese sprint",
-            )
-        anterior = str(current_sprint) if current_sprint else None
-        set_field(feature, "sprint_id", str(target_milestone.id))
-        db.flush()
-        maybe_sync_scrum_on_sprint_assignment(db, project, feature)
-        record_audit_log(
-            db,
-            project_id=project.id,
-            user_id=actor_user_id,
-            entidad_tipo="feature",
-            entidad_id=feature.id,
-            accion="migrada",
-            campo="sprint_id",
-            valor_anterior=anterior,
-            valor_nuevo=str(target_milestone.id),
-        )
-    else:
-        anterior = str(source_milestone.id)
-        feature.parent_id = target_milestone.id
-        db.flush()
-        record_audit_log(
-            db,
-            project_id=project.id,
-            user_id=actor_user_id,
-            entidad_tipo="feature",
-            entidad_id=feature.id,
-            accion="migrada",
-            campo="milestone_id",
-            valor_anterior=anterior,
-            valor_nuevo=str(target_milestone.id),
-        )
+    anterior = str(source_milestone.id)
+    feature.parent_id = target_milestone.id
+    db.flush()
+    record_audit_log(
+        db,
+        project_id=project.id,
+        user_id=actor_user_id,
+        entidad_tipo="feature",
+        entidad_id=feature.id,
+        accion="migrada",
+        campo="milestone_id",
+        valor_anterior=anterior,
+        valor_nuevo=str(target_milestone.id),
+    )
 
     from app.services.milestones import sync_milestone_state
 

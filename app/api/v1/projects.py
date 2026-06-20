@@ -49,8 +49,9 @@ from app.services.project_members import (
     remove_project_member,
     update_project_member_role,
 )
-from app.domain.project_templates import get_template
+from app.domain.project_templates import get_template, pack_slug_for_template
 from app.services.packs import seed_project_from_pack
+from app.services.delivery.resolve import resolve_effective_pack_slug
 from app.domain.packs.catalog import get_pack_manifest
 from app.services.projects import apply_project_estado_action, update_project
 
@@ -130,9 +131,11 @@ def create_project(
     if pack_slug == "software":
         template_slug = payload.template_slug or "t1_cliente_clasico"
         tpl = get_template(template_slug)
+        pack_slug = tpl.pack_slug
     else:
-        template_slug = payload.template_slug or "t5_freestyle"
+        template_slug = payload.template_slug or "t1_cliente_clasico"
         tpl = get_template(template_slug)
+        pack_slug = resolve_effective_pack_slug(pack_slug, template_slug)
     fields = payload.model_dump(
         exclude={"template_slug", "tipo", "pack_slug", "project_structure"}
     )
@@ -159,7 +162,11 @@ def create_project(
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     manifest = get_pack_manifest(pack_slug)
-    creator_key = tpl.creator_role if pack_slug == "software" else (
+    creator_key = tpl.creator_role if pack_slug in (
+        "software",
+        "software-waterfall",
+        "software-scrum",
+    ) else (
         manifest.roles[0].slug if manifest and manifest.roles else "owner"
     )
     creator_role = roles.get(creator_key)

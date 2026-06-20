@@ -21,6 +21,7 @@ ProjectTemplateSlug = Literal[
 
 ProjectTipoFromTemplate = Literal["con_cliente", "interno", "freestyle"]
 TemplateDeliveryMode = Literal["waterfall", "scrum"]
+SoftwarePackSlug = Literal["software-waterfall", "software-scrum"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,7 @@ class ProjectTemplateDef:
     descripcion: str
     tipo: ProjectTipoFromTemplate
     delivery_mode: TemplateDeliveryMode
+    pack_slug: SoftwarePackSlug
     roles: tuple[str, ...]
     creator_role: str
     orden: int
@@ -42,6 +44,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         descripcion="PM, Tech Líder, Dev, QA y Cliente. Flujo completo con validación externa.",
         tipo="con_cliente",
         delivery_mode="waterfall",
+        pack_slug="software-waterfall",
         roles=("pm", "tech_lead", "dev", "qa", "cliente"),
         creator_role="pm",
         orden=1,
@@ -52,6 +55,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         descripcion="PM Técnico, Dev, QA y Cliente. Gestión y desarrollo en un rol.",
         tipo="con_cliente",
         delivery_mode="waterfall",
+        pack_slug="software-waterfall",
         roles=("pm_tecnico", "dev", "qa", "cliente"),
         creator_role="pm_tecnico",
         orden=2,
@@ -62,6 +66,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         descripcion="PM, Tech Líder, Dev y QA. Sin cliente en el flujo.",
         tipo="interno",
         delivery_mode="waterfall",
+        pack_slug="software-waterfall",
         roles=("pm", "tech_lead", "dev", "qa"),
         creator_role="pm",
         orden=3,
@@ -72,6 +77,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         descripcion="PM Técnico, Dev y QA. Equipo mínimo interno.",
         tipo="interno",
         delivery_mode="waterfall",
+        pack_slug="software-waterfall",
         roles=("pm_tecnico", "dev", "qa"),
         creator_role="pm_tecnico",
         orden=4,
@@ -82,6 +88,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         descripcion="Los 6 roles. Personalizable en Configuración.",
         tipo="freestyle",
         delivery_mode="waterfall",
+        pack_slug="software-waterfall",
         roles=("pm", "pm_tecnico", "dev", "tech_lead", "qa", "cliente"),
         creator_role="pm",
         orden=5,
@@ -92,6 +99,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         descripcion="PM (PO), Tech Líder, Dev y QA. Sprints con Product Backlog. Sin cliente.",
         tipo="interno",
         delivery_mode="scrum",
+        pack_slug="software-scrum",
         roles=("pm", "tech_lead", "dev", "qa"),
         creator_role="pm",
         orden=6,
@@ -102,6 +110,7 @@ PROJECT_TEMPLATES: dict[str, ProjectTemplateDef] = {
         descripcion="PM (PO), Tech Líder, Dev, QA y Cliente. Sprints con validación externa.",
         tipo="con_cliente",
         delivery_mode="scrum",
+        pack_slug="software-scrum",
         roles=("pm", "tech_lead", "dev", "qa", "cliente"),
         creator_role="pm",
         orden=7,
@@ -136,13 +145,27 @@ def is_scrum_template_slug(template_slug: str | None) -> bool:
     return delivery_mode_for_template_slug(template_slug) == "scrum"
 
 
+def pack_slug_for_template(template_slug: str) -> str:
+    tpl = PROJECT_TEMPLATES.get(template_slug)
+    if tpl is None:
+        return "software-waterfall"
+    return tpl.pack_slug
+
+
 def project_tipo_for_template(template_slug: str, *, pack_slug: str = "software") -> str:
-    if pack_slug != "software" or template_slug in ("default", ""):
+    if pack_slug not in ("software", "software-waterfall", "software-scrum") or template_slug in (
+        "default",
+        "",
+    ):
         return "interno"
     tpl = PROJECT_TEMPLATES.get(template_slug)
     if tpl is None:
         return "interno"
-    if tpl.tipo == "freestyle" and pack_slug != "software":
+    if tpl.tipo == "freestyle" and pack_slug not in (
+        "software",
+        "software-waterfall",
+        "software-scrum",
+    ):
         return "interno"
     return tpl.tipo
 
@@ -181,6 +204,7 @@ def list_templates_for_api() -> list[dict]:
             "descripcion": t.descripcion,
             "tipo": t.tipo,
             "delivery_mode": t.delivery_mode,
+            "pack_slug": t.pack_slug,
             "roles": list(t.roles),
             "creator_role": t.creator_role,
             "orden": t.orden,

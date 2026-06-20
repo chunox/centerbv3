@@ -258,6 +258,23 @@ def post(token: str, path: str, body: dict, *, expect: int = 201) -> dict:
     return data
 
 
+def patch_record(token: str, project_id: str, record_id: str, body: dict) -> dict:
+    _, data = http(
+        "PATCH",
+        f"/projects/{project_id}/records/{record_id}",
+        body=body,
+        token=token,
+        expect_status=200,
+    )
+    return data
+
+
+def block_story(token: str, project_id: str, story: dict) -> None:
+    data = dict(story.get("data") or {})
+    data["bloqueada"] = True
+    patch_record(token, project_id, story["id"], {"data": data})
+
+
 def create_record_dependency(
     token: str,
     project_id: str,
@@ -1043,6 +1060,9 @@ BACKLOG: list[tuple[str, str, str, list[float] | None]] = [
     ("Control de temperatura cadena frío", "8", "baja", None),
     ("API GraphQL para partners", "5", "baja", None),
     ("Automatización reabastecimiento predictivo", "13", "media", None),
+    ("Consolidación de pedidos multi-SKU", "5", "alta", [3, 2.5]),
+    ("Firma digital en recepción de mercadería", "3", "media", [2, 1.5]),
+    ("Dashboard SLA por región geográfica", "8", "baja", None),
 ]
 
 TASK_TITLES = [
@@ -1079,23 +1099,46 @@ def mk_epic(token, pid, *, nombre):
     })
 
 
-def mk_historia(token, pid, *, nombre, epic_id, prio, desc=""):
+def mk_historia(
+    token,
+    pid,
+    *,
+    nombre,
+    epic_id,
+    prio,
+    desc="",
+    story_points=None,
+    bloqueada=False,
+    estimacion_horas=None,
+):
+    data = {
+        "scrum_role": "story",
+        "epic_task_id": epic_id,
+        "prioridad": prio,
+        "bloqueada": bloqueada,
+    }
+    if estimacion_horas is not None:
+        data["estimacion_horas"] = estimacion_horas
+    elif story_points is not None:
+        data["estimacion_horas"] = int(story_points) * 3
     return post(token, f"/projects/{pid}/records", {
         "record_type": "task",
         "titulo": nombre,
         "descripcion": desc,
         "initial_state": "product_backlog",
-        "data": {
-            "scrum_role": "story",
-            "epic_task_id": epic_id,
-            "prioridad": prio,
-            "bloqueada": False,
-        },
+        "data": data,
     })
 
 
-def mk_backlog(token, pid, *, nombre, epic_id, prio, desc=""):
-    return mk_historia(token, pid, nombre=nombre, epic_id=epic_id, prio=prio, desc=desc)
+def mk_backlog(token, pid, *, nombre, epic_id, prio, desc="", story_points=None):
+    return mk_historia(
+        token, pid,
+        nombre=nombre,
+        epic_id=epic_id,
+        prio=prio,
+        desc=desc,
+        story_points=story_points,
+    )
 
 
 def mk_tarea(token, pid, story_id, *, titulo, estado, asignee=None, horas=None):
@@ -1258,7 +1301,7 @@ def seed_logistics_hub(token, users, org_id, today: date) -> dict[str, int | str
             "Plataforma de operaciones logísticas: inventario multi-almacén, "
             "movimientos, tracking de envíos y analíticas de rendimiento."
         ),
-        "pack_slug": "software",
+        "pack_slug": "software-scrum",
         "template_slug": "t6_scrum_interno",
         "fecha_inicio": add_days(today, -56),
         "fecha_fin": add_days(today, 84),
@@ -1301,13 +1344,20 @@ def seed_logistics_hub(token, users, org_id, today: date) -> dict[str, int | str
 
         specs = SPRINT_HISTORIAS[orden]
         epic_id = epic_by_sprint.get(orden, epics["plataforma"])
-        for idx, (titulo, _sp, prio, estado_final, horas_list) in enumerate(specs):
+        blocked_story_id = None
+        blocked_story: dict | None = None
+        for idx, (titulo, sp, prio, estado_final, horas_list) in enumerate(specs):
+            is_blocked = orden == 2 and titulo.startswith("Reserva de stock")
             h = mk_historia(
                 token, pid,
                 nombre=titulo,
                 epic_id=epic_id,
                 prio=prio,
+                story_points=sp,
             )
+            if is_blocked:
+                blocked_story_id = h["id"]
+                blocked_story = h
             historia_count += 1
             assignee = assignees[idx % len(assignees)]
             if horas_list:
@@ -1319,14 +1369,25 @@ def seed_logistics_hub(token, users, org_id, today: date) -> dict[str, int | str
                 assignee=assignee,
             )
 
+        if orden == 2 and blocked_story_id and blocked_story:
+            block_story(token, pid, blocked_story)
+            create_query(
+                token, pid, blocked_story_id,
+                titulo="¿Reserva parcial permitida?",
+                descripcion=(
+                    "Operaciones pregunta si se puede reservar stock parcial "
+                    "cuando el pedido excede disponibilidad en un almacén."
+                ),
+            )
+
         if sprint_state == "completado":
             scrum_tr(token, pid, sprint["id"], action="sync", target="completado")
 
     backlog_count = 0
     backlog_epics = [epics["plataforma"], epics["tracking"], epics["analytics"], epics["operaciones"]]
-    for idx, (titulo, _sp, prio, horas_list) in enumerate(BACKLOG):
+    for idx, (titulo, sp, prio, horas_list) in enumerate(BACKLOG):
         epic_id = backlog_epics[idx % len(backlog_epics)]
-        h = mk_backlog(token, pid, nombre=titulo, epic_id=epic_id, prio=prio)
+        h = mk_backlog(token, pid, nombre=titulo, epic_id=epic_id, prio=prio, story_points=sp)
         backlog_count += 1
         if horas_list:
             seed_tareas(
@@ -1395,7 +1456,7 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         "organization_id": org_id,
         "nombre": "E-commerce Relaunch",
         "descripcion": "Rediseno completo del ecommerce. Catalogo, carrito, checkout y panel de cliente.",
-        "pack_slug": "software",
+        "pack_slug": "software-scrum",
         "template_slug": "t7_scrum_cliente",
         "fecha_inicio": add_days(today, -42),
         "fecha_fin": add_days(today, 98),
@@ -1425,13 +1486,16 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         horas_planeadas=32,
     )
     s1_spec = [
-        ("Pagina de catalogo con grilla de productos", "alta", [4, 4]),
-        ("Filtros por categoria, precio y disponibilidad", "alta", [2.5, 2.5]),
-        ("Pagina de detalle de producto con galeria", "alta", [4, 4]),
-        ("Busqueda por nombre y descripcion", "media", [2.5, 2.5]),
+        ("Pagina de catalogo con grilla de productos", "8", "alta", [4, 4]),
+        ("Filtros por categoria, precio y disponibilidad", "5", "alta", [2.5, 2.5]),
+        ("Pagina de detalle de producto con galeria", "8", "alta", [4, 4]),
+        ("Busqueda por nombre y descripcion", "3", "media", [2.5, 2.5]),
     ]
-    for nombre, prio, horas_list in s1_spec:
-        h = mk_historia(token_pm, pid, nombre=nombre, epic_id=epics["catalogo"], prio=prio)
+    for nombre, sp, prio, horas_list in s1_spec:
+        h = mk_historia(
+            token_pm, pid, nombre=nombre, epic_id=epics["catalogo"],
+            prio=prio, story_points=sp,
+        )
         scrum_tr(token_pm, pid, h["id"], action="comprometer_sprint", side_effect_context={"sprint_id": s1["id"]})
         seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=tech["id"], task_estado="ready_for_test")
         scrum_tr(token_for_user(tech["id"], users, token_cache), pid, h["id"], action="pasar_a_uat")
@@ -1451,14 +1515,25 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
     scrum_tr(token_pm, pid, s2["id"], action="sync", target="en_progreso")
 
     s2_spec = [
-        ("Carrito persistente (localStorage + API)", "alta", "esperando_validacion_cliente", [2.5, 2.5]),
-        ("Checkout: datos de envio y resumen", "alta", "esperando_liberacion_pm", [4, 4]),
-        ("Integracion con pasarela de pago (Stripe)", "alta", "uat", [4, 4]),
-        ("Pagina de confirmacion y email transaccional", "media", "en_progreso", [2.5, 2.5]),
-        ("Validaciones de stock en checkout", "media", "pendiente", [1.5, 1.5]),
+        ("Carrito persistente (localStorage + API)", "8", "alta", "esperando_validacion_cliente", [2.5, 2.5]),
+        ("Checkout: datos de envio y resumen", "5", "alta", "esperando_liberacion_pm", [4, 4]),
+        ("Integracion con pasarela de pago (Stripe)", "8", "alta", "uat", [4, 4]),
+        ("Pagina de confirmacion y email transaccional", "3", "media", "en_progreso", [2.5, 2.5]),
+        ("Validaciones de stock en checkout", "5", "media", "pendiente", [1.5, 1.5], True),
     ]
-    for nombre, prio, estado_final, horas_list in s2_spec:
-        h = mk_historia(token_pm, pid, nombre=nombre, epic_id=epics["checkout"], prio=prio)
+    blocked_checkout_story: dict | None = None
+    for spec in s2_spec:
+        if len(spec) == 6:
+            nombre, sp, prio, estado_final, horas_list, mark_blocked = spec
+        else:
+            nombre, sp, prio, estado_final, horas_list = spec
+            mark_blocked = False
+        h = mk_historia(
+            token_pm, pid, nombre=nombre, epic_id=epics["checkout"],
+            prio=prio, story_points=sp,
+        )
+        if mark_blocked:
+            blocked_checkout_story = h
         scrum_tr(token_pm, pid, h["id"], action="comprometer_sprint", side_effect_context={"sprint_id": s2["id"]})
         task_estado = (
             "ready_for_test"
@@ -1473,6 +1548,19 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         if estado_final == "esperando_validacion_cliente":
             scrum_tr(token_pm, pid, h["id"], action="liberar_cliente")
 
+    if blocked_checkout_story:
+        block_story(token_pm, pid, blocked_checkout_story)
+        create_query(
+            token_for_user(dev["id"], users, token_cache),
+            pid,
+            blocked_checkout_story["id"],
+            titulo="¿Bloquear checkout si stock parcial?",
+            descripcion=(
+                "Cliente debe confirmar si permite compra parcial cuando "
+                "solo hay stock en un almacén de los seleccionados."
+            ),
+        )
+
     s3 = mk_sprint(token_pm, pid,
         nombre="Sprint 3 — Panel de cliente",
         orden=3,
@@ -1482,28 +1570,33 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         horas_planeadas=26,
     )
     s3_spec = [
-        ("Historial de pedidos con filtros", "alta", [4, 4]),
-        ("Estado de pedido en tiempo real (polling)", "alta", [2.5, 2.5]),
-        ("Gestion de direcciones de envio", "media", [2.5, 2.5]),
-        ("Descarga de factura en PDF", "baja", [1.5, 1.5]),
+        ("Historial de pedidos con filtros", "8", "alta", [4, 4]),
+        ("Estado de pedido en tiempo real (polling)", "5", "alta", [2.5, 2.5]),
+        ("Gestion de direcciones de envio", "5", "media", [2.5, 2.5]),
+        ("Descarga de factura en PDF", "3", "baja", [1.5, 1.5]),
     ]
-    for nombre, prio, horas_list in s3_spec:
-        h = mk_historia(token_pm, pid, nombre=nombre, epic_id=epics["cliente"], prio=prio)
+    for nombre, sp, prio, horas_list in s3_spec:
+        h = mk_historia(
+            token_pm, pid, nombre=nombre, epic_id=epics["cliente"],
+            prio=prio, story_points=sp,
+        )
         scrum_tr(token_pm, pid, h["id"], action="comprometer_sprint", side_effect_context={"sprint_id": s3["id"]})
         seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=dev["id"])
 
     backlog_ec = [
-        ("Panel de administracion de productos", "alta", [6, 4]),
-        ("Wishlist / lista de deseos", "media", [3, 2]),
-        ("Reviews y valoraciones de productos", "media", [4, 4]),
-        ("Programa de puntos y fidelizacion", "baja", [8]),
-        ("Integracion con ERP de inventario", "alta", None),
-        ("App movil con React Native", "baja", None),
+        ("Panel de administracion de productos", "8", "alta", [6, 4]),
+        ("Wishlist / lista de deseos", "5", "media", [3, 2]),
+        ("Reviews y valoraciones de productos", "5", "media", [4, 4]),
+        ("Programa de puntos y fidelizacion", "8", "baja", [8]),
+        ("Integracion con ERP de inventario", "13", "alta", None),
+        ("App movil con React Native", "13", "baja", None),
+        ("Checkout express (1-click)", "5", "alta", [4, 3]),
+        ("Notificaciones push de estado de pedido", "3", "media", [2, 2]),
     ]
     backlog_epics = [epics["plataforma"], epics["catalogo"], epics["checkout"], epics["cliente"]]
-    for idx, (nombre, prio, horas_list) in enumerate(backlog_ec):
+    for idx, (nombre, sp, prio, horas_list) in enumerate(backlog_ec):
         epic_id = backlog_epics[idx % len(backlog_epics)]
-        h = mk_backlog(token_pm, pid, nombre=nombre, epic_id=epic_id, prio=prio)
+        h = mk_backlog(token_pm, pid, nombre=nombre, epic_id=epic_id, prio=prio, story_points=sp)
         if horas_list:
             seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=dev["id"])
 
@@ -1581,6 +1674,11 @@ def seed_scrum_support_data(
             "titulo": "Proveedor de pagos demora respuesta",
             "owner_user_id": pm_id,
             "impacto": "Riesgo para cerrar objetivo del sprint actual.",
+        },
+        {
+            "titulo": "Falta definición de reserva parcial de stock",
+            "owner_user_id": pm_id,
+            "impacto": "Historia bloqueada hasta respuesta de operaciones/cliente.",
         },
     ]
     created_imps: list[dict] = []

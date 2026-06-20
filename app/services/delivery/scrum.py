@@ -1,6 +1,7 @@
 """Operaciones de entrega Scrum (product_backlog, sprint, epic/story/dev tasks)."""
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -16,7 +17,6 @@ from app.domain.records.types import RecordDTO
 from app.models.entities import Project, ProjectRecord
 from app.schemas.records import RecordCreate, RecordMigrateRequest
 from app.services.delivery.base import DeliveryService
-from app.services.features import migrate_feature
 from app.services.records import generic_store
 from app.services.scrum_effort import (
     batch_feature_effort_hours,
@@ -27,6 +27,7 @@ from app.services.scrum_tasks import (
     create_dev_task,
     create_epic_task,
     create_story_task,
+    migrate_story_sprint,
 )
 from app.services.scrum_v2_structure import (
     SCRUM_ROLE_DEV,
@@ -155,7 +156,7 @@ class ScrumRecordService(DeliveryService):
         target_milestone = get_milestone_or_404(
             project.id, payload.target_milestone_id, db
         )
-        migrate_feature(
+        migrate_story_sprint(
             db,
             work_item,
             project,
@@ -373,20 +374,76 @@ class ScrumRecordService(DeliveryService):
         record: ProjectRecord,
         *,
         actor_user_id: UUID,
+        from_state: str | None = None,
     ) -> None:
-        from app.services.scrum_tasks import sync_story_from_dev_tasks
-        from app.services.scrum_v2_structure import get_story_task_id, is_scrum_dev_task
+        from app.services.scrum_tasks import sync_epic_from_stories, sync_story_from_dev_tasks
+        from app.services.scrum_v2_structure import (
+            get_epic_task_id,
+            get_story_task_id,
+            is_scrum_dev_task,
+            is_scrum_story,
+        )
 
-        if record.record_type != "task" or not is_scrum_dev_task(record):
+        if record.record_type != "task":
             return
-        story_id = get_story_task_id(record)
-        if not story_id:
+
+        epic_ids: set[UUID] = set()
+
+        if is_scrum_dev_task(record):
+            story_id = get_story_task_id(record)
+            if not story_id:
+                return
+            story = db.get(ProjectRecord, story_id)
+            if story is not None:
+                sync_story_from_dev_tasks(
+                    db, story, project, actor_user_id=actor_user_id
+                )
+                db.refresh(story)
+                epic_id = get_epic_task_id(story)
+                if epic_id:
+                    epic_ids.add(epic_id)
+        elif is_scrum_story(record):
+            epic_id = get_epic_task_id(record)
+            if epic_id:
+                epic_ids.add(epic_id)
+        else:
             return
-        story = db.get(ProjectRecord, story_id)
-        if story is not None:
-            sync_story_from_dev_tasks(
-                db, story, project, actor_user_id=actor_user_id
-            )
+
+        for epic_id in epic_ids:
+            epic = db.get(ProjectRecord, epic_id)
+            if epic is not None:
+                sync_epic_from_stories(
+                    db, epic, project, actor_user_id=actor_user_id
+                )
+
+        self._maybe_sync_sprint_horas(db, project, record, from_state=from_state)
+
+    def _maybe_sync_sprint_horas(
+        self,
+        db: Session,
+        project: Project,
+        record: ProjectRecord,
+        *,
+        from_state: str | None,
+    ) -> None:
+        from app.services.scrum_effort import get_scrum_item_sprint_id
+        from app.services.scrum_metrics import sync_sprint_horas_completadas
+        from app.services.scrum_v2_structure import is_scrum_story
+
+        if not is_scrum_story(record):
+            return
+        to_state = record.estado
+        if from_state == to_state:
+            return
+        if from_state != "completado" and to_state != "completado":
+            return
+        sprint_id = get_scrum_item_sprint_id(db, record)
+        if sprint_id is None:
+            return
+        sprint = db.get(ProjectRecord, sprint_id)
+        if sprint is None or sprint.project_id != project.id:
+            return
+        sync_sprint_horas_completadas(db, sprint, commit=False)
 
     def filter_list_by_sprint(
         self,
@@ -407,3 +464,89 @@ class ScrumRecordService(DeliveryService):
                 and is_scrum_story(r)
             )
         ]
+
+    def resolve_record_workflow(
+        self,
+        db: Session,
+        project: Project,
+        record: ProjectRecord,
+    ) -> dict[str, Any] | None:
+        from app.services.scrum_v2_structure import (
+            SCRUM_ROLE_DEV,
+            SCRUM_ROLE_EPIC,
+            SCRUM_ROLE_STORY,
+            resolve_workflow_for_scrum_task,
+        )
+        from app.services.workflow.store import get_active_workflow
+
+        if record.record_type == "task" and (record.data or {}).get("scrum_role") in (
+            SCRUM_ROLE_EPIC,
+            SCRUM_ROLE_STORY,
+            SCRUM_ROLE_DEV,
+        ):
+            return resolve_workflow_for_scrum_task(db, project, record)
+        return get_active_workflow(db, project.id, record.record_type)
+
+    def build_access_workflows(
+        self,
+        db: Session,
+        project: Project,
+    ) -> dict[str, Any]:
+        from app.domain.workflow_templates import (
+            default_task_workflow_epic_container,
+            default_task_workflow_scrum_dev,
+            default_task_workflow_scrum_story_cliente,
+            default_task_workflow_scrum_story_interno,
+        )
+        from app.schemas.access_context import workflow_summary_from_definition
+
+        workflows = super().build_access_workflows(db, project)
+        slug = project.template_slug or ""
+        if slug == "t7_scrum_cliente":
+            story_wf = default_task_workflow_scrum_story_cliente()
+        else:
+            story_wf = default_task_workflow_scrum_story_interno()
+        workflows["story"] = workflow_summary_from_definition("story", 1, story_wf)
+        epic_wf = default_task_workflow_epic_container()
+        workflows["epic"] = workflow_summary_from_definition("epic", 1, epic_wf)
+        dev_wf = default_task_workflow_scrum_dev()
+        workflows["dev"] = workflow_summary_from_definition("dev", 1, dev_wf)
+        workflows["task"] = workflows["dev"]
+        workflows.pop("feature", None)
+        return workflows
+
+    def list_uat_gate_child_tasks(
+        self,
+        db: Session,
+        project: Project,
+        entity: ProjectRecord,
+    ) -> list[ProjectRecord] | None:
+        from app.services.scrum_v2_structure import (
+            is_scrum_story,
+            list_dev_tasks_for_story,
+        )
+
+        if not is_scrum_story(entity):
+            return None
+        return list_dev_tasks_for_story(db, project.id, entity.id)
+
+    def record_in_product_backlog(self, db: Session, row: ProjectRecord) -> bool:
+        from app.services.scrum_effort import is_record_in_product_backlog
+
+        return is_record_in_product_backlog(db, row)
+
+    def check_parent_is_sprint_gate(
+        self, db: Session, entity: ProjectRecord
+    ) -> None:
+        from app.services.scrum_v2_structure import is_sprint_record
+
+        if entity.parent_id is None:
+            raise HTTPException(
+                status_code=409, detail="La historia no está asignada a un sprint"
+            )
+        parent = db.get(ProjectRecord, entity.parent_id)
+        if parent is None or not is_sprint_record(parent):
+            raise HTTPException(
+                status_code=409,
+                detail="La historia no está planificada en un sprint",
+            )

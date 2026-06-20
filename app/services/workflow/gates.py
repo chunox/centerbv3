@@ -16,6 +16,7 @@ from app.services.records.repository import (
 from app.services.workflow.categories import (
     is_task_cancel_state,
     resolve_workflow,
+    task_done_state_keys,
     task_test_state_keys,
 )
 
@@ -62,6 +63,16 @@ def evaluate_gates(
             _gate_field_equals(entity, spec.get("params") or {})
         elif gate_type == "parent_in_state":
             _gate_parent_in_state(db, entity, spec.get("params") or {})
+        elif gate_type == "parent_is_sprint":
+            from app.services.workflow.gates_scrum import gate_parent_is_sprint
+
+            if isinstance(entity, ProjectRecord):
+                gate_parent_is_sprint(db, entity)
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail="La historia no está asignada a un sprint",
+                )
         elif gate_type == "project_active":
             if project.estado != "activo":
                 raise HTTPException(
@@ -79,16 +90,17 @@ def _record_id(entity: Any) -> uuid.UUID:
 
 
 def _gate_uat_tasks_complete(db: Session, entity: Any, entity_type: str) -> None:
-    from app.services.scrum_v2_structure import is_scrum_story, list_dev_tasks_for_story
-
-    fid = _record_id(entity)
-    if isinstance(entity, ProjectRecord) and is_scrum_story(entity):
-        tasks = list_dev_tasks_for_story(db, entity.project_id, fid)
-    elif _is_feature_record(entity):
-        tasks = list_children(db, fid, "task")
-    else:
-        return
+    if not isinstance(entity, ProjectRecord):
+        if not _is_feature_record(entity):
+            return
     project = db.get(Project, entity.project_id) if hasattr(entity, "project_id") else None
+    if project is None:
+        return
+    from app.services.delivery.resolve import get_delivery_service
+
+    tasks = get_delivery_service(project).list_uat_gate_child_tasks(db, project, entity)
+    if tasks is None:
+        return
     task_wf = None
     if project is not None:
         task_wf = resolve_workflow(
@@ -97,9 +109,17 @@ def _gate_uat_tasks_complete(db: Session, entity: Any, entity_type: str) -> None
             "task",
             "default",
         )
+    task_wf = resolve_workflow(
+        db,
+        project.id,
+        "task",
+        project.template_slug or "default",
+    )
     test_keys = task_test_state_keys(task_wf) if task_wf else task_test_state_keys({})
+    done_keys = task_done_state_keys(task_wf) if task_wf else task_done_state_keys({})
+    review_ready_keys = test_keys | done_keys
     active = [t for t in tasks if not is_task_cancel_state(task_wf or {}, t.estado)]
-    incomplete = [t for t in active if t.estado not in test_keys]
+    incomplete = [t for t in active if t.estado not in review_ready_keys]
     if incomplete:
         raise HTTPException(
             status_code=409,

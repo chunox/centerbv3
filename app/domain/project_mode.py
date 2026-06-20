@@ -71,7 +71,17 @@ def delivery_mode_for_template(template_slug: str | None) -> SoftwareDeliveryMod
 
 def delivery_mode_for_project(project: Project) -> SoftwareDeliveryMode:
 
-    if (project.pack_slug or "software") != "software":
+    pack = project.pack_slug or "software"
+
+    if pack == "software-scrum":
+
+        return SoftwareDeliveryMode.SCRUM
+
+    if pack == "software-waterfall":
+
+        return SoftwareDeliveryMode.WATERFALL
+
+    if pack != "software":
 
         return SoftwareDeliveryMode.WATERFALL
 

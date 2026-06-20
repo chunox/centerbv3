@@ -155,6 +155,103 @@ def test_list_records_sprint_id_filter(db_session: Session):
     assert backlog is not None
 
 
+def test_planificar_and_publicar_sprint_flow(db_session: Session):
+    project, pm_id = _seed_scrum_project(db_session)
+    backlog = get_product_backlog_milestone(db_session, project.id)
+
+    epic = create_epic_task(db_session, project, titulo="Plataforma", created_by=pm_id)
+    story = create_story_task(
+        db_session,
+        project,
+        titulo="Historia",
+        created_by=pm_id,
+        epic_task_id=epic.id,
+    )
+    sprint = create_sprint_record(
+        db_session,
+        project,
+        created_by=pm_id,
+        nombre="Sprint 1",
+        orden=1,
+    )
+    db_session.commit()
+
+    transition_record(
+        db_session,
+        project,
+        story,
+        action_id="planificar_sprint",
+        actor_user_id=pm_id,
+        side_effect_context={"sprint_id": str(sprint.id)},
+    )
+    db_session.commit()
+    db_session.refresh(story)
+
+    assert story.parent_id == sprint.id
+    assert story.estado == "planificado"
+    assert get_scrum_item_sprint_id(db_session, story) == sprint.id
+
+    transition_record(
+        db_session,
+        project,
+        story,
+        action_id="publicar_sprint",
+        actor_user_id=pm_id,
+    )
+    db_session.commit()
+    db_session.refresh(story)
+
+    assert story.estado == "pendiente"
+    assert story.parent_id == sprint.id
+
+
+def test_publish_scrum_sprint_service(db_session: Session):
+    from app.services.scrum_sprint_publish import publish_scrum_sprint
+
+    project, pm_id = _seed_scrum_project(db_session)
+    epic = create_epic_task(db_session, project, titulo="Epic", created_by=pm_id)
+    story = create_story_task(
+        db_session,
+        project,
+        titulo="Historia",
+        created_by=pm_id,
+        epic_task_id=epic.id,
+    )
+    sprint = create_sprint_record(
+        db_session,
+        project,
+        created_by=pm_id,
+        nombre="Sprint 1",
+        orden=1,
+    )
+    db_session.commit()
+
+    transition_record(
+        db_session,
+        project,
+        story,
+        action_id="planificar_sprint",
+        actor_user_id=pm_id,
+        side_effect_context={"sprint_id": str(sprint.id)},
+    )
+    db_session.commit()
+
+    result = publish_scrum_sprint(
+        db_session,
+        project,
+        sprint,
+        pm_id,
+        sprint_goal="Objetivo del sprint",
+    )
+    db_session.commit()
+    db_session.refresh(story)
+    db_session.refresh(sprint)
+
+    assert story.id in result.published_story_ids
+    assert story.estado == "pendiente"
+    assert (sprint.data or {}).get("sprint_goal") == "Objetivo del sprint"
+
+
 def test_list_records_in_product_backlog_filter(db_session: Session):
     project, pm_id = _seed_scrum_project(db_session)
     sprint = create_sprint_record(db_session, project, created_by=pm_id, nombre="S1", orden=1)

@@ -732,13 +732,18 @@ def _software_workflow_profiles() -> dict[str, dict[str, dict[str, Any]]]:
 
 
 def pack_software_manifest() -> PackManifest:
+    """Alias legacy combinado (deprecated)."""
+    return pack_software_manifest_legacy()
+
+
+def pack_software_manifest_legacy() -> PackManifest:
     from app.services.communication.software_comm_rules import software_communication_rules
 
     rules = [r.model_dump() for r in software_communication_rules()]
     return PackManifest(
         slug="software",
-        nombre="Software Delivery",
-        descripcion="Entrega de software con features, kanban, UAT y cliente.",
+        nombre="Software Delivery (deprecated)",
+        descripcion="Alias legacy — usar software-waterfall o software-scrum.",
         maps_template_slug="t1_cliente_clasico",
         entity_types=_software_entity_types(),
         field_definitions=_software_field_definitions(),
@@ -747,6 +752,7 @@ def pack_software_manifest() -> PackManifest:
         traits={
             "supports_reports": True,
             "supports_external_queries": True,
+            "deprecated": True,
         },
         workflow_profiles=_software_workflow_profiles(),
         roles=_software_roles(),
@@ -754,4 +760,87 @@ def pack_software_manifest() -> PackManifest:
         workflows={},
         workbenches=[],
         communication_rules=rules,
+    )
+
+
+_WATERFALL_ENTITY_KEYS = frozenset({"milestone", "feature", "task", "query", "report"})
+_SCRUM_ENTITY_KEYS = frozenset({"task", "query", "report", "sprint", "product_backlog", "impediment"})
+
+
+def _waterfall_workflow_profiles() -> dict[str, dict[str, dict[str, Any]]]:
+    profiles = _software_workflow_profiles()
+    return {k: v for k, v in profiles.items() if k not in SCRUM_TEMPLATE_SLUGS}
+
+
+def _scrum_workflow_profiles() -> dict[str, dict[str, dict[str, Any]]]:
+    profiles = _software_workflow_profiles()
+    return {k: v for k, v in profiles.items() if k in SCRUM_TEMPLATE_SLUGS}
+
+
+def pack_software_waterfall_manifest() -> PackManifest:
+    from app.services.communication.software_comm_rules import waterfall_communication_rules
+
+    base = pack_software_manifest_legacy()
+    rules = [r.model_dump() for r in waterfall_communication_rules()]
+    return base.model_copy(
+        update={
+            "slug": "software-waterfall",
+            "nombre": "Software Waterfall",
+            "descripcion": "Entrega waterfall: milestone → feature → task, kanban y UAT.",
+            "entity_types": [
+                e for e in base.entity_types if e.key in _WATERFALL_ENTITY_KEYS
+            ],
+            "field_definitions": [
+                fd
+                for fd in base.field_definitions
+                if fd.entity_type_key in _WATERFALL_ENTITY_KEYS
+            ],
+            "project_views": [
+                v
+                for v in base.project_views
+                if not v.template_slugs
+                or not set(v.template_slugs).issubset(set(_SCRUM_SLUGS))
+            ],
+            "workflow_profiles": _waterfall_workflow_profiles(),
+            "communication_rules": rules,
+            "traits": {
+                "supports_reports": True,
+                "supports_external_queries": True,
+                "delivery_mode": "waterfall",
+            },
+        }
+    )
+
+
+def pack_software_scrum_manifest() -> PackManifest:
+    from app.services.communication.software_comm_rules import scrum_communication_rules
+
+    base = pack_software_manifest_legacy()
+    rules = [r.model_dump() for r in scrum_communication_rules()]
+    return base.model_copy(
+        update={
+            "slug": "software-scrum",
+            "nombre": "Software Scrum",
+            "descripcion": "Entrega Scrum: product backlog, sprints, épicas/historias/dev tasks.",
+            "entity_types": [
+                e for e in base.entity_types if e.key in _SCRUM_ENTITY_KEYS
+            ],
+            "field_definitions": [
+                fd
+                for fd in base.field_definitions
+                if fd.entity_type_key in _SCRUM_ENTITY_KEYS
+            ],
+            "project_views": [
+                v
+                for v in base.project_views
+                if v.template_slugs and set(v.template_slugs).issubset(set(_SCRUM_SLUGS))
+            ],
+            "workflow_profiles": _scrum_workflow_profiles(),
+            "communication_rules": rules,
+            "traits": {
+                "supports_reports": True,
+                "supports_external_queries": True,
+                "delivery_mode": "scrum",
+            },
+        }
     )
