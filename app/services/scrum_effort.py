@@ -35,12 +35,11 @@ def _hours_value(raw: Any) -> float:
 
 
 def get_scrum_item_sprint_id(db: Session, record: ProjectRecord) -> uuid.UUID | None:
-    """Sprint milestone id si el item está comprometido."""
-    if is_scrum_story(record) and record.parent_id:
+    """Sprint id si el item está comprometido (historia o dev vía parent_id, o legacy data.sprint_id)."""
+    if record.parent_id:
         parent = db.get(ProjectRecord, record.parent_id)
         if parent is not None and is_sprint_record(parent):
             return parent.id
-        return None
     raw = (record.data or {}).get("sprint_id")
     if raw is None or raw == "":
         return None

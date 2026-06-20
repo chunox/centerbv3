@@ -487,12 +487,12 @@ def _software_blocks() -> list[BlockDef]:
         )
     )
 
-    # Bandeja QA Scrum (UAT + consultas)
+    # Consultas Scrum (sin cola UAT)
     blocks.append(
         BlockDef(
             block_slug="custom",
             key="inbox_qa",
-            label="Bandeja",
+            label="Consultas",
             config={
                 "view_type": "custom",
                 "custom_view_key": "software.inbox_qa_scrum",
@@ -812,6 +812,20 @@ def pack_software_waterfall_manifest() -> PackManifest:
     )
 
 
+def _scrum_roles() -> list[PackRoleDef]:
+    from app.domain.capabilities import SCRUM_EXCLUDED_ROLE_CAPABILITIES
+    from app.domain.project_templates import SCRUM_TEMPLATE_SLUGS
+
+    roles: list[PackRoleDef] = []
+    for role in _software_roles():
+        scrum_slugs = [s for s in role.template_slugs if s in SCRUM_TEMPLATE_SLUGS]
+        if not scrum_slugs:
+            continue
+        caps = sorted(c for c in role.capabilities if c not in SCRUM_EXCLUDED_ROLE_CAPABILITIES)
+        roles.append(role.model_copy(update={"capabilities": caps, "template_slugs": scrum_slugs}))
+    return roles
+
+
 def pack_software_scrum_manifest() -> PackManifest:
     from app.services.communication.software_comm_rules import scrum_communication_rules
 
@@ -836,6 +850,7 @@ def pack_software_scrum_manifest() -> PackManifest:
                 if v.template_slugs and set(v.template_slugs).issubset(set(_SCRUM_SLUGS))
             ],
             "workflow_profiles": _scrum_workflow_profiles(),
+            "roles": _scrum_roles(),
             "communication_rules": rules,
             "traits": {
                 "supports_reports": True,

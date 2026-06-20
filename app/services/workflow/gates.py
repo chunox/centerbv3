@@ -53,6 +53,10 @@ def evaluate_gates(
         gate_type = spec.get("type")
         if gate_type == "uat_tasks_complete":
             _gate_uat_tasks_complete(db, entity, entity_type)
+        elif gate_type == "dev_tasks_done":
+            _gate_dev_tasks_done(db, entity, entity_type)
+        elif gate_type == "epic_stories_terminal":
+            _gate_epic_stories_terminal(db, entity, entity_type)
         elif gate_type == "all_children_in_state":
             _gate_all_children_in_state(db, entity, spec.get("params") or {})
         elif gate_type == "blocked_by_active_query":
@@ -87,6 +91,64 @@ def _record_id(entity: Any) -> uuid.UUID:
     if isinstance(entity, ProjectRecord):
         return entity.id
     return entity.id
+
+
+def _gate_dev_tasks_done(db: Session, entity: Any, entity_type: str) -> None:
+    """Scrum story: todas las dev tasks activas deben estar completadas."""
+    if not isinstance(entity, ProjectRecord):
+        return
+    project = db.get(Project, entity.project_id)
+    if project is None:
+        return
+    from app.services.delivery.resolve import get_delivery_service
+
+    tasks = get_delivery_service(project).list_uat_gate_child_tasks(db, project, entity)
+    if tasks is None:
+        return
+    task_wf = resolve_workflow(
+        db,
+        project.id,
+        "task",
+        project.template_slug or "default",
+    )
+    done_keys = task_done_state_keys(task_wf) if task_wf else task_done_state_keys({})
+    test_keys = task_test_state_keys(task_wf) if task_wf else task_test_state_keys({})
+    review_ready = test_keys | done_keys
+    active = [t for t in tasks if not is_task_cancel_state(task_wf or {}, t.estado)]
+    incomplete = [t for t in active if t.estado not in review_ready]
+    if incomplete:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Completá o enviá a revisión todas las tareas de desarrollo antes de cerrar la historia",
+                "pending_tasks": len(incomplete),
+                "total_active": len(active),
+            },
+        )
+
+
+EPIC_STORY_TERMINAL = frozenset({"completado", "cancelado"})
+
+
+def _gate_epic_stories_terminal(db: Session, entity: Any, entity_type: str) -> None:
+    """Scrum épica: cerrar solo si todas las historias están en estado terminal."""
+    if not isinstance(entity, ProjectRecord):
+        return
+    from app.services.scrum_v2_structure import is_scrum_epic_task, list_stories_for_epic
+
+    if not is_scrum_epic_task(entity):
+        return
+    stories = list_stories_for_epic(db, entity.project_id, entity.id)
+    open_stories = [s for s in stories if s.estado not in EPIC_STORY_TERMINAL]
+    if open_stories:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "No podés cerrar la épica mientras haya historias abiertas",
+                "pending_stories": len(open_stories),
+                "total_stories": len(stories),
+            },
+        )
 
 
 def _gate_uat_tasks_complete(db: Session, entity: Any, entity_type: str) -> None:

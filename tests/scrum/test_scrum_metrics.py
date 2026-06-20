@@ -223,3 +223,76 @@ def test_list_sprint_velocity_predictibilidad(db_session: Session):
     assert len(rows) == 1
     assert rows[0]["predictibilidad_pct"] == 80.0
     assert rows[0]["sprint_goal"] == "Entregar checkout"
+
+
+def test_patch_dev_estimacion_horas_syncs_sprint_planeadas(db_session: Session):
+    from app.services.packs import seed_project_from_pack
+    from app.services.records import generic_store
+    from app.services.scrum_tasks import create_dev_task, create_epic_task, create_story_task
+    from tests.record_helpers import create_sprint_record
+
+    pm_id = uuid4()
+    project_id = uuid4()
+    org = create_organization(db_session, owner_id=pm_id)
+    db_session.add(
+        User(
+            id=pm_id,
+            email="pm4@test.local",
+            nombre="PM",
+            password_hash="x",
+        )
+    )
+    project = Project(
+        id=project_id,
+        nombre="Scrum PATCH horas",
+        estado="activo",
+        created_by=pm_id,
+        organization_id=org.id,
+        template_slug="t6_scrum_interno",
+        pack_slug="software",
+        fecha_inicio=date(2026, 1, 1),
+        fecha_fin=date(2026, 12, 31),
+    )
+    db_session.add(project)
+    db_session.flush()
+    seed_project_from_pack(db_session, project, "software", template_slug="t6_scrum_interno")
+    epic = create_epic_task(db_session, project, titulo="Epic", created_by=pm_id)
+    story = create_story_task(
+        db_session,
+        project,
+        titulo="Story",
+        created_by=pm_id,
+        epic_task_id=epic.id,
+    )
+    sprint = create_sprint_record(
+        db_session,
+        project,
+        created_by=pm_id,
+        nombre="Sprint 1",
+        orden=1,
+    )
+    dev = create_dev_task(
+        db_session,
+        project,
+        titulo="Dev",
+        created_by=pm_id,
+        story_id=story.id,
+        data={"estimacion_horas": 8},
+    )
+    db_session.commit()
+
+    from app.services.scrum_v2_structure import reparent_scrum_story_to_sprint
+
+    reparent_scrum_story_to_sprint(db_session, project, story, sprint.id)
+    sync_sprint_horas_planeadas(db_session, sprint, commit=True)
+    assert sprint.data["horas_planeadas"] == 8.0
+
+    generic_store.update_record(
+        db_session,
+        dev,
+        data={"estimacion_horas": 12},
+    )
+    db_session.commit()
+    db_session.refresh(sprint)
+
+    assert sprint.data["horas_planeadas"] == 12.0

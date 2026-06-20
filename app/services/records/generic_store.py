@@ -384,7 +384,8 @@ def transition_record(
     from app.services.delivery.resolve import get_delivery_service
 
     get_delivery_service(project).after_transition(
-        db, project, record, actor_user_id=actor_user_id, from_state=anterior_estado
+        db, project, record, actor_user_id=actor_user_id, from_state=anterior_estado,
+        side_effect_context=side_effect_context,
     )
     return _to_dto(record)
 

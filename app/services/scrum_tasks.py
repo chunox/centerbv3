@@ -24,6 +24,7 @@ from app.services.scrum_v2_structure import (
     is_scrum_epic_task,
     is_scrum_story,
     list_dev_tasks_for_story,
+    list_all_dev_tasks_for_story,
     list_stories_for_epic,
 )
 
@@ -143,8 +144,16 @@ def create_dev_task(
     )
     dev = db.get(ProjectRecord, dto.id)
     assert dev is not None
-    sync_story_from_dev_tasks(db, story, project, actor_user_id=created_by)
     return dev
+
+
+def resolve_story_for_dev_record(
+    db: Session,
+    dev: ProjectRecord,
+    project: Project,
+) -> ProjectRecord:
+    """Resuelve la historia Scrum desde una dev task o subtarea anidada."""
+    return _resolve_story_for_dev(db, dev, project)
 
 
 def _resolve_story_for_dev(
@@ -212,7 +221,6 @@ def create_dev_subtask(
         predecessor_id=subtask.id,
         successor_id=parent_dev_id,
     )
-    sync_story_from_dev_tasks(db, story, project, actor_user_id=created_by)
     return subtask
 
 
@@ -220,8 +228,6 @@ STORY_SYNC_FROZEN = frozenset(
     {
         "product_backlog",
         "planificado",
-        "esperando_liberacion_pm",
-        "esperando_validacion_cliente",
         "completado",
         "cancelado",
     }
@@ -240,7 +246,6 @@ def compute_scrum_story_estado_from_dev_tasks(
         task_backlog_state_keys,
         task_cancel_state_keys,
         task_done_state_keys,
-        task_test_state_keys,
     )
 
     story_data = story.data if isinstance(story.data, dict) else {}
@@ -251,9 +256,7 @@ def compute_scrum_story_estado_from_dev_tasks(
 
     cancel_keys = task_cancel_state_keys(task_wf)
     backlog_keys = task_backlog_state_keys(task_wf)
-    test_keys = task_test_state_keys(task_wf)
     done_keys = task_done_state_keys(task_wf)
-    review_keys = test_keys | done_keys
 
     active = [t for t in dev_tasks if not is_task_cancel_state(task_wf, t.estado)]
     if not active:
@@ -262,18 +265,51 @@ def compute_scrum_story_estado_from_dev_tasks(
         target = "pendiente"
     elif all(t.estado in done_keys for t in active):
         target = "completado"
-    elif all(t.estado in review_keys for t in active):
-        target = "uat"
-    elif story.estado in {"uat", "esperando_liberacion_pm"} and any(
-        t.estado not in review_keys for t in active
-    ):
-        target = "en_progreso"
     else:
         target = "en_progreso"
 
     if target == story.estado:
         return None
     return target
+
+
+def close_scrum_dev_tasks_for_story(
+    db: Session,
+    project: Project,
+    story: ProjectRecord,
+    *,
+    actor_user_id: uuid.UUID,
+) -> None:
+    """Cierra dev tasks abiertas al completar la historia (rollup o transición manual)."""
+    from app.services.workflow.categories import (
+        is_task_cancel_state,
+        resolve_workflow,
+        task_done_state_keys,
+    )
+
+    if not is_scrum_story(story):
+        return
+    task_wf = resolve_workflow(
+        db, project.id, "task", project.template_slug or "default"
+    )
+    done_keys = task_done_state_keys(task_wf)
+    for dev in list_all_dev_tasks_for_story(db, project.id, story.id):
+        if is_task_cancel_state(task_wf, dev.estado) or dev.estado in done_keys:
+            continue
+        prev = dev.estado
+        done_to = next(iter(done_keys), "completed")
+        update_record_fields(db, dev, estado=done_to)
+        record_audit_log(
+            db,
+            project_id=project.id,
+            user_id=actor_user_id,
+            entidad_tipo="tarea",
+            entidad_id=dev.id,
+            accion="estado_changed",
+            campo="estado",
+            valor_anterior=prev,
+            valor_nuevo=f"{done_to} (story_completada)",
+        )
 
 
 def _set_story_estado_sync(
@@ -288,6 +324,10 @@ def _set_story_estado_sync(
     if anterior == nuevo:
         return
     update_record_fields(db, story, estado=nuevo)
+    if nuevo == "completado":
+        close_scrum_dev_tasks_for_story(
+            db, project, story, actor_user_id=actor_user_id
+        )
     record_audit_log(
         db,
         project_id=project.id,
@@ -342,22 +382,6 @@ def _advance_story_toward_target(
     if current == target:
         return False
 
-    if target == "uat":
-        if current == "pendiente":
-            _set_story_estado_sync(
-                db, story, project, nuevo="en_progreso", actor_user_id=actor_user_id
-            )
-            return True
-        if current == "en_progreso":
-            if _try_apply_story_workflow_transition(
-                db, project, story, action_id="pasar_a_uat", actor_user_id=actor_user_id
-            ):
-                return True
-            _set_story_estado_sync(
-                db, story, project, nuevo="uat", actor_user_id=actor_user_id
-            )
-            return True
-
     if target == "completado":
         if current == "pendiente":
             _set_story_estado_sync(
@@ -366,23 +390,9 @@ def _advance_story_toward_target(
             return True
         if current == "en_progreso":
             if _try_apply_story_workflow_transition(
-                db, project, story, action_id="pasar_a_uat", actor_user_id=actor_user_id
-            ):
-                return True
-        if current == "uat":
-            if _try_apply_story_workflow_transition(
-                db, project, story, action_id="enviar_al_pm", actor_user_id=actor_user_id
-            ):
-                return True
-            if _try_apply_story_workflow_transition(
                 db, project, story, action_id="completar", actor_user_id=actor_user_id
             ):
                 return True
-        if current == "esperando_liberacion_pm":
-            return _try_apply_story_workflow_transition(
-                db, project, story, action_id="completar", actor_user_id=actor_user_id
-            )
-        if current in {"en_progreso", "uat", "esperando_liberacion_pm"}:
             _set_story_estado_sync(
                 db, story, project, nuevo="completado", actor_user_id=actor_user_id
             )
@@ -404,33 +414,8 @@ def sync_story_from_dev_tasks(
     *,
     actor_user_id: uuid.UUID,
 ) -> bool:
-    """Sincroniza estado de historia-task según dev tasks (incl. UAT y completado)."""
-    if not is_scrum_story(story):
-        return False
-
-    from app.services.workflow.categories import resolve_workflow
-
-    task_wf = resolve_workflow(
-        db, project.id, "task", project.template_slug or "default"
-    )
-    dev_tasks = list_dev_tasks_for_story(db, project.id, story.id)
-    changed = False
-
-    for _ in range(6):
-        db.refresh(story)
-        target = compute_scrum_story_estado_from_dev_tasks(
-            story, dev_tasks, task_wf=task_wf
-        )
-        if target is None:
-            break
-        if not _advance_story_toward_target(
-            db, project, story, target, actor_user_id=actor_user_id
-        ):
-            break
-        changed = True
-        db.flush()
-
-    return changed
+    """Rollup hijo→padre desactivado: la historia solo cambia por movimiento manual."""
+    return False
 
 
 EPIC_STORY_TERMINAL = frozenset({"completado", "cancelado"})
@@ -484,23 +469,8 @@ def sync_epic_from_stories(
     *,
     actor_user_id: uuid.UUID,
 ) -> bool:
-    """Sincroniza estado de épica según historias (abierta mientras haya trabajo; cerrada si todas terminaron)."""
-    if not is_scrum_epic_task(epic):
-        return False
-
-    stories = list_stories_for_epic(db, project.id, epic.id)
-    target = compute_scrum_epic_estado_from_stories(epic, stories)
-    if target is None:
-        return False
-
-    if target == "cerrada":
-        if _try_apply_story_workflow_transition(
-            db, project, epic, action_id="cerrar", actor_user_id=actor_user_id
-        ):
-            return True
-
-    _set_epic_estado_sync(db, epic, project, nuevo=target, actor_user_id=actor_user_id)
-    return True
+    """Rollup hijo→padre desactivado: la épica solo cambia por movimiento manual."""
+    return False
 
 
 def migrate_story_sprint(
@@ -574,7 +544,7 @@ def batch_story_effort_hours(
         return {}
     totals: dict[uuid.UUID, float] = {sid: 0.0 for sid in story_ids}
     for sid in story_ids:
-        for task in list_dev_tasks_for_story(db, project_id, sid):
+        for task in list_all_dev_tasks_for_story(db, project_id, sid):
             if task.estado == "cancel":
                 continue
             data = task.data if isinstance(task.data, dict) else {}

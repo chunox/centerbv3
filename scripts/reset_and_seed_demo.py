@@ -965,8 +965,8 @@ def seed_plataforma_interna(
 
 HistoriaSpec = tuple[str, str, str, str, list[float] | None]
 
-# (nombre, orden, start_offset, end_offset, goal, sprint_state, velocidad_planeada)
-SprintDef = tuple[str, int, int, int, str, str, int]
+# (nombre, orden, start_offset, end_offset, goal, sprint_state)
+SprintDef = tuple[str, int, int, int, str, str]
 
 SPRINTS: list[SprintDef] = [
     (
@@ -976,7 +976,6 @@ SPRINTS: list[SprintDef] = [
         -43,
         "Modelo de almacenes, SKUs y API de inventario con UI operativa.",
         "completado",
-        34,
     ),
     (
         "Sprint 2 — Operaciones",
@@ -985,7 +984,6 @@ SPRINTS: list[SprintDef] = [
         -1,
         "Recepciones, movimientos de stock y alertas de mínimos.",
         "en_progreso",
-        31,
     ),
     (
         "Sprint 3 — Tracking",
@@ -994,7 +992,6 @@ SPRINTS: list[SprintDef] = [
         13,
         "Trazabilidad de envíos, estados en tiempo real y notificaciones.",
         "pendiente",
-        28,
     ),
     (
         "Sprint 4 — Analytics",
@@ -1003,7 +1000,6 @@ SPRINTS: list[SprintDef] = [
         27,
         "Dashboards de rotación, SLA de entrega y exportaciones.",
         "pendiente",
-        30,
     ),
 ]
 
@@ -1012,17 +1008,17 @@ S1_SPEC: list[HistoriaSpec] = [
     ("API CRUD inventario", "5", "alta", "completado", [3, 3, 2]),
     ("UI: lista de stock con filtros", "5", "alta", "completado", [3, 2, 2]),
     ("Importación masiva CSV de productos", "3", "media", "completado", [2, 2]),
-    ("Tests integración capa repositorio", "3", "media", "completado", [2, 1.5]),
-    ("Documentación API inventario (OpenAPI)", "2", "baja", "completado", [1.5, 1]),
+    ("Tests integración capa repositorio", "3", "media", "completado", [2, 1]),
+    ("Documentación API inventario (OpenAPI)", "2", "baja", "completado", [1, 1]),
 ]
 
 S2_SPEC: list[HistoriaSpec] = [
-    ("Recepción de mercadería con lote", "8", "alta", "uat", [4, 4, 2]),
-    ("Movimientos entre almacenes", "5", "alta", "en_progreso", [3, 3, 2]),
-    ("Alertas de stock mínimo por SKU", "5", "media", "en_progreso", [2.5, 2.5, 2]),
-    ("Historial de movimientos auditables", "3", "media", "esperando_liberacion_pm", [2, 2]),
-    ("Reserva de stock para pedidos", "5", "alta", "pendiente", [3, 3]),
-    ("UI: panel de operaciones diarias", "3", "media", "pendiente", [2, 1.5]),
+    ("Recepción de mercadería con lote", "8", "alta", "en_progreso", [3, 3, 2]),
+    ("Movimientos entre almacenes", "5", "alta", "en_progreso", [2.5, 2.5, 1.5]),
+    ("Alertas de stock mínimo por SKU", "5", "media", "en_progreso", [2, 2, 1.5]),
+    ("Historial de movimientos auditables", "3", "media", "en_progreso", [2, 1.5]),
+    ("Reserva de stock para pedidos", "5", "alta", "pendiente", [2.5, 2.5]),
+    ("UI: panel de operaciones diarias", "3", "media", "pendiente", [1.5, 1]),
 ]
 
 S3_SPEC: list[HistoriaSpec] = [
@@ -1030,15 +1026,15 @@ S3_SPEC: list[HistoriaSpec] = [
     ("Tracking por código de seguimiento", "5", "alta", "pendiente", [3, 3]),
     ("Notificaciones email en hitos clave", "5", "media", "pendiente", [2.5, 2.5]),
     ("Webhook para integraciones TMS", "3", "media", "pendiente", [2, 2]),
-    ("Mapa de rutas activas (vista lista)", "3", "baja", "pendiente", [2, 1.5]),
+    ("Mapa de rutas activas (vista lista)", "3", "baja", "pendiente", [2, 1]),
 ]
 
 S4_SPEC: list[HistoriaSpec] = [
-    ("Dashboard rotación de inventario", "8", "alta", "pendiente", None),
-    ("SLA de entrega por carrier", "5", "alta", "pendiente", None),
-    ("Export CSV de métricas semanales", "3", "media", "pendiente", None),
-    ("Gráficos de incidencias por hub", "5", "media", "pendiente", None),
-    ("Reporte de fill-rate por almacén", "3", "baja", "pendiente", None),
+    ("Dashboard rotación de inventario", "8", "alta", "pendiente", [3, 3]),
+    ("SLA de entrega por carrier", "5", "alta", "pendiente", [3, 3]),
+    ("Export CSV de métricas semanales", "3", "media", "pendiente", [3, 3]),
+    ("Gráficos de incidencias por hub", "5", "media", "pendiente", [3, 3]),
+    ("Reporte de fill-rate por almacén", "3", "baja", "pendiente", [3, 3]),
 ]
 
 SPRINT_HISTORIAS: dict[int, list[HistoriaSpec]] = {
@@ -1072,18 +1068,20 @@ TASK_TITLES = [
     "Tests y revisión",
 ]
 
+# Transiciones Scrum: silent=False cuando --strict-transitions
+SCRUM_STRICT_TRANSITIONS = False
+
 
 # ── Seed principal ────────────────────────────────────────────────────────────
 
 
-def mk_sprint(token, pid, *, nombre, orden, fi, ff, goal, horas_planeadas):
+def mk_sprint(token, pid, *, nombre, orden, fi, ff, goal):
     return post(token, f"/projects/{pid}/records", {
         "record_type": "sprint",
         "titulo": nombre,
         "descripcion": goal,
         "data": {
             "sprint_goal": goal,
-            "horas_planeadas": horas_planeadas,
         },
         "orden": orden,
         "fecha_inicio": fi,
@@ -1119,8 +1117,6 @@ def mk_historia(
     }
     if estimacion_horas is not None:
         data["estimacion_horas"] = estimacion_horas
-    elif story_points is not None:
-        data["estimacion_horas"] = int(story_points) * 3
     return post(token, f"/projects/{pid}/records", {
         "record_type": "task",
         "titulo": nombre,
@@ -1158,66 +1154,38 @@ def mk_tarea(token, pid, story_id, *, titulo, estado, asignee=None, horas=None):
     return post(token, f"/projects/{pid}/records", body)
 
 
-def mk_subtarea(token, pid, parent_dev_id, *, titulo, estado, asignee=None, horas=None):
-    body = {
-        "record_type": "task",
-        "titulo": titulo,
-        "data": {
-            "scrum_role": "dev",
-            "parent_task_id": parent_dev_id,
-        },
-        "initial_state": estado,
-    }
-    if horas is not None:
-        body["data"]["estimacion_horas"] = horas
-    if asignee:
-        body["assignee_ids"] = [asignee]
-    return post(token, f"/projects/{pid}/records", body)
-
-
-def seed_subtareas(token, pid, parent_dev_id, *, asignee=None, count: int = 2):
-    estados = ["to_do", "in_progress", "completed"]
-    for i in range(count):
-        mk_subtarea(
-            token, pid, parent_dev_id,
-            titulo=f"Subtarea {i + 1}",
-            estado=estados[i % len(estados)],
-            asignee=asignee,
-            horas=1.5 + i,
-        )
-
-
 def seed_tareas(
     token,
     pid,
-    feature_id,
+    story_id,
     horas_list,
     *,
     asignee=None,
     task_estado=None,
-):
+) -> list[str]:
     estados_cycle = ["to_do", "in_progress", "completed", "ready_for_test"]
+    task_ids: list[str] = []
     for i, horas in enumerate(horas_list):
         titulo = TASK_TITLES[i % len(TASK_TITLES)]
         if len(horas_list) > len(TASK_TITLES):
             titulo = f"{titulo} ({i + 1})"
         estado = task_estado or estados_cycle[i % len(estados_cycle)]
         task = mk_tarea(
-            token, pid, feature_id,
+            token, pid, story_id,
             titulo=titulo,
             estado=estado,
             asignee=asignee,
             horas=horas,
         )
-        if i == 0 and len(horas_list) >= 2:
-            seed_subtareas(token, pid, task["id"], asignee=asignee, count=2)
+        task_ids.append(task["id"])
+    return task_ids
 
 
 def task_estado_for_final(estado_final: str) -> str | None:
-    if estado_final in ("completado", "uat", "esperando_liberacion_pm", "esperando_validacion_cliente"):
-        return "ready_for_test"
+    if estado_final == "completado":
+        return "completed"
     if estado_final == "pendiente":
-        return "to_do"
+        return "backlog"
     return None
 
 
@@ -1228,7 +1196,7 @@ def advance_historia(
     pm_id,
     tech_id,
     qa_id,
-    feature_id,
+    story_id,
     sprint_id,
     estado_final: str,
     *,
@@ -1238,28 +1206,21 @@ def advance_historia(
 ):
     pm_token = token_for_user(pm_id, users, token_cache)
     tech_token = token_for_user(tech_id, users, token_cache)
-    qa_token = token_for_user(qa_id, users, token_cache)
     scrum_tr(
-        pm_token, pid, feature_id, action="comprometer_sprint",
+        pm_token, pid, story_id, action="comprometer_sprint",
         side_effect_context={"sprint_id": sprint_id},
     )
     if horas_list:
         seed_tareas(
-            tech_token, pid, feature_id, horas_list,
+            tech_token, pid, story_id, horas_list,
             asignee=assignee,
             task_estado=task_estado or task_estado_for_final(estado_final),
         )
-    if estado_final == "completado":
-        scrum_tr(tech_token, pid, feature_id, action="pasar_a_uat")
-        scrum_tr(qa_token, pid, feature_id, action="enviar_al_pm")
-        scrum_tr(pm_token, pid, feature_id, action="completar")
-    elif estado_final in ("uat", "esperando_liberacion_pm"):
-        scrum_tr(tech_token, pid, feature_id, action="pasar_a_uat")
-        if estado_final == "esperando_liberacion_pm":
-            scrum_tr(qa_token, pid, feature_id, action="enviar_al_pm")
 
 
-def scrum_tr(token, pid, rid, *, action, target=None, side_effect_context=None, silent=True):
+def scrum_tr(token, pid, rid, *, action, target=None, side_effect_context=None, silent: bool | None = None):
+    if silent is None:
+        silent = not SCRUM_STRICT_TRANSITIONS
     return transition_record(
         token, pid, rid,
         action_id=action,
@@ -1329,7 +1290,7 @@ def seed_logistics_hub(token, users, org_id, today: date) -> dict[str, int | str
         4: epics["analytics"],
     }
 
-    for nombre, orden, start_off, end_off, goal, sprint_state, horas_plan in SPRINTS:
+    for nombre, orden, start_off, end_off, goal, sprint_state in SPRINTS:
         sprint = mk_sprint(
             token, pid,
             nombre=nombre,
@@ -1337,7 +1298,6 @@ def seed_logistics_hub(token, users, org_id, today: date) -> dict[str, int | str
             fi=add_days(today, start_off),
             ff=add_days(today, end_off),
             goal=goal,
-            horas_planeadas=horas_plan,
         )
         if sprint_state == "en_progreso":
             scrum_tr(token, pid, sprint["id"], action="sync", target="en_progreso")
@@ -1363,10 +1323,14 @@ def seed_logistics_hub(token, users, org_id, today: date) -> dict[str, int | str
             if horas_list:
                 task_count += len(horas_list)
 
+            task_estado = task_estado_for_final(estado_final)
+            if titulo == "Recepción de mercadería con lote" and estado_final == "en_progreso":
+                task_estado = "ready_for_test"
             advance_historia(
                 users, token_cache, pid, pm_id, tech["id"], qa["id"], h["id"], sprint["id"], estado_final,
                 horas_list=horas_list,
                 assignee=assignee,
+                task_estado=task_estado,
             )
 
         if orden == 2 and blocked_story_id and blocked_story:
@@ -1393,7 +1357,7 @@ def seed_logistics_hub(token, users, org_id, today: date) -> dict[str, int | str
             seed_tareas(
                 token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list,
                 asignee=assignees[idx % len(assignees)],
-                task_estado="to_do",
+                task_estado="backlog",
             )
             task_count += len(horas_list)
 
@@ -1417,7 +1381,7 @@ def seed_logistics_hub(token, users, org_id, today: date) -> dict[str, int | str
         ),
     )
     scrum_hub_update(token_for_user(tech["id"], users, token_cache), pid,
-        contenido="Recepción de mercadería en UAT. Movimientos entre almacenes ~70% front.")
+        contenido="Recepción de mercadería en revisión dev. Movimientos entre almacenes ~70% front.")
     scrum_hub_update(token_for_user(dev["id"], users, token_cache), pid,
         contenido="Grooming Sprint 3: estimación tracking y webhooks TMS el jueves.")
     scrum_hub_note(token, pid,
@@ -1483,13 +1447,12 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         fi=add_days(today, -42),
         ff=add_days(today, -29),
         goal="Catalogo publico con filtros, busqueda y detalle de producto.",
-        horas_planeadas=32,
     )
     s1_spec = [
         ("Pagina de catalogo con grilla de productos", "8", "alta", [4, 4]),
-        ("Filtros por categoria, precio y disponibilidad", "5", "alta", [2.5, 2.5]),
-        ("Pagina de detalle de producto con galeria", "8", "alta", [4, 4]),
-        ("Busqueda por nombre y descripcion", "3", "media", [2.5, 2.5]),
+        ("Filtros por categoria, precio y disponibilidad", "5", "alta", [3, 3]),
+        ("Pagina de detalle de producto con galeria", "8", "alta", [4.5, 4.5]),
+        ("Busqueda por nombre y descripcion", "3", "media", [4.5, 4.5]),
     ]
     for nombre, sp, prio, horas_list in s1_spec:
         h = mk_historia(
@@ -1497,11 +1460,10 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
             prio=prio, story_points=sp,
         )
         scrum_tr(token_pm, pid, h["id"], action="comprometer_sprint", side_effect_context={"sprint_id": s1["id"]})
-        seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=tech["id"], task_estado="ready_for_test")
-        scrum_tr(token_for_user(tech["id"], users, token_cache), pid, h["id"], action="pasar_a_uat")
-        scrum_tr(token_for_user(qa["id"], users, token_cache), pid, h["id"], action="enviar_al_pm")
-        scrum_tr(token_pm, pid, h["id"], action="liberar_cliente")
-        scrum_tr(token_cliente, pid, h["id"], action="confirmar")
+        seed_tareas(
+            token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list,
+            asignee=tech["id"], task_estado="completed",
+        )
     scrum_tr(token_pm, pid, s1["id"], action="sync", target="completado")
 
     s2 = mk_sprint(token_pm, pid,
@@ -1510,16 +1472,15 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         fi=add_days(today, -14),
         ff=add_days(today, -1),
         goal="Flujo completo de compra: agregar al carrito, checkout, pago y confirmacion de pedido.",
-        horas_planeadas=28,
     )
     scrum_tr(token_pm, pid, s2["id"], action="sync", target="en_progreso")
 
     s2_spec = [
-        ("Carrito persistente (localStorage + API)", "8", "alta", "esperando_validacion_cliente", [2.5, 2.5]),
-        ("Checkout: datos de envio y resumen", "5", "alta", "esperando_liberacion_pm", [4, 4]),
-        ("Integracion con pasarela de pago (Stripe)", "8", "alta", "uat", [4, 4]),
-        ("Pagina de confirmacion y email transaccional", "3", "media", "en_progreso", [2.5, 2.5]),
-        ("Validaciones de stock en checkout", "5", "media", "pendiente", [1.5, 1.5], True),
+        ("Carrito persistente (localStorage + API)", "8", "alta", "en_progreso", [2.5, 2.5]),
+        ("Checkout: datos de envio y resumen", "5", "alta", "en_progreso", [4, 4]),
+        ("Integracion con pasarela de pago (Stripe)", "8", "alta", "en_progreso", [4, 4]),
+        ("Pagina de confirmacion y email transaccional", "3", "media", "en_progreso", [2.5, 2]),
+        ("Validaciones de stock en checkout", "5", "media", "pendiente", [1.5, 1], True),
     ]
     blocked_checkout_story: dict | None = None
     for spec in s2_spec:
@@ -1535,18 +1496,13 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         if mark_blocked:
             blocked_checkout_story = h
         scrum_tr(token_pm, pid, h["id"], action="comprometer_sprint", side_effect_context={"sprint_id": s2["id"]})
-        task_estado = (
-            "ready_for_test"
-            if estado_final in ("uat", "esperando_liberacion_pm", "esperando_validacion_cliente")
-            else None
+        task_estado = task_estado_for_final(estado_final)
+        if nombre == "Integracion con pasarela de pago (Stripe)":
+            task_estado = "ready_for_test"
+        seed_tareas(
+            token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list,
+            asignee=dev["id"], task_estado=task_estado,
         )
-        seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=dev["id"], task_estado=task_estado)
-        if estado_final in ("uat", "esperando_liberacion_pm", "esperando_validacion_cliente"):
-            scrum_tr(token_for_user(tech["id"], users, token_cache), pid, h["id"], action="pasar_a_uat")
-        if estado_final in ("esperando_liberacion_pm", "esperando_validacion_cliente"):
-            scrum_tr(token_for_user(qa["id"], users, token_cache), pid, h["id"], action="enviar_al_pm")
-        if estado_final == "esperando_validacion_cliente":
-            scrum_tr(token_pm, pid, h["id"], action="liberar_cliente")
 
     if blocked_checkout_story:
         block_story(token_pm, pid, blocked_checkout_story)
@@ -1567,13 +1523,12 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         fi=add_days(today, 0),
         ff=add_days(today, 13),
         goal="Historial de pedidos, estado en tiempo real y gestion de direcciones del cliente.",
-        horas_planeadas=26,
     )
     s3_spec = [
-        ("Historial de pedidos con filtros", "8", "alta", [4, 4]),
-        ("Estado de pedido en tiempo real (polling)", "5", "alta", [2.5, 2.5]),
-        ("Gestion de direcciones de envio", "5", "media", [2.5, 2.5]),
-        ("Descarga de factura en PDF", "3", "baja", [1.5, 1.5]),
+        ("Historial de pedidos con filtros", "8", "alta", [4.5, 4.5]),
+        ("Estado de pedido en tiempo real (polling)", "5", "alta", [3, 3]),
+        ("Gestion de direcciones de envio", "5", "media", [3, 3]),
+        ("Descarga de factura en PDF", "3", "baja", [2.5, 2.5]),
     ]
     for nombre, sp, prio, horas_list in s3_spec:
         h = mk_historia(
@@ -1581,7 +1536,11 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
             prio=prio, story_points=sp,
         )
         scrum_tr(token_pm, pid, h["id"], action="comprometer_sprint", side_effect_context={"sprint_id": s3["id"]})
-        seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=dev["id"])
+        seed_tareas(
+            token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list,
+            asignee=dev["id"],
+            task_estado="backlog",
+        )
 
     backlog_ec = [
         ("Panel de administracion de productos", "8", "alta", [6, 4]),
@@ -1598,7 +1557,11 @@ def seed_ecommerce(token_pm, token_cliente, users, org_id, today):
         epic_id = backlog_epics[idx % len(backlog_epics)]
         h = mk_backlog(token_pm, pid, nombre=nombre, epic_id=epic_id, prio=prio, story_points=sp)
         if horas_list:
-            seed_tareas(token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list, asignee=dev["id"])
+            seed_tareas(
+                token_for_user(tech["id"], users, token_cache), pid, h["id"], horas_list,
+                asignee=dev["id"],
+                task_estado="backlog",
+            )
 
     scrum_hub_update(token_pm, pid, contenido="Sprint 1 cerrado. Catalogo live en staging, aprobado por cliente.")
     scrum_hub_note(token_pm, pid,
@@ -1749,6 +1712,44 @@ def seed_scrum_support_data(
             )
 
 
+def sync_completed_sprint_velocities(token: str, project_id: str) -> None:
+    sprints = http("GET", f"/projects/{project_id}/scrum/sprints", token=token)[1] or []
+    for sprint in sprints:
+        if sprint.get("estado") != "completado":
+            continue
+        try:
+            sync_sprint_velocity(token, project_id, sprint["id"])
+        except RuntimeError as exc:
+            print(f"  [warn] sync velocity sprint {sprint.get('orden')}: {exc}")
+
+
+def resync_sprint_committed_horas(project_id: str) -> None:
+    """Restaura horas_planeadas desde rollup (capacity PUT las sobrescribe)."""
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models.entities import ProjectRecord
+    from app.services.scrum_metrics import sync_sprint_horas_planeadas
+    from app.services.scrum_v2_structure import is_sprint_record
+
+    db = SessionLocal()
+    try:
+        pid = __import__("uuid").UUID(str(project_id))
+        sprints = list(
+            db.scalars(
+                select(ProjectRecord).where(
+                    ProjectRecord.project_id == pid,
+                    ProjectRecord.record_type == "sprint",
+                ).order_by(ProjectRecord.orden.asc())
+            )
+        )
+        for sprint in sprints:
+            if is_sprint_record(sprint):
+                sync_sprint_horas_planeadas(db, sprint, commit=True)
+    finally:
+        db.close()
+
+
 def seed_scrum_projects(
     token: str,
     token_cliente: str,
@@ -1762,24 +1763,20 @@ def seed_scrum_projects(
     lh_stats = seed_logistics_hub(token, users, org_id, today)
     logistics_id = lh_stats["project_id"]
     seed_scrum_support_data(token, logistics_id, pm_id, users)
-
-    sprints = http("GET", f"/projects/{logistics_id}/scrum/sprints", token=token)[1]
-    if sprints:
-        s1 = next((s for s in sprints if s.get("orden") == 1), sprints[0])
-        try:
-            sync_sprint_velocity(token, logistics_id, s1["id"])
-        except RuntimeError as exc:
-            print(f"  [warn] sync velocity Logistics: {exc}")
+    resync_sprint_committed_horas(logistics_id)
+    sync_completed_sprint_velocities(token, logistics_id)
 
     ecommerce_id = seed_ecommerce(token, token_cliente, users, org_id, today)
     seed_scrum_support_data(token, ecommerce_id, pm_id, users)
+    resync_sprint_committed_horas(ecommerce_id)
+    sync_completed_sprint_velocities(token, ecommerce_id)
 
     return {
         "logistics": lh_stats,
         "ecommerce_id": ecommerce_id,
     }
 
-def seed_rich_demo() -> None:
+def seed_rich_demo(*, validate: bool = False) -> None:
 
     wait_for_api()
     today = date.today()
@@ -1829,12 +1826,40 @@ def seed_rich_demo() -> None:
     print("  Cuentas: " + ", ".join(e for e, _ in DEMO_USERS))
     print(f"  Password: {DEMO_PASSWORD}")
 
+    if validate:
+        from app.database import SessionLocal
+        from app.services.scrum_seed_validation import validate_demo_scrum_seed
+
+        db = SessionLocal()
+        try:
+            report = validate_demo_scrum_seed(db)
+        finally:
+            db.close()
+        if not report.ok:
+            for result in report.results:
+                for issue in result.issues:
+                    print(f"  [validate FAIL] {issue.check}: {issue.message}", file=sys.stderr)
+            raise RuntimeError("Validación post-seed Scrum falló")
+        print("  [validate] Seed Scrum OK (t6 + t7)")
+
 
 def main() -> int:
+    global SCRUM_STRICT_TRANSITIONS
     parser = argparse.ArgumentParser(description="Reset + seed demo Center v3 (4 plantillas)")
     parser.add_argument("--reset-only", action="store_true")
     parser.add_argument("--seed-only", action="store_true")
+    parser.add_argument(
+        "--strict-transitions",
+        action="store_true",
+        help="Fallar si una transición Scrum del seed devuelve error HTTP",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Ejecutar validate_demo_scrum_seed al final del seed",
+    )
     args = parser.parse_args()
+    SCRUM_STRICT_TRANSITIONS = args.strict_transitions
 
     if not args.seed_only:
         reset_database()
@@ -1844,7 +1869,7 @@ def main() -> int:
 
     if not args.reset_only:
         try:
-            seed_rich_demo()
+            seed_rich_demo(validate=args.validate)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             print("¿Está uvicorn en :8000? Tras --reset-only hay que reiniciar el servidor.", file=sys.stderr)

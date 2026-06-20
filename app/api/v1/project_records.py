@@ -464,6 +464,27 @@ def migrate_project_record(
     return _dto_to_read(dto)
 
 
+@router.get("/{project_id}/records/{record_id}/cascade-preview")
+def get_record_cascade_preview(
+    project_id: UUID,
+    record_id: UUID,
+    target_state: str,
+    cascade_target_state: str | None = None,
+    actor_user_id: UUID = Depends(get_current_actor_id),
+    db: Session = Depends(get_db),
+):
+    project = get_project_or_404(project_id, db)
+    row = db.get(ProjectRecord, record_id)
+    if row is None or row.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
+    from app.services.scrum_parent_cascade import build_cascade_preview, resolve_cascade_target_state
+
+    cascade_state = resolve_cascade_target_state(
+        row, target_state=target_state, cascade_target_state=cascade_target_state
+    )
+    return build_cascade_preview(db, project, row, target_state=cascade_state)
+
+
 @router.get(
     "/{project_id}/records/{record_id}/transitions",
     response_model=list[RecordTransitionRead],

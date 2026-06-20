@@ -281,6 +281,64 @@ def list_dev_tasks_for_story(
     return out
 
 
+def dev_task_belongs_to_story(
+    db: Session,
+    project_id: uuid.UUID,
+    dev: ProjectRecord,
+    story_id: uuid.UUID,
+    *,
+    max_depth: int = 8,
+) -> bool:
+    """True si la dev task (o subtarea) cuelga de la historia vía parent_task_id."""
+    story_key = str(story_id)
+    visited: set[uuid.UUID] = set()
+    current: ProjectRecord | None = dev
+    for _ in range(max_depth):
+        if current is None or current.id in visited:
+            return False
+        visited.add(current.id)
+        data = current.data if isinstance(current.data, dict) else {}
+        parent_key = str(data.get("parent_task_id") or "")
+        if parent_key == story_key:
+            return True
+        if not parent_key:
+            return False
+        try:
+            parent_uuid = uuid.UUID(parent_key)
+        except (TypeError, ValueError):
+            return False
+        parent = db.get(ProjectRecord, parent_uuid)
+        if parent is None or parent.project_id != project_id:
+            return False
+        if is_scrum_story(parent):
+            return False
+        if not is_scrum_dev_task(parent):
+            return False
+        current = parent
+    return False
+
+
+def list_all_dev_tasks_for_story(
+    db: Session, project_id: uuid.UUID, story_id: uuid.UUID
+) -> list[ProjectRecord]:
+    """Dev tasks directas y subtareas anidadas que pertenecen a la historia."""
+    rows = list(
+        db.scalars(
+            select(ProjectRecord).where(
+                ProjectRecord.project_id == project_id,
+                ProjectRecord.record_type == "task",
+            )
+        )
+    )
+    out: list[ProjectRecord] = []
+    for row in rows:
+        if get_scrum_role(row) != SCRUM_ROLE_DEV:
+            continue
+        if dev_task_belongs_to_story(db, project_id, row, story_id):
+            out.append(row)
+    return out
+
+
 def story_in_product_backlog(story: ProjectRecord, backlog: ProjectRecord | None) -> bool:
     if not is_scrum_story(story) or backlog is None:
         return False
@@ -309,7 +367,7 @@ def reparent_scrum_story_to_sprint(
     maybe_sync_scrum_on_sprint_assignment(db, project, story)
 
     if is_scrum_story(story):
-        for dev in list_dev_tasks_for_story(db, project.id, story.id):
+        for dev in list_all_dev_tasks_for_story(db, project.id, story.id):
             dev.parent_id = sprint_id
         db.flush()
 
@@ -359,7 +417,7 @@ def reparent_scrum_story_to_backlog(
     db.flush()
 
     if is_scrum_story(story):
-        for dev in list_dev_tasks_for_story(db, project.id, story.id):
+        for dev in list_all_dev_tasks_for_story(db, project.id, story.id):
             dev.parent_id = backlog.id
         db.flush()
 

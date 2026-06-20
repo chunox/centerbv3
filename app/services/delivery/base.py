@@ -106,6 +106,7 @@ class DeliveryService(ABC):
         *,
         actor_user_id: UUID,
         from_state: str | None = None,
+        side_effect_context: dict[str, Any] | None = None,
     ) -> None:
         ...
 

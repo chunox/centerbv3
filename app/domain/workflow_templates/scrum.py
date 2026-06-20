@@ -124,91 +124,90 @@ def _map_feature_caps_to_story(wf: dict[str, Any]) -> dict[str, Any]:
 
 
 def default_task_workflow_scrum_story_base() -> dict[str, Any]:
-    """Historia Scrum como task: workflow ex-feature con reparent al sprint."""
-    wf = copy.deepcopy(default_feature_workflow_con_cliente())
-    wf["states"] = [
-        _state("product_backlog", "Product Backlog", category="draft", badge="muted"),
-        _state("planificado", "Planificada en sprint", category="draft", badge="muted"),
-        *wf["states"],
-    ]
-    wf["initial_state"] = "product_backlog"
-    transitions = []
-    for t in wf["transitions"]:
-        if t["id"] == "cancelar":
-            t = {**t, "from": ["product_backlog", *t["from"]]}
-        transitions.append(t)
-    transitions = [
-        {
-            "id": "planificar_sprint",
-            "label": "Planificar en sprint",
-            "from": ["product_backlog"],
-            "to": "planificado",
-            "required_capabilities": [STORY_TRANSITION_COMPROMETER_SPRINT],
-            "side_effects": [
-                {
-                    "type": "reparent_to_sprint",
-                    "value_from_context": "sprint_id",
-                },
-                {"type": "sync_scrum_sprint_dates"},
-            ],
-        },
-        {
-            "id": "publicar_sprint",
-            "label": "Publicar en Sprint Board",
-            "from": ["planificado"],
-            "to": "pendiente",
-            "required_capabilities": [STORY_TRANSITION_COMPROMETER_SPRINT],
-        },
-        {
-            "id": "comprometer_sprint",
-            "label": "Comprometer al Sprint",
-            "from": ["product_backlog"],
-            "to": "pendiente",
-            "required_capabilities": [STORY_TRANSITION_COMPROMETER_SPRINT],
-            "side_effects": [
-                {
-                    "type": "reparent_to_sprint",
-                    "value_from_context": "sprint_id",
-                },
-                {"type": "sync_scrum_sprint_dates"},
-            ],
-        },
-        *transitions,
-        {
-            "id": "volver_al_backlog",
-            "label": "Volver al Product Backlog",
-            "from": ["pendiente", "planificado", "product_backlog"],
-            "to": "product_backlog",
-            "required_capabilities": [STORY_TRANSITION_VOLVER_BACKLOG],
-            "side_effects": [{"type": "reparent_to_backlog"}],
-        },
-    ]
-    wf["transitions"] = transitions
-    return _map_feature_caps_to_story(wf)
+    """Historia Scrum: flujo kanban-native (sin UAT / PM / validación cliente)."""
+    from app.domain.workflow_templates._common import _add_query_block_gates
 
-
-def default_task_workflow_scrum_story_interno() -> dict[str, Any]:
-    wf = default_task_workflow_scrum_story_base()
-    wf["transitions"] = [
-        t for t in wf["transitions"]
-        if t["id"] not in ("liberar_cliente", "confirmar", "no_funciona")
-    ]
-    wf["transitions"].append(
-        {
-            "id": "completar",
-            "label": "Completar",
-            "from": ["esperando_liberacion_pm"],
-            "to": "completado",
-            "required_capabilities": [STORY_TRANSITION_COMPLETAR],
-            "conditions": [_COND_NO_CLIENTE],
-            "gates": [_QUERY_BLOCK_GATE],
-        }
-    )
+    wf: dict[str, Any] = {
+        "states": [
+            _state("product_backlog", "Product Backlog", category="draft", badge="muted"),
+            _state("planificado", "Planificada en sprint", category="draft", badge="muted"),
+            _state("pendiente", "Pendiente", category="pending"),
+            _state("en_progreso", "En progreso", category="active"),
+            _state("completado", "Completado", category="terminal", badge="success", is_terminal=True),
+            _state("cancelado", "Cancelado", category="terminal", badge="muted", is_terminal=True),
+        ],
+        "initial_state": "product_backlog",
+        "terminal_states": ["completado", "cancelado"],
+        "transitions": [
+            {
+                "id": "planificar_sprint",
+                "label": "Planificar en sprint",
+                "from": ["product_backlog"],
+                "to": "planificado",
+                "required_capabilities": [STORY_TRANSITION_COMPROMETER_SPRINT],
+                "side_effects": [
+                    {
+                        "type": "reparent_to_sprint",
+                        "value_from_context": "sprint_id",
+                    },
+                    {"type": "sync_scrum_sprint_dates"},
+                ],
+            },
+            {
+                "id": "publicar_sprint",
+                "label": "Publicar en Sprint Board",
+                "from": ["planificado"],
+                "to": "pendiente",
+                "required_capabilities": [STORY_TRANSITION_COMPROMETER_SPRINT],
+            },
+            {
+                "id": "comprometer_sprint",
+                "label": "Comprometer al Sprint",
+                "from": ["product_backlog"],
+                "to": "pendiente",
+                "required_capabilities": [STORY_TRANSITION_COMPROMETER_SPRINT],
+                "side_effects": [
+                    {
+                        "type": "reparent_to_sprint",
+                        "value_from_context": "sprint_id",
+                    },
+                    {"type": "sync_scrum_sprint_dates"},
+                ],
+            },
+            {
+                "id": "volver_al_backlog",
+                "label": "Volver al Product Backlog",
+                "from": ["pendiente", "planificado"],
+                "to": "product_backlog",
+                "required_capabilities": [STORY_TRANSITION_VOLVER_BACKLOG],
+                "side_effects": [{"type": "reparent_to_backlog"}],
+            },
+            {
+                "id": "cancelar",
+                "label": "Cancelar",
+                "from": ["product_backlog", "planificado", "pendiente", "en_progreso"],
+                "to": "cancelado",
+                "required_capabilities": [STORY_TRANSITION_CANCELAR],
+            },
+            {
+                "id": "completar",
+                "label": "Completar",
+                "from": ["en_progreso"],
+                "to": "completado",
+                "required_capabilities": [STORY_TRANSITION_COMPLETAR],
+            },
+        ],
+    }
+    wf["transitions"] = _add_query_block_gates(wf["transitions"])
     return wf
 
 
+def default_task_workflow_scrum_story_interno() -> dict[str, Any]:
+    return copy.deepcopy(default_task_workflow_scrum_story_base())
+
+
 def default_task_workflow_scrum_story_cliente() -> dict[str, Any]:
-    return default_task_workflow_scrum_story_base()
+    return copy.deepcopy(default_task_workflow_scrum_story_base())
 
 
 def default_task_workflow_epic_container() -> dict[str, Any]:
@@ -220,6 +219,14 @@ def default_task_workflow_epic_container() -> dict[str, Any]:
         "initial_state": "abierta",
         "terminal_states": ["cerrada"],
         "transitions": [
+            {
+                "id": "move",
+                "label": "Mover",
+                "from": ["abierta", "cerrada"],
+                "to": "*",
+                "dynamic_to": True,
+                "required_capabilities": [KANBAN_TASK_MOVE],
+            },
             {
                 "id": "cerrar",
                 "label": "Cerrar épica",

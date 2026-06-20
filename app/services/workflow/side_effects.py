@@ -297,7 +297,7 @@ def _handle_reparent_to_backlog(
         ensure_product_backlog_record,
         is_scrum_story,
         is_sprint_record,
-        list_dev_tasks_for_story,
+        list_all_dev_tasks_for_story,
     )
 
     row = _record(db, entity)
@@ -306,7 +306,7 @@ def _handle_reparent_to_backlog(
     row.parent_id = backlog.id
     db.flush()
     if is_scrum_story(row):
-        for dev in list_dev_tasks_for_story(db, project.id, row.id):
+        for dev in list_all_dev_tasks_for_story(db, project.id, row.id):
             dev.parent_id = backlog.id
         db.flush()
 
@@ -551,6 +551,32 @@ def _handle_cancel_features_cascade(
         _cancel_record_cascade(db, project, feature, actor_user_id)
 
 
+def _cancel_scrum_dev_tasks_for_story(
+    db: Session,
+    project: Project,
+    story: ProjectRecord,
+    actor_user_id: uuid.UUID,
+) -> None:
+    from app.services.scrum_v2_structure import is_scrum_story, list_all_dev_tasks_for_story
+
+    if not is_scrum_story(story):
+        return
+    for task in list_all_dev_tasks_for_story(db, project.id, story.id):
+        if task.estado != "cancel":
+            update_record_fields(db, task, estado="cancel")
+            record_audit_log(
+                db,
+                project_id=project.id,
+                user_id=actor_user_id,
+                entidad_tipo="tarea",
+                entidad_id=task.id,
+                accion="estado_changed",
+                campo="estado",
+                valor_anterior=task.estado,
+                valor_nuevo="cancel",
+            )
+
+
 def _handle_cancel_tasks_cascade(
     db: Session,
     project: Project,
@@ -580,6 +606,27 @@ def _handle_cancel_tasks_cascade(
                 valor_anterior=task.estado,
                 valor_nuevo="cancel",
             )
+
+
+def _handle_complete_scrum_dev_tasks(
+    db: Session,
+    project: Project,
+    entity: Any,
+    entity_type: str,
+    action_id: str,
+    actor_user_id: uuid.UUID,
+    effect: dict[str, Any],
+    form_data: dict[str, Any] | None,
+    side_effect_context: dict[str, Any] | None,
+    entidad_tipo: str,
+) -> None:
+    from app.services.scrum_tasks import close_scrum_dev_tasks_for_story
+    from app.services.scrum_v2_structure import is_scrum_story
+
+    row = _record(db, entity)
+    if not is_scrum_story(row):
+        return
+    close_scrum_dev_tasks_for_story(db, project, row, actor_user_id=actor_user_id)
 
 
 def _handle_sync_tasks(
@@ -807,6 +854,7 @@ register_side_effect("cancel_features_cascade", _handle_cancel_features_cascade)
 register_side_effect("cancel_stories_cascade", _handle_cancel_stories_cascade)
 register_side_effect("cancel_tasks_cascade", _handle_cancel_tasks_cascade)
 register_side_effect("sync_tasks", _handle_sync_tasks)
+register_side_effect("complete_scrum_dev_tasks", _handle_complete_scrum_dev_tasks)
 register_side_effect("rework_tasks", _handle_rework_tasks)
 register_side_effect("create_record", _handle_create_record)
 register_side_effect("run_transition", _handle_run_transition)

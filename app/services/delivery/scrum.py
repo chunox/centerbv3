@@ -366,6 +366,24 @@ class ScrumRecordService(DeliveryService):
             maybe_propagate_scrum_sprint_dates(
                 db, project, record, fecha_changed=fecha_changed
             )
+        if (
+            record.record_type == "task"
+            and data is not None
+            and "estimacion_horas" in data
+        ):
+            from app.services.scrum_effort import get_scrum_item_sprint_id
+            from app.services.scrum_metrics import sync_sprint_horas_planeadas
+            from app.services.scrum_v2_structure import is_scrum_dev_task
+
+            if is_scrum_dev_task(record):
+                sprint_id = get_scrum_item_sprint_id(db, record)
+                if sprint_id is not None:
+                    sprint = db.get(ProjectRecord, sprint_id)
+                    if (
+                        sprint is not None
+                        and sprint.project_id == project.id
+                    ):
+                        sync_sprint_horas_planeadas(db, sprint, commit=False)
 
     def after_transition(
         self,
@@ -375,48 +393,67 @@ class ScrumRecordService(DeliveryService):
         *,
         actor_user_id: UUID,
         from_state: str | None = None,
+        side_effect_context: dict[str, Any] | None = None,
     ) -> None:
-        from app.services.scrum_tasks import sync_epic_from_stories, sync_story_from_dev_tasks
+        from app.services.scrum_parent_cascade import (
+            apply_scrum_parent_cascade,
+            list_scrum_children_for_cascade,
+        )
         from app.services.scrum_v2_structure import (
-            get_epic_task_id,
-            get_story_task_id,
             is_scrum_dev_task,
+            is_scrum_epic_task,
             is_scrum_story,
         )
 
         if record.record_type != "task":
             return
 
-        epic_ids: set[UUID] = set()
+        ctx = side_effect_context or {}
+        cascade_only = from_state == record.estado and bool(ctx.get("cascade_target_state"))
 
-        if is_scrum_dev_task(record):
-            story_id = get_story_task_id(record)
-            if not story_id:
-                return
-            story = db.get(ProjectRecord, story_id)
-            if story is not None:
-                sync_story_from_dev_tasks(
-                    db, story, project, actor_user_id=actor_user_id
-                )
-                db.refresh(story)
-                epic_id = get_epic_task_id(story)
-                if epic_id:
-                    epic_ids.add(epic_id)
-        elif is_scrum_story(record):
-            epic_id = get_epic_task_id(record)
-            if epic_id:
-                epic_ids.add(epic_id)
-        else:
+        if from_state == record.estado and not cascade_only:
             return
 
-        for epic_id in epic_ids:
-            epic = db.get(ProjectRecord, epic_id)
-            if epic is not None:
-                sync_epic_from_stories(
-                    db, epic, project, actor_user_id=actor_user_id
-                )
+        if is_scrum_story(record) and not cascade_only:
+            self._maybe_sync_sprint_horas(
+                db, project, record, from_state=from_state
+            )
 
-        self._maybe_sync_sprint_horas(db, project, record, from_state=from_state)
+        if not (
+            is_scrum_epic_task(record)
+            or is_scrum_story(record)
+            or is_scrum_dev_task(record)
+        ):
+            return
+
+        if not list_scrum_children_for_cascade(db, project, record):
+            return
+
+        raw_mode = ctx.get("cascade_mode", "all")
+        mode = raw_mode if raw_mode in {
+            "all",
+            "none",
+            "cancel_backlog_then_sprint",
+            "cascade_backlog",
+        } else "all"
+
+        from app.services.scrum_parent_cascade import resolve_cascade_target_state
+
+        cascade_state = resolve_cascade_target_state(
+            record,
+            target_state=record.estado,
+            cascade_target_state=ctx.get("cascade_target_state"),
+        )
+
+        apply_scrum_parent_cascade(
+            db,
+            project,
+            record,
+            target_state=cascade_state,
+            actor_user_id=actor_user_id,
+            mode=mode,
+            side_effect_context=ctx,
+        )
 
     def _maybe_sync_sprint_horas(
         self,
@@ -523,12 +560,12 @@ class ScrumRecordService(DeliveryService):
     ) -> list[ProjectRecord] | None:
         from app.services.scrum_v2_structure import (
             is_scrum_story,
-            list_dev_tasks_for_story,
+            list_all_dev_tasks_for_story,
         )
 
         if not is_scrum_story(entity):
             return None
-        return list_dev_tasks_for_story(db, project.id, entity.id)
+        return list_all_dev_tasks_for_story(db, project.id, entity.id)
 
     def record_in_product_backlog(self, db: Session, row: ProjectRecord) -> bool:
         from app.services.scrum_effort import is_record_in_product_backlog
