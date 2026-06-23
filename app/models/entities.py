@@ -421,6 +421,9 @@ class ProjectRecord(Base):
     assignees: Mapped[list["ProjectRecordAssignee"]] = relationship(
         back_populates="record", cascade="all, delete-orphan"
     )
+    blockers: Mapped[list["ProjectRecordBlocker"]] = relationship(
+        back_populates="record", cascade="all, delete-orphan"
+    )
 
 
 class ProjectRecordAssignee(Base):
@@ -437,6 +440,35 @@ class ProjectRecordAssignee(Base):
 
     record: Mapped[ProjectRecord] = relationship(back_populates="assignees")
     user: Mapped[User] = relationship()
+
+
+class ProjectRecordBlocker(Base):
+    """Bloqueante externo de una entidad Scrum (texto markdown, no dependencia entre tareas)."""
+
+    __tablename__ = "project_record_blockers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    record_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("project_records.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+
+    record: Mapped["ProjectRecord"] = relationship(back_populates="blockers")
 
 
 class ProjectRecordDependency(Base):

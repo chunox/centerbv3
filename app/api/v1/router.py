@@ -13,6 +13,7 @@ from app.api.v1 import (
     project_records,
     project_templates,
     projects,
+    record_blockers,
     scrum,
     users,
 )
@@ -30,4 +31,5 @@ api_router.include_router(project_customization.router)
 api_router.include_router(project_records.router)
 api_router.include_router(comments.router)
 api_router.include_router(attachments.router)
+api_router.include_router(record_blockers.router)
 api_router.include_router(scrum.router)
