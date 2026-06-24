@@ -49,7 +49,7 @@ def _initial_state_for(project: Project, record_type: str, extra: dict | None = 
         wf = pack.workflows.get(record_type)
         if wf:
             return wf.initial_state
-    return "pendiente"
+    return "backlog"
 
 
 def _to_response(db: Session, record: ProjectRecord) -> RecordResponse:

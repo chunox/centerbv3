@@ -28,7 +28,7 @@ from app.services.workflow.side_effects import resolve_incomplete_sprint_stories
 
 router = APIRouter()
 
-DONE_STATES = {"completado", "cerrado", "done", "accepted", "completed", "closed"}
+DONE_STATES = {"done", "cancelled"}
 
 
 def _get_sprint_or_404(db: Session, project_id: str, sprint_id: str) -> ProjectRecord:
@@ -335,12 +335,12 @@ def assign_stories_to_sprint(
                 extra = {**(story.extra or {}), "original_parent_id": story.parent_id}
                 story.extra = extra
                 story.parent_id = body.sprint_id
-                story.status = "pendiente"
+                story.status = "to_do"
         else:
             # Restaurar parent original
             original = (story.extra or {}).get("original_parent_id")
             story.parent_id = original
-            story.status = "product_backlog"
+            story.status = "backlog"
 
     write_audit(
         db, project=project, actor_id=actor_id,

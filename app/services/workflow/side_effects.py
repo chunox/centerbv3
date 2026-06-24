@@ -10,10 +10,10 @@ from sqlalchemy.orm import Session
 from app.models.entities import Project, ProjectRecord
 
 
-DONE_TASK_STATES = frozenset({"completed", "cancel"})
-DONE_FEATURE_STATES = frozenset({"completado", "cancelado"})
-ACTIVE_FEATURE_STATES = frozenset({"en_progreso", "en_revision"})
-DONE_STORY_STATES = frozenset({"completado", "cerrado", "done", "accepted", "completed", "closed", "cancelado"})
+DONE_TASK_STATES = frozenset({"done", "cancelled"})
+DONE_FEATURE_STATES = frozenset({"done", "cancelled"})
+ACTIVE_FEATURE_STATES = frozenset({"in_progress", "in_review"})
+DONE_STORY_STATES = frozenset({"done", "cancelled"})
 
 
 def _children(db: Session, parent_id: str, project_id: str) -> list[ProjectRecord]:
@@ -40,12 +40,12 @@ def sync_parent_feature(db: Session, record: ProjectRecord, project: Project) ->
         return
 
     if all(t.status in DONE_TASK_STATES for t in tasks):
-        if all(t.status == "cancel" for t in tasks):
-            feature.status = "cancelado"
+        if all(t.status == "cancelled" for t in tasks):
+            feature.status = "cancelled"
         else:
-            feature.status = "completado"
-    elif any(t.status in ("in_progress", "en_revision", "to_do") for t in tasks):
-        feature.status = "en_progreso"
+            feature.status = "done"
+    elif any(t.status in ("in_progress", "in_review", "to_do") for t in tasks):
+        feature.status = "in_progress"
     db.flush()
     sync_parent_milestone(db, feature, project)
 
@@ -62,14 +62,14 @@ def sync_parent_milestone(db: Session, record: ProjectRecord, project: Project) 
     if not features:
         return
 
-    if all(f.status == "completado" for f in features):
-        milestone.status = "completado"
-    elif any(f.status in ACTIVE_FEATURE_STATES or f.status == "en_progreso" for f in features):
-        milestone.status = "en_progreso"
-    elif all(f.status in ("cancelado",) for f in features):
-        milestone.status = "cancelado"
+    if all(f.status == "done" for f in features):
+        milestone.status = "done"
+    elif any(f.status in ACTIVE_FEATURE_STATES for f in features):
+        milestone.status = "in_progress"
+    elif all(f.status == "cancelled" for f in features):
+        milestone.status = "cancelled"
     else:
-        milestone.status = "pendiente"
+        milestone.status = "backlog"
     db.flush()
 
 
@@ -78,8 +78,8 @@ def sync_from_features(db: Session, record: ProjectRecord, project: Project) -> 
     if record.record_type != "milestone":
         return
     features = _children(db, record.id, str(project.id))
-    if features and not all(f.status == "completado" for f in features):
-        record.status = "en_progreso"
+    if features and not all(f.status == "done" for f in features):
+        record.status = "in_progress"
     db.flush()
 
 
@@ -130,11 +130,11 @@ def resolve_incomplete_sprint_stories(
         if action == "backlog":
             original_epic = (story.extra or {}).get("original_parent_id")
             story.parent_id = original_epic
-            story.status = "product_backlog"
+            story.status = "backlog"
         elif action == "cancel":
-            story.status = "cancelado"
+            story.status = "cancelled"
         elif action == "complete":
-            story.status = "completado"
+            story.status = "done"
         # "keep" / "next_sprint": no-op
     db.flush()
 

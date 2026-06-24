@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import ProjectRecord, ProjectRecordBlocker, ProjectRecordDependency
 
-DONE_PREDECESSOR_STATES = frozenset({"completado", "completed", "cancel", "cancelado"})
+DONE_PREDECESSOR_STATES = frozenset({"done", "cancelled"})
 
 
 def _ancestor_ids(db: Session, record: ProjectRecord) -> list[str]:

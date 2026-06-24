@@ -28,44 +28,38 @@ from app.schemas.access_context import (
 
 # Mapa de estado → categoría (para colores en el frontend)
 STATE_CATEGORY: dict[str, str] = {
-    "pendiente": "pending",
+    # Work item states (unified)
     "backlog": "pending",
-    "product_backlog": "pending",
     "to_do": "pending",
-    "en_progreso": "active",
     "in_progress": "active",
+    "in_review": "active",
+    "done": "done",
+    "cancelled": "terminal",
+    # Sprint operational states (containers — separate lifecycle)
+    "pendiente": "pending",
     "activo": "active",
-    "en_revision": "active",
-    "uat": "active",
-    "completado": "done",
-    "completed": "done",
-    "aprobado": "done",
-    "cancelado": "terminal",
-    "cancelada": "terminal",
-    "cancel": "terminal",
     "cerrado": "terminal",
-    "bloqueado": "active",
+    "cancelado": "terminal",
+    # Waterfall UAT variant
+    "uat": "active",
 }
 
 # Etiquetas legibles
 STATE_LABELS: dict[str, str] = {
-    "pendiente": "Pendiente",
+    # Work item states (unified)
     "backlog": "Backlog",
-    "product_backlog": "Product Backlog",
     "to_do": "Por Hacer",
-    "en_progreso": "En Progreso",
     "in_progress": "En Progreso",
+    "in_review": "En Revisión",
+    "done": "Completado",
+    "cancelled": "Cancelado",
+    # Sprint operational states
+    "pendiente": "Pendiente",
     "activo": "Activo",
-    "en_revision": "En Revisión",
-    "uat": "UAT",
-    "completado": "Completado",
-    "completed": "Completado",
-    "aprobado": "Aprobado",
-    "cancelado": "Cancelado",
-    "cancelada": "Cancelada",
-    "cancel": "Cancelado",
     "cerrado": "Cerrado",
-    "bloqueado": "Bloqueado",
+    "cancelado": "Cancelado",
+    # Waterfall UAT variant
+    "uat": "UAT",
 }
 
 # Campos por tipo de record
