@@ -7,18 +7,22 @@ Proyectos:
 
 Uso:
     cd proyecto-central-backend-v3
-    .\.venv\Scripts\python.exe scripts/seed_demo.py
-    .\.venv\Scripts\python.exe scripts/seed_demo.py --reset
+    python scripts/seed_demo.py
+    python scripts/seed_demo.py --reset
 """
 import argparse
 import sys
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import get_engine, get_session_factory
-from app.models.entities import Base, Organization, OrganizationMember, Project, ProjectMember, ProjectRecord, ProjectRecordAssignee, ProjectRole, User
+from app.models.entities import (
+    Base, Organization, OrganizationMember, Project, ProjectMember, ProjectRecord,
+    ProjectRecordAssignee, ProjectRecordBlocker, ProjectRole, User,
+    ScrumCeremonySession, ScrumCeremonyEntry, HubEntry,
+)
 from app.services.auth_service import hash_password
 
 
@@ -26,6 +30,7 @@ from app.services.auth_service import hash_password
 
 DEMO_USERS = [
     {"nombre": "PM Demo",      "email": "pm@center.demo",      "password": "demo12345"},
+    {"nombre": "TL Demo",      "email": "tl@center.demo",      "password": "demo12345"},
     {"nombre": "Dev Demo",     "email": "dev@center.demo",     "password": "demo12345"},
     {"nombre": "Dev2 Demo",    "email": "dev2@center.demo",    "password": "demo12345"},
     {"nombre": "QA Demo",      "email": "qa@center.demo",      "password": "demo12345"},
@@ -45,6 +50,7 @@ ROLES = [
 
 USER_PROJECT_ROLES = {
     "pm@center.demo":      "pm",
+    "tl@center.demo":      "tech_lead",
     "dev@center.demo":     "dev",
     "dev2@center.demo":    "dev",
     "qa@center.demo":      "qa",
@@ -197,7 +203,7 @@ def seed_waterfall_records(db, project: Project, pm_id: str):
     # Hito 1
     m1 = _make_record(db, p, pm_id, "milestone", "MVP - Core Features",         "in_progress", 10)
     f1 = _make_record(db, p, pm_id, "feature",   "Autenticacion de usuarios",    "done",        10, m1.id)
-    f2 = _make_record(db, p, pm_id, "feature",   "Dashboard de proyectos",       "in_progress", 20, m1.id)
+    f2 = _make_record(db, p, pm_id, "feature",   "Dashboard de proyectos",       "in_review",   20, m1.id)
     f3 = _make_record(db, p, pm_id, "feature",   "Gestion de registros",         "backlog",     30, m1.id)
     _make_record(db, p, pm_id, "task", "Disenar modelo de datos",       "done",        10, f1.id)
     _make_record(db, p, pm_id, "task", "Implementar JWT auth",          "done",        20, f1.id)
@@ -373,6 +379,165 @@ def seed_scrum_records(db, project: Project, pm_id: str, users: dict):
     print("    + registros scrum creados")
 
 
+def _find_record(db, project_id: str, title: str) -> ProjectRecord | None:
+    return db.query(ProjectRecord).filter(
+        ProjectRecord.project_id == project_id,
+        ProjectRecord.title == title,
+    ).first()
+
+
+def _make_blocker(
+    db,
+    project_id: str,
+    record_id: str,
+    created_by: str,
+    description: str,
+    *,
+    resolved: bool = False,
+    resolved_by: str | None = None,
+) -> ProjectRecordBlocker | None:
+    existing = db.query(ProjectRecordBlocker).filter(
+        ProjectRecordBlocker.project_id == project_id,
+        ProjectRecordBlocker.record_id == record_id,
+        ProjectRecordBlocker.description == description,
+    ).first()
+    if existing:
+        return existing
+    now = datetime.now(timezone.utc)
+    blocker = ProjectRecordBlocker(
+        project_id=project_id,
+        record_id=record_id,
+        description=description,
+        created_by=created_by,
+        resolved_at=now if resolved else None,
+        resolved_by=resolved_by if resolved else None,
+        resolution_note="Resuelto en demo" if resolved else None,
+    )
+    db.add(blocker)
+    db.flush()
+    return blocker
+
+
+def seed_waterfall_extras(db, project: Project, pm_id: str):
+    """Bloqueante activo en feature Dashboard + bloqueante resuelto en Login."""
+    p = project.id
+    f_dashboard = _find_record(db, p, "Dashboard de proyectos")
+    f_login = _find_record(db, p, "Autenticacion de usuarios")
+    if f_dashboard:
+        _make_blocker(
+            db, p, f_dashboard.id, pm_id,
+            "**Bloqueo activo:** pendiente definición de permisos por rol en Settings.",
+        )
+    if f_login:
+        _make_blocker(
+            db, p, f_login.id, pm_id,
+            "Dependencia de proveedor OAuth externo (resuelto).",
+            resolved=True,
+            resolved_by=pm_id,
+        )
+    print("    + bloqueantes waterfall")
+
+
+def seed_scrum_extras(db, project: Project, pm_id: str, users: dict):
+    """Bloqueante activo en historia de password recovery."""
+    p = project.id
+    h3 = _find_record(db, p, "Como usuario quiero recuperar mi password")
+    if h3:
+        _make_blocker(
+            db, p, h3.id, users["tl@center.demo"].id,
+            "**Bloqueo activo:** servicio SMTP no configurado en staging.",
+        )
+    print("    + bloqueantes scrum")
+
+
+def seed_hub_entries(db, project: Project, author_id: str):
+    p = project.id
+    entries = [
+        ("decision", "Stack MVP1", "Backend FastAPI + SQLAlchemy. Frontend React 19 + Vite 6."),
+        ("nota", "Convención de estados", "Work items en inglés (`backlog`, `in_progress`, `done`). Sprint/ceremonias en español."),
+        ("riesgo", "Email en dev", "Reset de password loguea el link en consola hasta configurar SMTP."),
+    ]
+    for tipo, titulo, contenido in entries:
+        exists = db.query(HubEntry).filter(
+            HubEntry.project_id == p,
+            HubEntry.titulo == titulo,
+        ).first()
+        if not exists:
+            db.add(HubEntry(
+                project_id=p,
+                author_id=author_id,
+                tipo=tipo,
+                titulo=titulo,
+                contenido=contenido,
+            ))
+    db.flush()
+    print("    + hub entries")
+
+
+def seed_ceremony_sessions(db, project: Project, pm_id: str, users: dict):
+    """Daily cerrada del sprint activo + planning pendiente."""
+    p = project.id
+    s1 = _find_record(db, p, "Sprint 1 - Auth & Registro")
+    if not s1:
+        return
+
+    now = datetime.now(timezone.utc)
+    yesterday = now - timedelta(days=1)
+
+    daily = db.query(ScrumCeremonySession).filter(
+        ScrumCeremonySession.project_id == p,
+        ScrumCeremonySession.session_type == "daily",
+        ScrumCeremonySession.sprint_id == s1.id,
+    ).first()
+    if not daily:
+        daily = ScrumCeremonySession(
+            project_id=p,
+            sprint_id=s1.id,
+            session_type="daily",
+            status="cerrada",
+            started_at=yesterday.replace(hour=14, minute=0),
+            closed_at=yesterday.replace(hour=14, minute=25),
+            created_by=pm_id,
+        )
+        db.add(daily)
+        db.flush()
+
+        standups = [
+            (users["dev@center.demo"].id, "Cerré login y registro.", "Password recovery + perfil.", []),
+            (users["dev2@center.demo"].id, "Avancé pantalla reset.", "Integrar envío SMTP.", ["blocker-smtp"]),
+            (users["qa@center.demo"].id, "Casos de prueba auth listos.", "Probar flujo reset E2E.", []),
+        ]
+        for author_id, ayer, hoy, bloqueantes in standups:
+            exists = db.query(ScrumCeremonyEntry).filter(
+                ScrumCeremonyEntry.session_id == daily.id,
+                ScrumCeremonyEntry.author_id == author_id,
+                ScrumCeremonyEntry.entry_type == "standup",
+            ).first()
+            if not exists:
+                db.add(ScrumCeremonyEntry(
+                    session_id=daily.id,
+                    author_id=author_id,
+                    entry_type="standup",
+                    payload={"ayer": ayer, "hoy": hoy, "bloqueantes": bloqueantes},
+                ))
+
+    planning = db.query(ScrumCeremonySession).filter(
+        ScrumCeremonySession.project_id == p,
+        ScrumCeremonySession.session_type == "planning",
+        ScrumCeremonySession.status == "pendiente",
+    ).first()
+    if not planning:
+        db.add(ScrumCeremonySession(
+            project_id=p,
+            sprint_id=s1.id,
+            session_type="planning",
+            status="pendiente",
+            created_by=pm_id,
+        ))
+
+    print("    + ceremonias (daily cerrada + planning pendiente)")
+
+
 def seed(db):
     print("\n== Usuarios ==")
     users = seed_users(db)
@@ -390,6 +555,8 @@ def seed(db):
         delivery_mode="waterfall",
     )
     seed_waterfall_records(db, wf_project, pm_id)
+    seed_waterfall_extras(db, wf_project, pm_id)
+    seed_hub_entries(db, wf_project, pm_id)
 
     print("\n== Proyecto Scrum ==")
     scrum_project, _ = seed_project(
@@ -400,6 +567,9 @@ def seed(db):
         delivery_mode="scrum",
     )
     seed_scrum_records(db, scrum_project, pm_id, users)
+    seed_scrum_extras(db, scrum_project, pm_id, users)
+    seed_hub_entries(db, scrum_project, pm_id)
+    seed_ceremony_sessions(db, scrum_project, pm_id, users)
 
     db.commit()
 
