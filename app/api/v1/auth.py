@@ -1,135 +1,166 @@
-"""
-Autenticación JWT y estado de onboarding.
+import logging
+import secrets
+from datetime import datetime, timedelta, timezone
 
-El token incluye sub (user_id) y org_id (organización activa, opcional).
-Registro no crea org: el usuario pasa por onboarding o invitación.
-
-onboarding-status.needs_onboarding = sin org membership Y sin proyectos guest.
-"""
-from uuid import UUID
-
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.v1.auth_deps import AuthContext, get_current_auth
+from app.api.v1.deps import get_current_user
+from app.config import settings
 from app.database import get_db
-from app.models.entities import User
+from app.models.entities import PasswordResetToken, User
 from app.schemas.auth import (
-    AuthForgotPassword,
-    AuthLogin,
-    AuthMessageResponse,
-    AuthRegister,
-    AuthResetPassword,
-    AuthSwitchOrganization,
-    AuthTokenResponse,
+    ForgotPasswordRequest,
+    LoginRequest,
+    RegisterRequest,
+    ResetPasswordRequest,
+    SessionResponse,
+    TokenResponse,
+    UserResponse,
 )
-from app.schemas.organizations import OrganizationRead
-from app.schemas.users import UserRead
-from app.security import hash_password, needs_rehash, verify_password
-from app.services.auth_tokens import create_access_token
-from app.services.organizations import (
-    list_guest_projects,
-    list_user_organizations,
-    require_org_member,
-)
-from app.services.password_reset import (
-    request_password_reset,
-    reset_password_with_token,
+from app.services.auth_service import (
+    authenticate_user,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    get_user_by_email,
+    get_user_by_id,
+    hash_password,
+    register_user,
 )
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter()
+
+REFRESH_COOKIE = "refresh_token"
+COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 días en segundos
 
 
-def _token_response(
-    db: Session,
-    user: User,
-    organization_id: UUID | None = None,
-) -> AuthTokenResponse:
-    """Arma JWT + metadatos de orgs; si hay una sola org, la fija como activa."""
-    orgs = list_user_organizations(db, user.id)
-    active_org = organization_id
-    if active_org is None and len(orgs) == 1:
-        active_org = orgs[0].id
-    token = create_access_token(user_id=user.id, organization_id=active_org)
-    return AuthTokenResponse(
-        access_token=token,
-        user=UserRead.model_validate(user),
-        organization_id=active_org,
-        organizations=[OrganizationRead.model_validate(o) for o in orgs],
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    # secure=True solo en producción — en HTTP local el browser descarta cookies seguras
+    response.set_cookie(
+        key=REFRESH_COOKIE,
+        value=token,
+        httponly=True,
+        secure=not settings.is_dev,
+        samesite="lax",
+        max_age=COOKIE_MAX_AGE,
     )
 
 
-@router.post("/register", response_model=AuthTokenResponse, status_code=201)
-def register(payload: AuthRegister, db: Session = Depends(get_db)):
-    existing = db.scalar(select(User).where(User.email == payload.email))
-    if existing:
-        raise HTTPException(status_code=409, detail="El email ya está registrado")
-    user = User(
-        nombre=payload.nombre,
-        email=payload.email.lower().strip(),
-        password_hash=hash_password(payload.password),
+@router.post("/register", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
+def register(body: RegisterRequest, response: Response, db: Session = Depends(get_db)):
+    user = register_user(db, body.nombre, body.email, body.password)
+    access_token = create_access_token(user.id)
+    refresh_token = create_refresh_token(user.id)
+    _set_refresh_cookie(response, refresh_token)
+    return SessionResponse(user=UserResponse.model_validate(user), access_token=access_token)
+
+
+@router.post("/login", response_model=SessionResponse)
+def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
+    user = authenticate_user(db, body.email, body.password)
+    access_token = create_access_token(user.id)
+    refresh_token = create_refresh_token(user.id)
+    _set_refresh_cookie(response, refresh_token)
+    return SessionResponse(user=UserResponse.model_validate(user), access_token=access_token)
+
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh(
+    response: Response,
+    db: Session = Depends(get_db),
+    refresh_token: str | None = Cookie(default=None, alias=REFRESH_COOKIE),
+):
+    if not refresh_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No hay refresh token")
+
+    user_id = decode_token(refresh_token, expected_type="refresh")
+    user = get_user_by_id(db, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no válido")
+
+    new_access = create_access_token(user.id)
+    new_refresh = create_refresh_token(user.id)
+    _set_refresh_cookie(response, new_refresh)
+    return TokenResponse(access_token=new_access)
+
+
+@router.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(REFRESH_COOKIE)
+    return {"message": "Sesión cerrada"}
+
+
+@router.get("/session", response_model=SessionResponse)
+def session(
+    current_user: User = Depends(get_current_user),
+    response: Response = None,
+):
+    """Devuelve el usuario actual. Útil para restaurar sesión en el frontend al recargar."""
+    access_token = create_access_token(current_user.id)
+    return SessionResponse(user=UserResponse.model_validate(current_user), access_token=access_token)
+
+
+logger = logging.getLogger(__name__)
+
+RESET_TOKEN_TTL_HOURS = 1
+
+
+@router.post("/forgot-password", status_code=status.HTTP_204_NO_CONTENT)
+def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """
+    Genera un token de reset de contraseña y lo "envía" (en dev: solo lo loguea).
+    No revela si el email existe o no.
+    """
+    user = get_user_by_email(db, body.email)
+    if not user or not user.is_active:
+        return  # Silencioso — no revelar si el email existe
+
+    # Invalidar tokens anteriores del usuario
+    db.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user.id,
+        PasswordResetToken.used_at.is_(None),
+    ).delete()
+
+    token_value = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(hours=RESET_TOKEN_TTL_HOURS)
+    reset_token = PasswordResetToken(
+        user_id=user.id,
+        token=token_value,
+        expires_at=expires,
     )
-    db.add(user)
+    db.add(reset_token)
     db.commit()
-    db.refresh(user)
-    return _token_response(db, user, organization_id=None)
+
+    # En producción: enviar email con link /reset-password?token=<token_value>
+    # En desarrollo: loguear el token
+    reset_link = f"http://localhost:5173/reset-password?token={token_value}"
+    logger.info("PASSWORD RESET LINK (dev only): %s", reset_link)
 
 
-@router.post("/login", response_model=AuthTokenResponse)
-def login(payload: AuthLogin, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == payload.email.lower().strip()))
-    if not user or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
-    if needs_rehash(user.password_hash):
-        user.password_hash = hash_password(payload.password)
-        db.commit()
-        db.refresh(user)
-    return _token_response(db, user)
+@router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Valida el token y actualiza el password_hash del usuario."""
+    now = datetime.now(timezone.utc)
+    reset_token = db.query(PasswordResetToken).filter(
+        PasswordResetToken.token == body.token,
+        PasswordResetToken.used_at.is_(None),
+    ).first()
 
+    if not reset_token:
+        raise HTTPException(status_code=400, detail="Token inválido o ya utilizado")
 
-@router.post("/switch-organization", response_model=AuthTokenResponse)
-def switch_organization(
-    payload: AuthSwitchOrganization,
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    require_org_member(db, payload.organization_id, auth.user.id)
+    # Compatibilidad: expires_at puede ser timezone-naive
+    expires = reset_token.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires < now:
+        raise HTTPException(status_code=400, detail="Token expirado")
+
+    user = get_user_by_id(db, reset_token.user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=400, detail="Usuario no válido")
+
+    user.password_hash = hash_password(body.new_password)
+    reset_token.used_at = now
     db.commit()
-    return _token_response(db, auth.user, organization_id=payload.organization_id)
-
-
-@router.get("/session", response_model=AuthTokenResponse)
-def get_session(
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    return _token_response(db, auth.user, organization_id=auth.organization_id)
-
-
-@router.get("/onboarding-status")
-def onboarding_status(
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    orgs = list_user_organizations(db, auth.user.id)
-    guests = list_guest_projects(db, auth.user.id)
-    return {
-        "has_organizations": len(orgs) > 0,
-        "has_guest_projects": len(guests) > 0,
-        "needs_onboarding": len(orgs) == 0 and len(guests) == 0,
-    }
-
-
-@router.post("/forgot-password", response_model=AuthMessageResponse)
-def forgot_password(payload: AuthForgotPassword, db: Session = Depends(get_db)):
-    message = request_password_reset(db, payload.email)
-    db.commit()
-    return AuthMessageResponse(message=message)
-
-
-@router.post("/reset-password", response_model=AuthMessageResponse)
-def reset_password(payload: AuthResetPassword, db: Session = Depends(get_db)):
-    reset_password_with_token(db, payload.token, payload.password)
-    db.commit()
-    return AuthMessageResponse(message="Contraseña actualizada. Ya podés iniciar sesión.")

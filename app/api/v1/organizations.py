@@ -1,219 +1,231 @@
-"""
-API de organizaciones (tenant SaaS).
+﻿import re
+from datetime import date
 
-CRUD de org, miembros e invitaciones. Crear org requiere JWT.
-"""
-from uuid import UUID
-
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.v1.auth_deps import AuthContext, get_current_auth, get_organization_or_404
+from app.api.v1.deps import get_current_actor_id
 from app.database import get_db
-from app.models.entities import OrganizationMember, User
-from app.schemas.organizations import (
-    OrganizationCreate,
-    OrganizationInviteCreate,
-    OrganizationInviteRead,
-    OrganizationJoin,
-    OrganizationMemberCreate,
-    OrganizationMemberRead,
-    OrganizationRead,
-    OrganizationUpdate,
-)
-from app.services.organizations import (
-    create_organization,
-    create_organization_invite,
-    join_organization_with_token,
-    list_organization_invites,
-    list_user_organizations,
-    require_org_admin,
-    require_org_member,
-    revoke_organization_invite,
-    update_organization,
-)
+from app.models.entities import Organization, OrganizationMember, Project, ProjectMember, ProjectRecordBlocker, ProjectRole
+from app.schemas.blockers import BlockerResponse
+from app.schemas.projects import ProjectResponse
+from app.domain.packs.definitions import get_pack, TEMPLATE_TO_PACK
 
-router = APIRouter(prefix="/organizations", tags=["organizations"])
+router = APIRouter()
 
 
-@router.get("", response_model=list[OrganizationRead])
-def list_organizations(
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    return list_user_organizations(db, auth.user.id)
+class CreateOrgRequest(BaseModel):
+    nombre: str
 
 
-@router.post("", response_model=OrganizationRead, status_code=201)
-def create_organization_endpoint(
-    payload: OrganizationCreate,
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    org = create_organization(db, auth.user.id, payload)
-    db.commit()
-    db.refresh(org)
+class OrgResponse(BaseModel):
+    id: str
+    nombre: str
+    slug: str
+    estado: str
+
+    model_config = {"from_attributes": True}
+
+
+def _get_org_or_404(db: Session, org_id: str) -> Organization:
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organización no encontrada")
     return org
 
 
-@router.post("/join", response_model=OrganizationMemberRead)
-def join_organization(
-    payload: OrganizationJoin,
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    member = join_organization_with_token(db, auth.user, payload.token)
-    db.commit()
-    db.refresh(member)
-    return member
-
-
-@router.get("/{organization_id}", response_model=OrganizationRead)
-def get_organization(
-    organization_id: UUID,
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    require_org_member(db, organization_id, auth.user.id)
-    return get_organization_or_404(organization_id, db)
-
-
-@router.patch("/{organization_id}", response_model=OrganizationRead)
-def patch_organization(
-    organization_id: UUID,
-    payload: OrganizationUpdate,
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    org = get_organization_or_404(organization_id, db)
-    require_org_admin(db, organization_id, auth.user.id)
-    update_organization(db, org, payload)
-    db.commit()
-    db.refresh(org)
-    return org
-
-
-@router.get("/{organization_id}/members", response_model=list[OrganizationMemberRead])
-def list_organization_members(
-    organization_id: UUID,
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    require_org_member(db, organization_id, auth.user.id)
-    return list(
-        db.scalars(
-            select(OrganizationMember)
-            .where(OrganizationMember.organization_id == organization_id)
-            .order_by(OrganizationMember.joined_at)
-        )
+def _assert_org_member(db: Session, org_id: str, actor_id: str) -> None:
+    member = (
+        db.query(OrganizationMember)
+        .filter(OrganizationMember.organization_id == org_id, OrganizationMember.user_id == actor_id)
+        .first()
     )
+    if not member:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No pertenecés a esta organización")
 
 
-@router.post(
-    "/{organization_id}/members",
-    response_model=OrganizationMemberRead,
-    status_code=201,
-)
-def add_organization_member(
-    organization_id: UUID,
-    payload: OrganizationMemberCreate,
-    auth: AuthContext = Depends(get_current_auth),
+@router.post("", response_model=OrgResponse, status_code=status.HTTP_201_CREATED)
+def create_organization(
+    body: CreateOrgRequest,
     db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
 ):
-    get_organization_or_404(organization_id, db)
-    require_org_admin(db, organization_id, auth.user.id)
-    user = db.get(User, payload.user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    if payload.rol == "owner":
-        raise HTTPException(status_code=400, detail="No se puede asignar owner por API")
-    existing = db.scalar(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == organization_id,
-            OrganizationMember.user_id == payload.user_id,
-        )
-    )
-    if existing:
-        raise HTTPException(status_code=409, detail="El usuario ya es miembro de la org")
-    member = OrganizationMember(
-        organization_id=organization_id,
-        user_id=payload.user_id,
-        rol=payload.rol,
-    )
+    """Crea una nueva organización y hace al actor owner."""
+    base_slug = re.sub(r"[^a-z0-9]+", "-", body.nombre.lower()).strip("-")
+    slug = base_slug
+    counter = 1
+    while db.query(Organization).filter(Organization.slug == slug).first():
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+    org = Organization(nombre=body.nombre, slug=slug)
+    db.add(org)
+    db.flush()
+    member = OrganizationMember(organization_id=org.id, user_id=actor_id, rol="owner")
     db.add(member)
     db.commit()
-    db.refresh(member)
-    return member
+    db.refresh(org)
+    return OrgResponse(id=org.id, nombre=org.nombre, slug=org.slug, estado=org.estado)
 
 
-@router.delete("/{organization_id}/members/{member_id}", status_code=204)
-def remove_organization_member(
-    organization_id: UUID,
-    member_id: UUID,
-    auth: AuthContext = Depends(get_current_auth),
+@router.get("/{org_id}", response_model=OrgResponse)
+def get_organization(
+    org_id: str,
     db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
 ):
-    require_org_admin(db, organization_id, auth.user.id)
-    member = db.get(OrganizationMember, member_id)
-    if not member or member.organization_id != organization_id:
-        raise HTTPException(status_code=404, detail="Miembro no encontrado")
-    if member.rol == "owner":
-        raise HTTPException(status_code=400, detail="No se puede quitar al owner")
-    db.delete(member)
-    db.commit()
+    org = _get_org_or_404(db, org_id)
+    _assert_org_member(db, org_id, actor_id)
+    return OrgResponse(id=org.id, nombre=org.nombre, slug=org.slug, estado=org.estado)
 
 
-@router.get(
-    "/{organization_id}/invites",
-    response_model=list[OrganizationInviteRead],
-)
-def list_invites(
-    organization_id: UUID,
-    auth: AuthContext = Depends(get_current_auth),
+@router.get("/{org_id}/blockers", response_model=list[BlockerResponse])
+def list_org_blockers(
+    org_id: str,
     db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
 ):
-    get_organization_or_404(organization_id, db)
-    require_org_admin(db, organization_id, auth.user.id)
-    return list_organization_invites(db, organization_id)
-
-
-@router.delete(
-    "/{organization_id}/invites/{invite_id}",
-    status_code=204,
-)
-def delete_invite(
-    organization_id: UUID,
-    invite_id: UUID,
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    get_organization_or_404(organization_id, db)
-    require_org_admin(db, organization_id, auth.user.id)
-    revoke_organization_invite(db, organization_id, invite_id)
-    db.commit()
-
-
-@router.post(
-    "/{organization_id}/invites",
-    response_model=OrganizationInviteRead,
-    status_code=201,
-)
-def create_invite(
-    organization_id: UUID,
-    payload: OrganizationInviteCreate,
-    auth: AuthContext = Depends(get_current_auth),
-    db: Session = Depends(get_db),
-):
-    org = get_organization_or_404(organization_id, db)
-    require_org_admin(db, organization_id, auth.user.id)
-    invite = create_organization_invite(
-        db,
-        org,
-        email=payload.email,
-        rol=payload.rol,
-        created_by=auth.user.id,
+    """Todos los bloqueantes activos de la org, cross-proyecto."""
+    _get_org_or_404(db, org_id)
+    _assert_org_member(db, org_id, actor_id)
+    projects = (
+        db.query(Project)
+        .join(ProjectMember, ProjectMember.project_id == Project.id)
+        .filter(
+            Project.organization_id == org_id,
+            ProjectMember.user_id == actor_id,
+        )
+        .all()
     )
+    project_ids = [p.id for p in projects]
+    if not project_ids:
+        return []
+    blockers = (
+        db.query(ProjectRecordBlocker)
+        .filter(
+            ProjectRecordBlocker.project_id.in_(project_ids),
+            ProjectRecordBlocker.resolved_at.is_(None),
+        )
+        .order_by(ProjectRecordBlocker.created_at)
+        .all()
+    )
+    return [
+        BlockerResponse(
+            id=b.id, record_id=b.record_id, project_id=b.project_id,
+            description=b.description, created_by=b.created_by,
+            created_at=b.created_at, resolved_at=b.resolved_at,
+            resolved_by=b.resolved_by, resolution_note=b.resolution_note,
+            is_resolved=False,
+        )
+        for b in blockers
+    ]
+
+
+@router.get("/{org_id}/projects", response_model=list[ProjectResponse])
+def list_org_projects(
+    org_id: str,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    """
+    Lista los proyectos a los que el actor tiene acceso dentro de la org
+    (es miembro del proyecto).
+    """
+    _get_org_or_404(db, org_id)
+    _assert_org_member(db, org_id, actor_id)
+
+    projects = (
+        db.query(Project)
+        .join(ProjectMember, ProjectMember.project_id == Project.id)
+        .filter(
+            Project.organization_id == org_id,
+            ProjectMember.user_id == actor_id,
+            Project.estado != "archivado",
+        )
+        .order_by(Project.created_at.desc())
+        .all()
+    )
+
+    return [
+        ProjectResponse(
+            id=str(p.id),
+            org_id=str(p.organization_id),
+            name=p.nombre,
+            description=p.descripcion,
+            pack_slug=p.pack_slug,
+            template_slug=p.template_slug,
+            delivery_mode=p.delivery_mode,
+            estado=p.estado,
+            fecha_inicio=p.fecha_inicio,
+            fecha_fin=p.fecha_fin,
+            created_at=p.created_at,
+            updated_at=p.updated_at,
+        )
+        for p in projects
+    ]
+
+
+class CreateProjectRequest(BaseModel):
+    nombre: str
+    pack_slug: str
+    template_slug: str
+    delivery_mode: str
+    descripcion: str | None = None
+    fecha_inicio: date | None = None
+    fecha_fin: date | None = None
+
+
+@router.post("/{org_id}/projects", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
+def create_project(
+    org_id: str,
+    body: CreateProjectRequest,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    """Crea un proyecto, registra roles del pack y hace al actor PM."""
+    org = _get_org_or_404(db, org_id)
+    _assert_org_member(db, org_id, actor_id)
+
+    today = date.today()
+    project = Project(
+        organization_id=org.id,
+        nombre=body.nombre,
+        descripcion=body.descripcion,
+        pack_slug=body.pack_slug,
+        template_slug=body.template_slug,
+        delivery_mode=body.delivery_mode,
+        estado="activo",
+        fecha_inicio=body.fecha_inicio or today,
+        fecha_fin=body.fecha_fin or today,
+        settings={},
+        created_by=actor_id,
+    )
+    db.add(project)
+    db.flush()
+
+    # Crear roles definidos en el pack
+    pack_key = TEMPLATE_TO_PACK.get(body.template_slug, body.pack_slug)
+    pack = get_pack(pack_key)
+    roles_map: dict[str, ProjectRole] = {}
+    if pack:
+        for role_slug, role_name in pack.roles.items():
+            role = ProjectRole(project_id=project.id, slug=role_slug, nombre=role_name)
+            db.add(role)
+            db.flush()
+            roles_map[role_slug] = role
+
+    # Actor como PM
+    pm_role = roles_map.get("pm")
+    if pm_role:
+        db.add(ProjectMember(project_id=project.id, user_id=actor_id, role_id=pm_role.id))
+
     db.commit()
-    db.refresh(invite)
-    return invite
+    db.refresh(project)
+
+    return ProjectResponse(
+        id=project.id, org_id=project.organization_id, name=project.nombre,
+        description=project.descripcion, pack_slug=project.pack_slug,
+        template_slug=project.template_slug, delivery_mode=project.delivery_mode,
+        estado=project.estado, fecha_inicio=project.fecha_inicio,
+        fecha_fin=project.fecha_fin, created_at=project.created_at, updated_at=project.updated_at,
+    )

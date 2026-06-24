@@ -1,93 +1,97 @@
+"""Schemas de records — request y response."""
 from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Any
-from uuid import UUID
 
-from pydantic import BaseModel, Field
-
-
-class RecordRead(BaseModel):
-    id: UUID
-    project_id: UUID
-    record_type: str
-    titulo: str
-    descripcion: str | None = None
-    estado: str
-    parent_id: UUID | None = None
-    data: dict[str, Any] = Field(default_factory=dict)
-    fecha_inicio: date | None = None
-    fecha_fin: date | None = None
-    orden: int = 0
-    assignee_ids: list[UUID] = Field(default_factory=list)
-    created_by: UUID | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-    esfuerzo_horas: float | None = None
+from pydantic import BaseModel, Field, field_validator
 
 
-class RecordCreate(BaseModel):
-    record_type: str
-    titulo: str = Field(min_length=1, max_length=255)
-    descripcion: str | None = None
-    parent_id: UUID | None = None
-    data: dict[str, Any] = Field(default_factory=dict)
-    fecha_inicio: date | None = None
-    fecha_fin: date | None = None
-    orden: int | None = None
-    assignee_ids: list[UUID] = Field(default_factory=list)
-    initial_state: str | None = None
+# ─── Response ────────────────────────────────────────────────────────────────
+
+class AssigneeResponse(BaseModel):
+    user_id: str
+    nombre: str
+    avatar_url: str | None = None
 
 
-class RecordMigrateRequest(BaseModel):
-    target_milestone_id: UUID
-
-
-class RecordUpdate(BaseModel):
-    titulo: str | None = Field(default=None, min_length=1, max_length=255)
-    descripcion: str | None = None
-    parent_id: UUID | None = None
-    data: dict[str, Any] | None = None
-    fecha_inicio: date | None = None
-    fecha_fin: date | None = None
-    orden: int | None = None
-    assignee_ids: list[UUID] | None = None
-
-
-class RecordTransitionRequest(BaseModel):
-    action_id: str
-    target_state: str | None = None
-    form_data: dict[str, Any] | None = None
-    side_effect_context: dict[str, Any] | None = None
-
-
-class RecordTransitionRead(BaseModel):
+class BlockerResponse(BaseModel):
     id: str
-    label: str
-    to: str | None = None
-    required_capabilities: list[str] = Field(default_factory=list)
+    description: str
+    created_by: str
+    created_at: datetime
 
 
-class RecordDependencyCreate(BaseModel):
-    predecessor_id: UUID
-    successor_id: UUID
-    dependency_type: str = "finish_to_start"
-
-
-class RecordDependencyRead(BaseModel):
-    id: UUID
-    project_id: UUID
-    predecessor_id: UUID
-    successor_id: UUID
-    dependency_type: str
+class RecordResponse(BaseModel):
+    id: str
+    project_id: str
+    record_type: str
+    parent_id: str | None = None
+    orden: int
+    title: str
+    descripcion: str | None = None
+    status: str
+    fecha_inicio: date | None = None
+    fecha_fin: date | None = None
+    estimacion: float | None = None
+    extra: dict[str, Any]
+    assignees: list[AssigneeResponse]
+    active_blockers: list[BlockerResponse]
+    is_blocked: bool = False
+    has_unsatisfied_dependencies: bool = False
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
 
     model_config = {"from_attributes": True}
 
 
-class RecordTypeRead(BaseModel):
-    key: str
-    label: str
-    storage: str
-    field_schema: list[dict[str, Any]] = Field(default_factory=list)
-    parent_types: list[str] = Field(default_factory=list)
+class RecordListResponse(BaseModel):
+    items: list[RecordResponse]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
+# ─── Requests ────────────────────────────────────────────────────────────────
+
+class CreateRecordRequest(BaseModel):
+    record_type: str
+    title: str = Field(min_length=1, max_length=500)
+    parent_id: str | None = None
     orden: int = 0
+    descripcion: str | None = None
+    status: str | None = None          # si None se usa initial_state del workflow
+    fecha_inicio: date | None = None
+    fecha_fin: date | None = None
+    estimacion: float | None = None
+    extra: dict[str, Any] = {}
+    assignee_ids: list[str] = []
+
+    @field_validator("record_type")
+    @classmethod
+    def validate_record_type(cls, v: str) -> str:
+        valid = {"milestone", "feature", "task", "sprint", "product_backlog"}
+        if v not in valid:
+            raise ValueError(f"record_type inválido: {v}. Válidos: {valid}")
+        return v
+
+
+class UpdateRecordRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    descripcion: str | None = None
+    fecha_inicio: date | None = None
+    fecha_fin: date | None = None
+    estimacion: float | None = None
+    extra: dict[str, Any] | None = None
+    orden: int | None = None
+    assignee_ids: list[str] | None = None
+
+
+class TransitionRequest(BaseModel):
+    action_id: str
+
+
+class ReorderRequest(BaseModel):
+    ordered_ids: list[str]    # IDs en el nuevo orden

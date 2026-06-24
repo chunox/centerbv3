@@ -1,75 +1,41 @@
-"""
-Aplicación FastAPI — Center v3 backend.
-
-Arranque:
-- Migraciones Alembic al importar (database_migrations)
-- Scheduler de jobs (sync estados de hitos)
-- CORS según settings.cors_origin_list (frontend Vite en :5173)
-
-API REST bajo /api/v1. Health en /health.
-"""
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from sqlalchemy import text
-
 from app.api.v1.router import api_router
 from app.config import settings
-from app.database import engine
-from app.database_migrations import run_migrations
-from app.scheduler import shutdown_scheduler, start_scheduler
-from app.schemas.health import HealthResponse
-
-run_migrations()
+from app.middleware.rate_limit import AuthRateLimitMiddleware
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
-    from app.database import SessionLocal
-    from app.services.blocks import ensure_block_catalog
-    from app.services.packs import ensure_system_packs
-
-    with SessionLocal() as db:
-        ensure_system_packs(db)
-        ensure_block_catalog(db)
-        db.commit()
-    start_scheduler()
+async def lifespan(app: FastAPI):
+    # Startup — nada que seedear: packs son estáticos en código
     yield
-    shutdown_scheduler()
+    # Shutdown
 
 
 app = FastAPI(
-    title="Proyecto Central API v3",
-    description="Backend v3 — FastAPI, SQLAlchemy, SQLite/PostgreSQL",
-    version="3.0.0",
+    title="Center MVP1",
+    version="1.0.0",
+    description="Center — Project management API",
+    docs_url="/docs" if settings.is_dev else None,
+    redoc_url="/redoc" if settings.is_dev else None,
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AuthRateLimitMiddleware)
 
-app.include_router(api_router)
-
-
-@app.get("/health", response_model=HealthResponse)
-def health():
-    db_status = "ok"
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception:
-        db_status = "error"
-    status = "ok" if db_status == "ok" else "degraded"
-    return HealthResponse(status=status, version="3.0.0", database=db_status)
+app.include_router(api_router, prefix="/api/v1")
 
 
-@app.get("/")
-def root():
-    return {"root": True, "version": "3.0.0"}
+@app.get("/health", tags=["health"])
+def health() -> dict:
+    return {"status": "ok", "version": "1.0.0"}

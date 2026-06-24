@@ -1,70 +1,31 @@
-from uuid import UUID
+"""
+Dependencias FastAPI compartidas — autenticación y DB.
+"""
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from app.models.entities import Project, ProjectRecord
+from app.database import get_db
+from app.models.entities import User
+from app.services.auth_service import decode_token, get_user_by_id
+
+bearer_scheme = HTTPBearer()
 
 
-def get_project_or_404(project_id: UUID, db: Session) -> Project:
-    project = db.get(Project, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
-    return project
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> User:
+    user_id = decode_token(credentials.credentials, expected_type="access")
+    user = get_user_by_id(db, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado o inactivo")
+    return user
 
 
-def _get_typed_record(
-    db: Session,
-    record_id: UUID,
-    *,
-    project_id: UUID | None = None,
-    entity_type: str,
-    parent_id: UUID | None = None,
-) -> ProjectRecord:
-    row = db.get(ProjectRecord, record_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"{entity_type} no encontrado")
-    if row.record_type != entity_type:
-        raise HTTPException(status_code=404, detail=f"{entity_type} no encontrado")
-    if project_id is not None and row.project_id != project_id:
-        raise HTTPException(status_code=404, detail=f"{entity_type} no encontrado")
-    if parent_id is not None and row.parent_id != parent_id:
-        raise HTTPException(status_code=404, detail=f"{entity_type} no encontrado")
-    return row
-
-
-def get_milestone_or_404(
-    project_id: UUID, milestone_id: UUID, db: Session
-) -> ProjectRecord:
-    get_project_or_404(project_id, db)
-    return _get_typed_record(
-        db, milestone_id, project_id=project_id, entity_type="milestone"
-    )
-
-
-def get_feature_or_404(
-    project_id: UUID,
-    milestone_id: UUID,
-    feature_id: UUID,
-    db: Session,
-) -> ProjectRecord:
-    get_milestone_or_404(project_id, milestone_id, db)
-    return _get_typed_record(
-        db,
-        feature_id,
-        project_id=project_id,
-        entity_type="feature",
-        parent_id=milestone_id,
-    )
-
-
-def get_task_or_404(
-    project_id: UUID,
-    feature_id: UUID,
-    task_id: UUID,
-    db: Session,
-) -> ProjectRecord:
-    row = _get_typed_record(
-        db, task_id, project_id=project_id, entity_type="task", parent_id=feature_id
-    )
-    return row
+def get_current_actor_id(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> str:
+    """Solo el ID del actor, sin query adicional a la DB. Para endpoints que no necesitan el objeto User."""
+    return decode_token(credentials.credentials, expected_type="access")

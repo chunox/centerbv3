@@ -1,874 +1,402 @@
+﻿"""
+ORM models â€” Center MVP1
+20 tablas. Fuente de verdad del schema junto con Alembic.
 """
-Modelos SQLAlchemy — schema v8 (organizaciones + dominio PM).
-
-Relaciones principales:
-  User ↔ OrganizationMember ↔ Organization
-  Organization → Project → ProjectRecord (generic)
-  ProjectMember: rol por proyecto (pm/dev/qa/cliente), independiente de org
-"""
-from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
 
 from sqlalchemy import (
-    BigInteger,
     Boolean,
-    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
     Integer,
     JSON,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
-    Uuid,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+# ID de 36 chars (UUID string). Compatible SQLite y PostgreSQL.
+ID = String(36)
 
 from app.database import Base
 
 
-def _utcnow() -> datetime:
-    return datetime.utcnow()
+# â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+def gen_uuid() -> str:
+    return str(uuid.uuid4())
+
+
+# â”€â”€â”€ Usuarios y autenticaciÃ³n â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    nombre: Mapped[str] = mapped_column(String(100), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
-
-    projects_created: Mapped[list[Project]] = relationship(back_populates="creator")
-    project_memberships: Mapped[list[ProjectMember]] = relationship(
-        back_populates="user"
-    )
-    comments: Mapped[list[Comment]] = relationship(back_populates="author")
-    hub_entries_authored: Mapped[list[HubEntry]] = relationship(
-        back_populates="author"
-    )
-    attachments_uploaded: Mapped[list[Attachment]] = relationship(
-        back_populates="uploader"
-    )
-    audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="user")
-    notifications: Mapped[list[Notification]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
-    )
-    organization_memberships: Mapped[list[OrganizationMember]] = relationship(
-        back_populates="user"
-    )
-    organization_invites_created: Mapped[list[OrganizationInvite]] = relationship(
-        back_populates="creator"
-    )
-    password_reset_tokens: Mapped[list[PasswordResetToken]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
-    )
-
-
-# ── SaaS: organización como tenant superior a proyectos ──────────────────
-
-class Organization(Base):
-    """Espacio de trabajo del equipo (multi-org por usuario)."""
-    __tablename__ = "organizations"
-    __table_args__ = (
-        CheckConstraint(
-            "estado IN ('activa', 'suspendida')", name="chk_organizations_estado"
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
     nombre: Mapped[str] = mapped_column(String(150), nullable=False)
-    slug: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
-    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="activa")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
+    email: Mapped[str] = mapped_column(String(254), nullable=False, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    avatar_url: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    members: Mapped[list[OrganizationMember]] = relationship(
-        back_populates="organization", cascade="all, delete-orphan"
-    )
-    invites: Mapped[list[OrganizationInvite]] = relationship(
-        back_populates="organization", cascade="all, delete-orphan"
-    )
-    projects: Mapped[list[Project]] = relationship(back_populates="organization")
-
-
-class OrganizationMember(Base):
-    """Membresía org: owner/admin ven todos los proyectos; member necesita project_member."""
-    __tablename__ = "organization_members"
-    __table_args__ = (
-        UniqueConstraint("organization_id", "user_id", name="uq_organization_member"),
-        CheckConstraint(
-            "rol IN ('owner', 'admin', 'member')", name="chk_organization_member_rol"
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    rol: Mapped[str] = mapped_column(String(20), nullable=False)
-    joined_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    organization: Mapped[Organization] = relationship(back_populates="members")
-    user: Mapped[User] = relationship(back_populates="organization_memberships")
-
-
-class OrganizationInvite(Base):
-    __tablename__ = "organization_invites"
-    __table_args__ = (
-        CheckConstraint(
-            "rol IN ('admin', 'member')", name="chk_organization_invite_rol"
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
-    email: Mapped[str] = mapped_column(String(255), nullable=False)
-    rol: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
-    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    organization: Mapped[Organization] = relationship(back_populates="invites")
-    creator: Mapped[User] = relationship(back_populates="organization_invites_created")
+    # Relations
+    org_memberships: Mapped[list["OrganizationMember"]] = relationship(back_populates="user")
+    project_memberships: Mapped[list["ProjectMember"]] = relationship(back_populates="user")
 
 
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    user_id: Mapped[str] = mapped_column(ID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    user: Mapped[User] = relationship(back_populates="password_reset_tokens")
 
+# â”€â”€â”€ Organizaciones â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    nombre: Mapped[str] = mapped_column(String(150), nullable=False)
+    slug: Mapped[str] = mapped_column(String(60), nullable=False, unique=True, index=True)
+    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="activa")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Relations
+    members: Mapped[list["OrganizationMember"]] = relationship(back_populates="organization")
+    invites: Mapped[list["OrganizationInvite"]] = relationship(back_populates="organization")
+    projects: Mapped[list["Project"]] = relationship(back_populates="organization")
+
+
+class OrganizationMember(Base):
+    __tablename__ = "organization_members"
+    __table_args__ = (UniqueConstraint("organization_id", "user_id"),)
+
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    organization_id: Mapped[str] = mapped_column(ID, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(ID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    rol: Mapped[str] = mapped_column(String(20), nullable=False, default="member")  # owner | admin | member
+    joined_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relations
+    organization: Mapped["Organization"] = relationship(back_populates="members")
+    user: Mapped["User"] = relationship(back_populates="org_memberships")
+
+
+class OrganizationInvite(Base):
+    __tablename__ = "organization_invites"
+
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    organization_id: Mapped[str] = mapped_column(ID, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(254), nullable=False)
+    token: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    rol: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
+    invited_by: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relations
+    organization: Mapped["Organization"] = relationship(back_populates="invites")
+
+
+# â”€â”€â”€ Proyectos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class Project(Base):
-    """Proyecto acotado a una organization_id (obligatorio desde schema v8)."""
     __tablename__ = "projects"
-    __table_args__ = (
-        CheckConstraint("fecha_fin >= fecha_inicio", name="chk_project_fechas"),
-    )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    organization_id: Mapped[str] = mapped_column(ID, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     nombre: Mapped[str] = mapped_column(String(150), nullable=False)
-    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    template_slug: Mapped[str] = mapped_column(
-        String(40), nullable=False, default="t1_cliente_clasico"
-    )
-    pack_slug: Mapped[str] = mapped_column(
-        String(40), nullable=False, default="software"
-    )
-    structure_version: Mapped[int] = mapped_column(nullable=False, default=2)
+    descripcion: Mapped[str | None] = mapped_column(Text)
+    pack_slug: Mapped[str] = mapped_column(String(40), nullable=False)        # software-waterfall | software-scrum
+    template_slug: Mapped[str] = mapped_column(String(40), nullable=False)    # t3_interno_clasico | t6_scrum_interno
+    delivery_mode: Mapped[str] = mapped_column(String(20), nullable=False)    # waterfall | scrum
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="activo")
     fecha_inicio: Mapped[date] = mapped_column(Date, nullable=False)
     fecha_fin: Mapped[date] = mapped_column(Date, nullable=False)
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("organizations.id"), nullable=False
-    )
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
+    # settings: { effort_unit, hours_per_story_point, feature_workflow, ... }
+    settings: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    organization: Mapped[Organization] = relationship(back_populates="projects")
-    creator: Mapped[User] = relationship(back_populates="projects_created")
-    members: Mapped[list[ProjectMember]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="project")
-    notifications: Mapped[list[Notification]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    hub_entries: Mapped[list[HubEntry]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    roles: Mapped[list["ProjectRole"]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    workflow_definitions: Mapped[list["ProjectWorkflowDefinition"]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    workbench_definition: Mapped["ProjectWorkbenchDefinition | None"] = relationship(
-        back_populates="project", uselist=False, cascade="all, delete-orphan"
-    )
-    communication_rules: Mapped["ProjectCommunicationRules | None"] = relationship(
-        back_populates="project", uselist=False, cascade="all, delete-orphan"
-    )
-    record_types: Mapped[list["ProjectRecordType"]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    records: Mapped[list["ProjectRecord"]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    blocks: Mapped[list["ProjectBlock"]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    views: Mapped[list["ProjectView"]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
-    field_definitions: Mapped[list["ProjectFieldDefinition"]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
+    # Relations
+    organization: Mapped["Organization"] = relationship(back_populates="projects")
+    roles: Mapped[list["ProjectRole"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    members: Mapped[list["ProjectMember"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    records: Mapped[list["ProjectRecord"]] = relationship(back_populates="project", cascade="all, delete-orphan")
 
 
-class BlockCatalog(Base):
-    """Catálogo global de bloques reutilizables (kanban, inbox, gantt, etc.)."""
-    __tablename__ = "block_catalog"
+class ProjectRole(Base):
+    __tablename__ = "project_roles"
+    __table_args__ = (UniqueConstraint("project_id", "slug"),)
 
-    slug: Mapped[str] = mapped_column(String(40), primary_key=True)
-    nombre: Mapped[str] = mapped_column(String(120), nullable=False)
-    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    manifest: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    project_id: Mapped[str] = mapped_column(ID, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    slug: Mapped[str] = mapped_column(String(40), nullable=False)   # pm | tech_lead | dev | qa
+    nombre: Mapped[str] = mapped_column(String(80), nullable=False)
+    color: Mapped[str] = mapped_column(String(40), nullable=False, default="#6366f1")
 
-
-class ProjectBlock(Base):
-    """Instancia de bloque activa en un proyecto."""
-    __tablename__ = "project_blocks"
-    __table_args__ = (
-        UniqueConstraint("project_id", "key", name="uq_project_block_key"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    block_slug: Mapped[str] = mapped_column(
-        String(40), ForeignKey("block_catalog.slug"), nullable=False
-    )
-    key: Mapped[str] = mapped_column(String(40), nullable=False)
-    label: Mapped[str] = mapped_column(String(120), nullable=False)
-    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    project: Mapped[Project] = relationship(back_populates="blocks")
+    # Relations
+    project: Mapped["Project"] = relationship(back_populates="roles")
+    members: Mapped[list["ProjectMember"]] = relationship(back_populates="role")
 
 
-class ProjectView(Base):
-    """Vista de navegación que compone uno o más bloques."""
-    __tablename__ = "project_views"
-    __table_args__ = (
-        UniqueConstraint("project_id", "key", name="uq_project_view_key"),
-    )
+class ProjectMember(Base):
+    __tablename__ = "project_members"
+    __table_args__ = (UniqueConstraint("project_id", "user_id", "role_id"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    key: Mapped[str] = mapped_column(String(40), nullable=False)
-    label: Mapped[str] = mapped_column(String(120), nullable=False)
-    route: Mapped[str] = mapped_column(String(80), nullable=False)
-    icon: Mapped[str] = mapped_column(String(40), nullable=False, default="circle")
-    section: Mapped[str] = mapped_column(String(20), nullable=False, default="plan")
-    layout: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    required_capabilities: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    project_id: Mapped[str] = mapped_column(ID, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(ID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role_id: Mapped[str] = mapped_column(ID, ForeignKey("project_roles.id", ondelete="CASCADE"), nullable=False)
+    joined_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    project: Mapped[Project] = relationship(back_populates="views")
+    # Relations
+    project: Mapped["Project"] = relationship(back_populates="members")
+    user: Mapped["User"] = relationship(back_populates="project_memberships")
+    role: Mapped["ProjectRole"] = relationship(back_populates="members")
 
 
-class ProjectFieldDefinition(Base):
-    """Definición de campo personalizado por entity type en un proyecto."""
-    __tablename__ = "project_field_definitions"
-    __table_args__ = (
-        UniqueConstraint(
-            "project_id", "entity_type_key", "field_key", name="uq_project_field_def"
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    entity_type_key: Mapped[str] = mapped_column(String(40), nullable=False)
-    field_key: Mapped[str] = mapped_column(String(40), nullable=False)
-    label: Mapped[str] = mapped_column(String(120), nullable=False)
-    field_type: Mapped[str] = mapped_column(String(20), nullable=False)
-    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    project: Mapped[Project] = relationship(back_populates="field_definitions")
-
-
-class ProjectPack(Base):
-    """Catálogo global de packs de proyecto."""
-    __tablename__ = "project_packs"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    slug: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
-    nombre: Mapped[str] = mapped_column(String(120), nullable=False)
-    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    manifest: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-
-class ProjectRecordType(Base):
-    """Tipo de entidad activo en un proyecto (copiado del pack)."""
-    __tablename__ = "project_record_types"
-    __table_args__ = (
-        UniqueConstraint("project_id", "key", name="uq_project_record_type_key"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    key: Mapped[str] = mapped_column(String(40), nullable=False)
-    label: Mapped[str] = mapped_column(String(80), nullable=False)
-    field_schema: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    parent_types: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    icon: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    traits: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    project: Mapped[Project] = relationship(back_populates="record_types")
-
+# â”€â”€â”€ Records (modelo genÃ©rico) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class ProjectRecord(Base):
-    """Registro genérico de proyecto."""
     __tablename__ = "project_records"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    record_type: Mapped[str] = mapped_column(String(40), nullable=False)
-    parent_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("project_records.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    titulo: Mapped[str] = mapped_column(String(255), nullable=False)
-    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    estado: Mapped[str] = mapped_column(String(40), nullable=False)
-    data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    fecha_inicio: Mapped[date | None] = mapped_column(Date, nullable=True)
-    fecha_fin: Mapped[date | None] = mapped_column(Date, nullable=True)
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    project_id: Mapped[str] = mapped_column(ID, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    # record_type: milestone | feature | task | sprint | product_backlog
+    record_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    parent_id: Mapped[str | None] = mapped_column(ID, ForeignKey("project_records.id", ondelete="SET NULL"), index=True)
     orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    descripcion: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    fecha_inicio: Mapped[date | None] = mapped_column(Date)
+    fecha_fin: Mapped[date | None] = mapped_column(Date)
+    # estimacion: siempre en horas (unidad canÃ³nica). ConversiÃ³n a SP en display.
+    estimacion: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    # extra: scrum_role (epic|story|dev|subtask), otros campos pack-especÃ­ficos
+    extra: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    project: Mapped[Project] = relationship(back_populates="records")
-    parent: Mapped["ProjectRecord | None"] = relationship(
-        remote_side="ProjectRecord.id", back_populates="children"
+    # Relations
+    project: Mapped["Project"] = relationship(back_populates="records")
+    parent: Mapped["ProjectRecord | None"] = relationship(remote_side="ProjectRecord.id", foreign_keys=[parent_id], overlaps="children")
+    children: Mapped[list["ProjectRecord"]] = relationship(foreign_keys=[parent_id], overlaps="parent")
+    assignees: Mapped[list["ProjectRecordAssignee"]] = relationship(back_populates="record", cascade="all, delete-orphan")
+    active_blockers: Mapped[list["ProjectRecordBlocker"]] = relationship(
+        back_populates="record",
+        primaryjoin="and_(ProjectRecordBlocker.record_id == ProjectRecord.id, ProjectRecordBlocker.resolved_at == None)",
+        viewonly=True,
     )
-    children: Mapped[list["ProjectRecord"]] = relationship(back_populates="parent")
-    assignees: Mapped[list["ProjectRecordAssignee"]] = relationship(
-        back_populates="record", cascade="all, delete-orphan"
-    )
-    blockers: Mapped[list["ProjectRecordBlocker"]] = relationship(
-        back_populates="record", cascade="all, delete-orphan"
+    comments: Mapped[list["Comment"]] = relationship(
+        back_populates="record",
+        primaryjoin="and_(Comment.entity_type == 'record', Comment.entity_id == foreign(ProjectRecord.id))",
+        foreign_keys="[Comment.entity_id]",
+        viewonly=True,
     )
 
 
 class ProjectRecordAssignee(Base):
     __tablename__ = "project_record_assignees"
+    __table_args__ = (UniqueConstraint("record_id", "user_id"),)
 
-    record_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("project_records.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), primary_key=True
-    )
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    record_id: Mapped[str] = mapped_column(ID, ForeignKey("project_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(ID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    assigned_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    record: Mapped[ProjectRecord] = relationship(back_populates="assignees")
-    user: Mapped[User] = relationship()
+    # Relations
+    record: Mapped["ProjectRecord"] = relationship(back_populates="assignees")
+    user: Mapped["User"] = relationship()
 
 
 class ProjectRecordBlocker(Base):
-    """Bloqueante externo de una entidad Scrum (texto markdown, no dependencia entre tareas)."""
-
     __tablename__ = "project_record_blockers"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    record_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("project_records.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    project_id: Mapped[str] = mapped_column(ID, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    record_id: Mapped[str] = mapped_column(ID, ForeignKey("project_records.id", ondelete="CASCADE"), nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    resolved_by: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True
-    )
+    created_by: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    resolved_by: Mapped[str | None] = mapped_column(ID, ForeignKey("users.id"))
+    resolution_note: Mapped[str | None] = mapped_column(Text)
 
-    record: Mapped["ProjectRecord"] = relationship(back_populates="blockers")
+    # Relations
+    record: Mapped["ProjectRecord"] = relationship(back_populates="active_blockers", foreign_keys=[record_id])
 
 
 class ProjectRecordDependency(Base):
+    """predecessor debe estar completado antes de que successor pueda avanzar."""
     __tablename__ = "project_record_dependencies"
-    __table_args__ = (
-        UniqueConstraint(
-            "predecessor_id", "successor_id", name="uq_record_dependency_pair"
-        ),
-    )
+    __table_args__ = (UniqueConstraint("predecessor_id", "successor_id"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    predecessor_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("project_records.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    successor_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("project_records.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    dependency_type: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="finish_to_start"
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    project_id: Mapped[str] = mapped_column(ID, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    predecessor_id: Mapped[str] = mapped_column(ID, ForeignKey("project_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    successor_id: Mapped[str] = mapped_column(ID, ForeignKey("project_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_by: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+
+# â”€â”€â”€ Scrum â€” ceremonias â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class ScrumCeremonySession(Base):
     __tablename__ = "scrum_ceremony_sessions"
-    __table_args__ = (
-        CheckConstraint(
-            "session_type IN ('daily', 'planning_poker', 'sprint_review', 'retro')",
-            name="chk_scrum_session_type",
-        ),
-        CheckConstraint(
-            "status IN ('planned', 'active', 'closed')",
-            name="chk_scrum_session_status",
-        ),
-    )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    sprint_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("project_records.id", ondelete="SET NULL"), nullable=True
-    )
-    session_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="planned")
-    facilitator_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    project_id: Mapped[str] = mapped_column(ID, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    # sprint_id: referencia al ProjectRecord de tipo sprint
+    sprint_id: Mapped[str | None] = mapped_column(ID, ForeignKey("project_records.id", ondelete="SET NULL"), index=True)
+    session_type: Mapped[str] = mapped_column(String(20), nullable=False)  # planning | daily | retro | review
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pendiente")  # pendiente | activa | cerrada
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_by: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    entries: Mapped[list["ScrumCeremonyEntry"]] = relationship(
-        back_populates="session", cascade="all, delete-orphan"
-    )
+    # Relations
+    entries: Mapped[list["ScrumCeremonyEntry"]] = relationship(back_populates="session", cascade="all, delete-orphan")
 
 
 class ScrumCeremonyEntry(Base):
     __tablename__ = "scrum_ceremony_entries"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    session_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("scrum_ceremony_sessions.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    author_user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    entry_type: Mapped[str] = mapped_column(String(32), nullable=False, default="note")
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    session_id: Mapped[str] = mapped_column(ID, ForeignKey("scrum_ceremony_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    author_id: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    entry_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    # payload: contenido libre segÃºn entry_type (standup, vote, retro_item, etc.)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    session: Mapped[ScrumCeremonySession] = relationship(back_populates="entries")
-
-
-class ProjectRole(Base):
-    """Rol configurable por proyecto (sistema o custom)."""
-    __tablename__ = "project_roles"
-    __table_args__ = (
-        UniqueConstraint("project_id", "slug", name="uq_project_role_slug"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    slug: Mapped[str] = mapped_column(String(40), nullable=False)
-    nombre: Mapped[str] = mapped_column(String(80), nullable=False)
-    descripcion: Mapped[str | None] = mapped_column(Text, nullable=True)
-    color: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    orden: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    project: Mapped[Project] = relationship(back_populates="roles")
-    capabilities: Mapped[list["ProjectRoleCapability"]] = relationship(
-        back_populates="role", cascade="all, delete-orphan"
-    )
-    members: Mapped[list["ProjectMember"]] = relationship(back_populates="role")
+    # Relations
+    session: Mapped["ScrumCeremonySession"] = relationship(back_populates="entries")
 
 
-class ProjectRoleCapability(Base):
-    __tablename__ = "project_role_capabilities"
-    __table_args__ = (
-        UniqueConstraint("role_id", "capability_key", name="uq_role_capability"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    role_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("project_roles.id", ondelete="CASCADE"), nullable=False
-    )
-    capability_key: Mapped[str] = mapped_column(String(80), nullable=False)
-
-    role: Mapped[ProjectRole] = relationship(back_populates="capabilities")
-
-
-class ProjectWorkflowDefinition(Base):
-    """Workflow versionado por tipo de entidad y proyecto."""
-    __tablename__ = "project_workflow_definitions"
-    __table_args__ = (
-        UniqueConstraint(
-            "project_id", "entity_type", "version", name="uq_project_workflow_version"
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    definition: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    project: Mapped[Project] = relationship(back_populates="workflow_definitions")
-
-
-class ProjectWorkbenchDefinition(Base):
-    """Workbenches (sidebar) configurables por proyecto."""
-    __tablename__ = "project_workbench_definitions"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-        unique=True,
-    )
-    definition: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
-
-    project: Mapped[Project] = relationship(back_populates="workbench_definition")
-
-
-class ProjectCommunicationRules(Base):
-    """Reglas de comunicación configurables por proyecto (Studio)."""
-    __tablename__ = "project_communication_rules"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-        unique=True,
-    )
-    definition: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
-
-    project: Mapped[Project] = relationship(back_populates="communication_rules")
-
-
-class ProjectConfigSnapshot(Base):
-    """Snapshots de configuración Studio (workflows, communication, workbenches)."""
-    __tablename__ = "project_config_snapshots"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    created_by: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-
-class ProjectMember(Base):
-    """Acceso por proyecto; un cliente puede ser member sin OrganizationMember (guest)."""
-    __tablename__ = "project_members"
-    __table_args__ = (
-        UniqueConstraint("project_id", "user_id", "role_id", name="uq_project_member"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    role_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("project_roles.id", ondelete="CASCADE"), nullable=False
-    )
-    joined_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    project: Mapped[Project] = relationship(back_populates="members")
-    user: Mapped[User] = relationship(back_populates="project_memberships")
-    role: Mapped[ProjectRole] = relationship(back_populates="members")
-
-
-class Comment(Base):
-    __tablename__ = "comments"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    entidad_tipo: Mapped[str] = mapped_column(String(20), nullable=False)
-    entidad_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    contenido: Mapped[str] = mapped_column(Text, nullable=False)
-    estado_momento: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    author: Mapped[User] = relationship(back_populates="comments")
-
+# â”€â”€â”€ Hub â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class HubEntry(Base):
     __tablename__ = "hub_entries"
-    __table_args__ = (
-        CheckConstraint(
-            "tipo IN ('update', 'note', 'shortcut', 'page', 'canvas')",
-            name="chk_hub_entry_tipo",
-        ),
-    )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    author_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    tipo: Mapped[str] = mapped_column(String(10), nullable=False)
-    titulo: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    contenido: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    visible_roles: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    record_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("project_records.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
-    )
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    project_id: Mapped[str] = mapped_column(ID, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    author_id: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(40), nullable=False)  # nota | decision | riesgo | documento
+    titulo: Mapped[str] = mapped_column(Text, nullable=False)
+    contenido: Mapped[str | None] = mapped_column(Text)  # Markdown
+    # record_id: si la entrada estÃ¡ vinculada a un record especÃ­fico
+    record_id: Mapped[str | None] = mapped_column(ID, ForeignKey("project_records.id", ondelete="SET NULL"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    project: Mapped[Project] = relationship(back_populates="hub_entries")
-    author: Mapped[User] = relationship(back_populates="hub_entries_authored")
-    linked_record: Mapped["ProjectRecord | None"] = relationship(
-        foreign_keys=[record_id]
-    )
 
+# â”€â”€â”€ Adjuntos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class Attachment(Base):
     __tablename__ = "attachments"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    url: Mapped[str] = mapped_column(String(500), nullable=False)
-    nombre_original: Mapped[str] = mapped_column(String(255), nullable=False)
-    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    tamano_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    uploaded_by: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    organization_id: Mapped[str] = mapped_column(ID, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    uploaded_by: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(127), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    uploader: Mapped[User] = relationship(back_populates="attachments_uploaded")
-    relations: Mapped[list[AttachmentRelation]] = relationship(
-        back_populates="attachment", cascade="all, delete-orphan"
-    )
+    # Relations
+    relations: Mapped[list["AttachmentRelation"]] = relationship(back_populates="attachment", cascade="all, delete-orphan")
 
 
 class AttachmentRelation(Base):
+    """PolimÃ³rfico: adjunta un archivo a cualquier entidad (record, hub_entry, comment)."""
     __tablename__ = "attachment_relations"
+    __table_args__ = (UniqueConstraint("attachment_id", "entity_type", "entity_id"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    attachment_id: Mapped[str] = mapped_column(ID, ForeignKey("attachments.id", ondelete="CASCADE"), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)   # record | hub_entry
+    entity_id: Mapped[str] = mapped_column(ID, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relations
+    attachment: Mapped["Attachment"] = relationship(back_populates="relations")
+
+
+# â”€â”€â”€ Comentarios â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class Comment(Base):
+    """PolimÃ³rfico: comentarios en records o hub_entries."""
+    __tablename__ = "comments"
+
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    project_id: Mapped[str] = mapped_column(ID, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    author_id: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)   # record | hub_entry
+    entity_id: Mapped[str] = mapped_column(ID, nullable=False, index=True)
+    contenido: Mapped[str] = mapped_column(Text, nullable=False)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relations (viewonly â€” join polimÃ³rfico)
+    record: Mapped["ProjectRecord | None"] = relationship(
+        back_populates="comments",
+        primaryjoin="and_(Comment.entity_type == 'record', Comment.entity_id == foreign(ProjectRecord.id))",
+        foreign_keys="[Comment.entity_id]",
+        viewonly=True,
     )
-    attachment_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("attachments.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    entidad_tipo: Mapped[str] = mapped_column(String(20), nullable=False)
-    entidad_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
-    attachment: Mapped[Attachment] = relationship(back_populates="relations")
 
+# â”€â”€â”€ Audit logs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("projects.id"), nullable=False
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
-    )
-    entidad_tipo: Mapped[str] = mapped_column(String(20), nullable=False)
-    entidad_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    accion: Mapped[str] = mapped_column(String(30), nullable=False)
-    campo: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    valor_anterior: Mapped[str | None] = mapped_column(Text, nullable=True)
-    valor_nuevo: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-    project: Mapped[Project] = relationship(back_populates="audit_logs")
-    user: Mapped[User] = relationship(back_populates="audit_logs")
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    organization_id: Mapped[str] = mapped_column(ID, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[str | None] = mapped_column(ID, ForeignKey("projects.id", ondelete="SET NULL"), index=True)
+    actor_id: Mapped[str] = mapped_column(ID, ForeignKey("users.id"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    entity_id: Mapped[str] = mapped_column(ID, nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(60), nullable=False)   # created | updated | deleted | transitioned
+    # changes: { field: [old, new] } para updates; { to_status } para transiciones
+    changes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 
-class Notification(Base):
-    __tablename__ = "notifications"
+# â”€â”€â”€ Preferencias de vista â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    tipo: Mapped[str] = mapped_column(String(30), nullable=False)
-    entidad_tipo: Mapped[str] = mapped_column(String(20), nullable=False)
-    entidad_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    leida: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    deep_link: Mapped[str | None] = mapped_column(Text, nullable=True)
-    message: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+class ProjectViewPreference(Base):
+    """Preferencias por usuario Ã— vista Ã— proyecto (filtros, columnas visibles, agrupaciÃ³n)."""
+    __tablename__ = "project_view_preferences"
+    __table_args__ = (UniqueConstraint("project_id", "user_id", "view_key"),)
 
-    user: Mapped[User] = relationship(back_populates="notifications")
-    project: Mapped[Project] = relationship(back_populates="notifications")
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=gen_uuid)
+    project_id: Mapped[str] = mapped_column(ID, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(ID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    view_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    # preferences: { filters, visible_columns, grouping, sort, ... }
+    preferences: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

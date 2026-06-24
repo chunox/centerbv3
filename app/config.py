@@ -1,52 +1,32 @@
-"""
-Configuración vía variables de entorno (.env).
-
-jwt_* define el token de sesión Bearer.
-"""
-from pathlib import Path
-from uuid import UUID
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_DB = (ROOT / "data" / "v3.db").resolve()
-_DEFAULT_UPLOADS = (ROOT / "data" / "uploads").resolve()
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    database_url: str = f"sqlite:///{_DEFAULT_DB.as_posix()}"
-    cors_origins: str = "*"
+    # Base de datos
+    # psycopg v3: usar postgresql+psycopg://
+    database_url: str = "sqlite:///./center_mvp1.db"
 
-    milestone_sync_enabled: bool = False
-    milestone_sync_actor_user_id: UUID | None = None
-    milestone_sync_hour: int = 2
-    milestone_sync_minute: int = 0
-
-    uploads_dir: str = _DEFAULT_UPLOADS.as_posix()
-    upload_max_bytes: int = 25 * 1024 * 1024
-
-    communication_rules_only: bool = True
-    jwt_secret: str = "center-v3-dev-secret-change-in-prod"
+    # JWT
+    jwt_secret: str = "CHANGE_ME_IN_PRODUCTION_USE_64_BYTES_HEX"
     jwt_algorithm: str = "HS256"
-    jwt_expire_minutes: int = 60 * 24 * 7
+    access_token_expire_minutes: int = 60
+    refresh_token_expire_days: int = 30
+
+    # Archivos adjuntos
+    upload_dir: str = "data/uploads"
+    upload_max_mb: int = 50
+
+    # CORS
+    cors_origins: list[str] = ["http://localhost:5173"]
+
+    # Entorno
+    environment: str = "development"
 
     @property
-    def uploads_path(self) -> Path:
-        path = Path(self.uploads_dir)
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    @property
-    def cors_origin_list(self) -> list[str]:
-        if self.cors_origins.strip() == "*":
-            return ["*"]
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
-
-    @property
-    def is_sqlite(self) -> bool:
-        return self.database_url.startswith("sqlite")
+    def is_dev(self) -> bool:
+        return self.environment == "development"
 
 
 settings = Settings()

@@ -1,436 +1,147 @@
-"""Motor de transiciones de workflow."""
+"""
+Motor de transiciones de workflow.
+
+Valida que:
+  1. La transición existe en el pack para el record_type.
+  2. El estado actual está en from_states.
+  3. El actor tiene el rol requerido.
+  4. Los gates se cumplen (not_blocked, dependency_satisfied).
+
+Si todo OK, aplica el nuevo estado y retorna el record actualizado.
+"""
 from __future__ import annotations
 
-import json
-import uuid
-from typing import Any
-
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.domain.records.types import RecordRef
+from app.domain.packs.definitions import get_pack, TEMPLATE_TO_PACK, TransitionDef
 from app.models.entities import Project, ProjectRecord
-from app.services.audit import record_audit_log
-from app.services.records.registry import registry
-from app.services.workflow.authorize import assert_any_capability, resolve_capability_keys
-from app.services.workflow.gates import check_transition_conditions, evaluate_gates
-from app.services.workflow.side_effects import run_side_effect
-from app.services.workflow.store import get_active_workflow
-from app.services.workflow.capabilities import (
-    get_effective_capabilities,
-    get_user_role_assignments,
-)
-
-PM_TASK_MOVE_ROLE_SLUGS = frozenset({"pm", "pm_tecnico"})
+from app.services.access import MemberContext, get_member_context, require_capability
+from app.services.blockers import has_active_blocker_on_chain, has_unsatisfied_dependencies
+from app.services.access_context import get_actor_role_slug
+from app.services.capability_map import capability_for_transition
+from app.services.workflow.side_effects import apply_side_effects
 
 
-def actor_can_pm_unrestricted_task_move(
-    db: Session,
-    project: Project,
-    actor_user_id: uuid.UUID,
-) -> bool:
-    """PM / PM técnico con kanban.task.move puede mover tareas a cualquier estado."""
-    from app.domain.capabilities import KANBAN_TASK_MOVE
-
-    roles = get_user_role_assignments(db, project.id, actor_user_id)
-    if not PM_TASK_MOVE_ROLE_SLUGS.intersection({r.slug for r in roles}):
-        return False
-    caps = get_effective_capabilities(db, project.id, actor_user_id)
-    return KANBAN_TASK_MOVE in caps
+class WorkflowError(HTTPException):
+    def __init__(self, detail: str) -> None:
+        super().__init__(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
 
 
-def _is_dynamic_target_transition(transition: dict[str, Any]) -> bool:
-    return bool(transition.get("dynamic_to")) or transition.get("to") == "*"
-
-
-def normalize_task_workflow_moves(defn: dict[str, Any]) -> dict[str, Any]:
-    """Quita move dinámico legacy cuando hay aristas explícitas (grafo kanban)."""
-    transitions = list(defn.get("transitions") or [])
-    explicit_moves = [
-        t
-        for t in transitions
-        if t.get("id") == "move"
-        and not _is_dynamic_target_transition(t)
-        and t.get("to")
-    ]
-    if not explicit_moves:
-        return defn
-    filtered = [
-        t
-        for t in transitions
-        if not (t.get("id") == "move" and _is_dynamic_target_transition(t))
-    ]
-    if len(filtered) == len(transitions):
-        return defn
-    return {**defn, "transitions": filtered}
-
-
-def _is_explicit_move_transition(transition: dict[str, Any]) -> bool:
-    return (
-        transition.get("id") == "move"
-        and not _is_dynamic_target_transition(transition)
-        and bool(transition.get("to"))
-    )
-
-
-def _actor_allowed_for_transition(
-    db: Session | None,
-    project: Project | None,
-    user_id: uuid.UUID | None,
-    transition: dict[str, Any],
-) -> bool:
-    if "allowed_role_slugs" in transition:
-        allowed = transition.get("allowed_role_slugs") or []
-        if not allowed:
-            return False
-    elif _is_explicit_move_transition(transition):
-        return False
-    else:
-        return True
-
-    if db is None or project is None or user_id is None:
-        return True
-    roles = get_user_role_assignments(db, project.id, user_id)
-    user_slugs = {r.slug for r in roles}
-    return bool(user_slugs.intersection(set(transition.get("allowed_role_slugs") or [])))
-
-
-def _find_transition(
-    workflow: dict[str, Any],
-    action_id: str,
-    current_state: str,
-    *,
-    db: Session | None = None,
-    project: Project | None = None,
-    target_state: str | None = None,
-    actor_user_id: uuid.UUID | None = None,
-) -> dict[str, Any] | None:
-    matches: list[dict[str, Any]] = []
-    for t in workflow.get("transitions", []):
-        if t.get("id") != action_id:
-            continue
-        from_states = t.get("from", [])
-        if current_state not in from_states and "*" not in from_states:
-            continue
-        if project is not None and not check_transition_conditions(
-            db, project, t.get("conditions")
-        ):
-            continue
-        if not _actor_allowed_for_transition(db, project, actor_user_id, t):
-            continue
-        matches.append(t)
-
-    if not matches:
-        return None
-
-    if target_state:
-        for t in matches:
-            if _is_dynamic_target_transition(t):
-                continue
-            if t.get("to") == target_state:
-                return t
-        for t in matches:
-            if _is_dynamic_target_transition(t):
-                return t
-        return None
-
-    return matches[0]
-
-
-def _state_meta(workflow: dict[str, Any], state_key: str) -> dict[str, Any]:
-    for s in workflow.get("states", []):
-        if s.get("key") == state_key:
-            return s
-    return {"key": state_key, "label": state_key, "category": "active", "badge": "info"}
-
-
-def validate_transition_form_fields(
-    transition: dict[str, Any],
-    form_data: dict[str, Any] | None,
-) -> None:
-    fields = transition.get("form_fields") or []
-    if not fields:
-        return
-    data = form_data or {}
-    for spec in fields:
-        field_id = spec.get("id")
-        if not field_id:
-            continue
-        required = bool(spec.get("required"))
-        value = data.get(field_id)
-        if required and (
-            value is None or (isinstance(value, str) and not value.strip())
-        ):
-            label = spec.get("label") or field_id
-            raise HTTPException(
-                status_code=422,
-                detail=f"Campo requerido: {label}",
-            )
-
-
-def apply_record_transition(
-    db: Session,
-    project: Project,
-    entity: Any,
-    *,
-    record_ref: RecordRef,
-    action_id: str,
-    actor_user_id: uuid.UUID,
-    target_state: str | None = None,
-    form_data: dict[str, Any] | None = None,
-    side_effect_context: dict[str, Any] | None = None,
-) -> str:
-    entity_type = record_ref.record_type
-    from app.models.entities import ProjectRecord
-
-    record_entity = entity if isinstance(entity, ProjectRecord) else db.get(ProjectRecord, record_ref.id)
-    if record_entity is not None:
-        from app.services.delivery.resolve import get_delivery_service
-
-        workflow = get_delivery_service(project).resolve_record_workflow(
-            db, project, record_entity
-        )
-    else:
-        workflow = get_active_workflow(db, project.id, entity_type)
-    if workflow is None:
-        raise HTTPException(status_code=500, detail=f"Workflow '{entity_type}' no configurado")
-
-    current = getattr(entity, "estado", None)
-    if current is None:
-        raise HTTPException(status_code=409, detail="Entidad sin estado")
-
-    pm_task_override = (
-        entity_type == "task"
-        and action_id == "move"
-        and target_state
-        and actor_can_pm_unrestricted_task_move(db, project, actor_user_id)
-    )
-
-    if pm_task_override:
-        from app.domain.capabilities import KANBAN_TASK_MOVE
-
-        assert_any_capability(db, project.id, actor_user_id, [KANBAN_TASK_MOVE])
-        valid_states = {s["key"] for s in workflow.get("states", [])}
-        if target_state not in valid_states:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Estado '{target_state}' no válido en workflow",
-            )
-        transition = {"id": "move", "dynamic_to": True, "side_effects": [], "gates": []}
-        nuevo = target_state
-    else:
-        transition = _find_transition(
-            workflow,
-            action_id,
-            current,
-            db=db,
-            project=project,
-            target_state=target_state,
-            actor_user_id=actor_user_id,
-        )
-        if transition is None:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Transición '{action_id}' no permitida desde '{current}'",
-            )
-
-        required = resolve_capability_keys(transition.get("required_capabilities", []))
-        if required:
-            assert_any_capability(db, project.id, actor_user_id, required)
-
-        validate_transition_form_fields(transition, form_data)
-
-        evaluate_gates(
-            db,
-            gate_specs=transition.get("gates", []),
-            project=project,
-            entity=entity,
-            entity_type=entity_type,
-        )
-
-        if transition.get("dynamic_to") and target_state:
-            nuevo = target_state
-        else:
-            nuevo = transition.get("to")
-        if nuevo == "*":
-            if not target_state:
-                raise HTTPException(status_code=422, detail="Se requiere estado destino")
-            nuevo = target_state
-
-        if nuevo is None:
-            raise HTTPException(status_code=500, detail="Transición sin estado destino")
-
-        valid_states = {s["key"] for s in workflow.get("states", [])}
-        if nuevo not in valid_states:
-            raise HTTPException(status_code=409, detail=f"Estado '{nuevo}' no válido en workflow")
-
-    anterior = current
-    entity.estado = nuevo
-
-    entidad_tipo = registry.audit_entidad_tipo(entity_type)
-    record_audit_log(
-        db,
-        project_id=project.id,
-        user_id=actor_user_id,
-        entidad_tipo=entidad_tipo,
-        entidad_id=entity.id,
-        accion="estado_changed",
-        campo="estado",
-        valor_anterior=anterior,
-        valor_nuevo=f"{nuevo} ({action_id})",
-    )
-    if form_data:
-        record_audit_log(
-            db,
-            project_id=project.id,
-            user_id=actor_user_id,
-            entidad_tipo=entidad_tipo,
-            entidad_id=entity.id,
-            accion="estado_changed",
-            campo="workflow_form_data",
-            valor_nuevo=json.dumps(form_data, ensure_ascii=False),
-        )
-
-    for effect in transition.get("side_effects", []):
-        run_side_effect(
-            db,
-            project=project,
-            entity=entity,
-            entity_type=entity_type,
-            action_id=action_id,
-            actor_user_id=actor_user_id,
-            effect=effect,
-            form_data=form_data,
-            side_effect_context=side_effect_context,
-            entidad_tipo=entidad_tipo,
-        )
-
-    if isinstance(entity, ProjectRecord):
-        from app.services.communication.engine import (
-            dispatch_state_entered_rules,
-            dispatch_transition_rules,
-        )
-
-        dispatch_transition_rules(
-            db,
-            project=project,
-            actor_user_id=actor_user_id,
-            record=entity,
-            action_id=action_id,
-            from_state=anterior,
-            to_state=nuevo,
-        )
-        dispatch_state_entered_rules(
-            db,
-            project=project,
-            actor_user_id=actor_user_id,
-            record=entity,
-            from_state=anterior,
-            to_state=nuevo,
-        )
-
-    return nuevo
-
-
-def apply_entity_transition(
-    db: Session,
-    project: Project,
-    entity: Any,
-    *,
+def _get_transition(
+    pack_key: str,
     entity_type: str,
     action_id: str,
-    actor_user_id: uuid.UUID,
-    target_state: str | None = None,
-    form_data: dict[str, Any] | None = None,
-    side_effect_context: dict[str, Any] | None = None,
-) -> str:
-    ref = registry.resolve_ref(db, entity_type, entity.id)
-    if ref is None:
-        ref = RecordRef(
-            id=entity.id,
-            record_type=entity_type,
-            project_id=project.id,
-        )
-    return apply_record_transition(
-        db,
-        project,
-        entity,
-        record_ref=ref,
-        action_id=action_id,
-        actor_user_id=actor_user_id,
-        target_state=target_state,
-        form_data=form_data,
-        side_effect_context=side_effect_context,
-    )
+    project_settings: dict,
+) -> TransitionDef:
+    pack = get_pack(pack_key)
+    if not pack:
+        raise WorkflowError("Pack no encontrado")
+
+    # Resolver workflow activo (puede ser variant)
+    variant_key = (project_settings or {}).get(f"{entity_type}_workflow")
+    variant_full = f"{entity_type}.{variant_key}" if variant_key else ""
+    wf = pack.workflow_variants.get(variant_full, None) if variant_key else None
+    if wf is None:
+        wf = pack.workflows.get(entity_type)
+    if wf is None:
+        raise WorkflowError(f"No hay workflow definido para '{entity_type}'")
+
+    for t in wf.transitions:
+        if t.action_id == action_id:
+            return t
+    raise WorkflowError(f"Acción '{action_id}' no existe en el workflow de '{entity_type}'")
 
 
-def get_available_transitions(
+def _check_gates(db: Session, record: ProjectRecord, transition: TransitionDef) -> None:
+    for gate in transition.gates:
+        if gate == "not_blocked":
+            if has_active_blocker_on_chain(db, record):
+                raise WorkflowError("El record tiene bloqueadores activos sin resolver (propio o heredado)")
+
+        elif gate == "dependency_satisfied":
+            if has_unsatisfied_dependencies(db, record):
+                raise WorkflowError("Hay dependencias previas sin completar")
+
+
+def _resolve_entity_type(record: ProjectRecord, pack_key: str) -> str:
+    """
+    Resuelve el entity_type para buscar el workflow.
+    Scrum guarda todos los records con record_type='task' + extra.scrum_role.
+    Si no hay workflow para el record_type directamente, intenta con scrum_role.
+    """
+    from app.domain.packs.definitions import PACK_DEFINITIONS
+
+    _SCRUM_ROLE_ENTITY = {
+        "epic": "epic",
+        "story": "story",
+        "dev": "dev_task",
+        "subtask": "subtask",
+    }
+
+    pack = PACK_DEFINITIONS.get(pack_key)
+    if pack and record.record_type not in pack.workflows:
+        scrum_role = (record.extra or {}).get("scrum_role")
+        if scrum_role:
+            entity = _SCRUM_ROLE_ENTITY.get(scrum_role, scrum_role)
+            if entity in pack.workflows:
+                return entity
+    return record.record_type
+
+
+def apply_transition(
     db: Session,
     project: Project,
-    entity: Any,
-    *,
-    entity_type: str,
-    user_id: uuid.UUID,
-) -> list[dict[str, Any]]:
-    from app.models.entities import ProjectRecord
+    record: ProjectRecord,
+    action_id: str,
+    actor_id: str,
+    member_ctx: MemberContext | None = None,
+) -> ProjectRecord:
+    """Aplica la transición y persiste el nuevo estado."""
+    pack_key = TEMPLATE_TO_PACK.get(str(project.template_slug), str(project.pack_slug))
+    settings: dict = project.settings or {}
 
-    if isinstance(entity, ProjectRecord):
-        from app.services.delivery.resolve import get_delivery_service
+    entity_type = _resolve_entity_type(record, pack_key)
+    transition = _get_transition(pack_key, entity_type, action_id, settings)
 
-        workflow = get_delivery_service(project).resolve_record_workflow(
-            db, project, entity
+    # Verificar estado actual
+    if record.status not in transition.from_states:
+        raise WorkflowError(
+            f"Estado actual '{record.status}' no permite la acción '{action_id}'. "
+            f"Estados válidos: {list(transition.from_states)}"
         )
-    else:
-        workflow = get_active_workflow(db, project.id, entity_type)
-    if workflow is None:
-        return []
 
-    if (
-        isinstance(entity, ProjectRecord)
-        and entity.record_type == "task"
-        and actor_can_pm_unrestricted_task_move(db, project, user_id)
-    ):
-        current = getattr(entity, "estado", "")
-        return [
-            {
-                "id": "move",
-                "label": str(_state_meta(workflow, s["key"]).get("label", s["key"])),
-                "to": s["key"],
-                "required_capabilities": [],
-            }
-            for s in workflow.get("states", [])
-            if s.get("key") and s["key"] != current
-        ]
+    ctx = member_ctx or get_member_context(db, actor_id, str(project.id))
 
-    current = getattr(entity, "estado", "")
-    caps = get_effective_capabilities(db, project.id, user_id)
-    available: list[dict[str, Any]] = []
-    for t in workflow.get("transitions", []):
-        from_states = t.get("from", [])
-        if current not in from_states and "*" not in from_states:
-            continue
-        if not check_transition_conditions(db, project, t.get("conditions")):
-            continue
-        if not _actor_allowed_for_transition(db, project, user_id, t):
-            continue
-        required = resolve_capability_keys(t.get("required_capabilities", []))
-        if required and not any(r in caps for r in required):
-            continue
-        available.append(
-            {
-                "id": t["id"],
-                "label": t.get("label", t["id"]),
-                "to": t.get("to"),
-                "required_capabilities": required,
-            }
-        )
-    return available
+    # Verificar rol (cualquiera de los roles del actor puede satisfacer)
+    if transition.required_roles:
+        actor_roles = ctx.role_slugs if ctx else set()
+        if not actor_roles and ctx:
+            actor_roles = {ctx.role_slug}
+        if not actor_roles:
+            actor_roles = {get_actor_role_slug(db, str(project.id), actor_id) or ""}
+        if not actor_roles.intersection(transition.required_roles):
+            primary = next(iter(actor_roles), "unknown")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Tu rol '{primary}' no puede ejecutar esta acción",
+            )
 
+    # Verificar capability
+    if ctx:
+        trans_cap = capability_for_transition(entity_type, action_id)
+        if trans_cap:
+            require_capability(ctx, trans_cap)
 
-def workflow_state_label(
-    db: Session, project_id: uuid.UUID, entity_type: str, state_key: str
-) -> str:
-    wf = get_active_workflow(db, project_id, entity_type)
-    if not wf:
-        return state_key
-    return _state_meta(wf, state_key).get("label", state_key)
+    # Verificar gates
+    _check_gates(db, record, transition)
+
+    # Aplicar transición
+    record.status = transition.to_state
+    db.flush()
+
+    # Side effects declarados en el pack
+    if transition.side_effects:
+        apply_side_effects(db, transition.side_effects, record, project)
+
+    return record

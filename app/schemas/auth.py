@@ -1,44 +1,40 @@
-from __future__ import annotations
-
-from uuid import UUID
-
-from pydantic import BaseModel, Field
-
-from app.schemas.organizations import OrganizationRead
-from app.schemas.users import UserRead
+from pydantic import BaseModel, EmailStr, Field
 
 
-class AuthRegister(BaseModel):
-    nombre: str = Field(min_length=1, max_length=100)
-    email: str = Field(min_length=3, max_length=255)
+class RegisterRequest(BaseModel):
+    nombre: str = Field(min_length=1, max_length=150)
+    email: EmailStr
     password: str = Field(min_length=8, max_length=128)
 
 
-class AuthLogin(BaseModel):
-    email: str
+class LoginRequest(BaseModel):
+    email: EmailStr
     password: str
 
 
-class AuthSwitchOrganization(BaseModel):
-    organization_id: UUID
-
-
-class AuthTokenResponse(BaseModel):
+class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    user: UserRead
-    organization_id: UUID | None = None
-    organizations: list[OrganizationRead] = []
 
 
-class AuthForgotPassword(BaseModel):
-    email: str = Field(min_length=3, max_length=255)
+class UserResponse(BaseModel):
+    id: str
+    nombre: str
+    email: str
+    avatar_url: str | None
+
+    model_config = {"from_attributes": True}
 
 
-class AuthResetPassword(BaseModel):
-    token: str = Field(min_length=16, max_length=64)
-    password: str = Field(min_length=8, max_length=128)
+class SessionResponse(BaseModel):
+    user: UserResponse
+    access_token: str
 
 
-class AuthMessageResponse(BaseModel):
-    message: str
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=128)

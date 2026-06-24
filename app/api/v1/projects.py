@@ -1,360 +1,305 @@
-"""
-API de proyectos y sub-recursos anidados (hitos, features, inbox, timeline…).
+﻿from datetime import date, datetime
 
-Todas las rutas exigen JWT; el actor se deriva del claim sub.
-"""
-from uuid import UUID
-
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.v1.auth_deps import get_current_actor_id
-from app.api.v1.deps import get_project_or_404
-from app.api.v1 import audit_logs as audit_logs_routes
-from app.api.v1 import hub_entries as hub_entries_routes
-from app.api.v1 import timeline as timeline_routes
+from app.api.v1.deps import get_current_actor_id
 from app.database import get_db
-from app.models.entities import Organization, Project, ProjectMember, User
-from app.services.organizations import (
-    list_guest_projects,
-    list_org_projects,
-    require_org_admin,
-    user_has_project_access,
-)
-from app.domain.capabilities import WORKBENCH_TEAM
-from app.schemas.inbox_summary import ProjectInboxSummaryRead
-from app.schemas.pm_portfolio import PmPortfolioRead
-from app.schemas.portfolio_team_workload import PortfolioTeamWorkloadRead
-from app.schemas.team_board import TeamBoardRead
-from app.schemas.projects import (
-    ProjectCreate,
-    ProjectEstadoAction,
-    ProjectMemberCreate,
-    ProjectMemberRead,
-    ProjectMemberUpdate,
-    ProjectRead,
-    ProjectUpdate,
-)
-from app.services.inbox_summary import build_inbox_summary
-from app.services.pm_portfolio import build_pm_portfolio
-from app.services.portfolio_team_workload import build_portfolio_team_workload
-from app.services.team_board import build_team_board
-from app.services.workflow.authorize import assert_capability
-from app.services.deletions import delete_project
-from app.services.project_members import (
-    add_project_member,
-    member_to_read,
-    remove_project_member,
-    update_project_member_role,
-)
-from app.domain.project_templates import get_template, pack_slug_for_template
-from app.services.packs import seed_project_from_pack
-from app.services.delivery.resolve import resolve_effective_pack_slug
-from app.domain.packs.catalog import get_pack_manifest
-from app.services.projects import apply_project_estado_action, update_project
+from app.models.entities import Project, ProjectMember, ProjectRole, User
+from app.schemas.access_context import AccessContextResponse
+from app.schemas.projects import ProjectResponse
+from app.services.access_context import build_access_context
+from app.services.access import require_capability, require_project_member
+from app.services.audit import write_audit
 
-router = APIRouter(prefix="/projects", tags=["projects"])
-router.include_router(hub_entries_routes.router)
-router.include_router(audit_logs_routes.router)
-router.include_router(timeline_routes.router)
+router = APIRouter()
 
 
-@router.get("", response_model=list[ProjectRead])
-def list_projects(
-    organization_id: UUID | None = Query(
-        default=None,
-        description="Proyectos de la organización activa",
-    ),
-    guest: bool = Query(
-        default=False,
-        description="Proyectos invitados (project_member sin organization_member)",
-    ),
-    limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    if guest:
-        projects = list_guest_projects(db, actor_user_id)
-        return projects[offset : offset + limit]
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
-    if organization_id is not None:
-        projects = list_org_projects(db, organization_id, actor_user_id)
-        return projects[offset : offset + limit]
-
-    stmt = select(Project).order_by(Project.created_at.desc())
-    stmt = (
-        stmt.join(ProjectMember, ProjectMember.project_id == Project.id)
-        .where(ProjectMember.user_id == actor_user_id)
-        .distinct()
-    )
-    stmt = stmt.offset(offset).limit(limit)
-    return list(db.scalars(stmt))
-
-
-@router.get("/pm-portfolio", response_model=PmPortfolioRead)
-def get_pm_portfolio(
-    organization_id: UUID,
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    return build_pm_portfolio(db, organization_id, actor_user_id)
-
-
-@router.get("/pm-portfolio/team-workload", response_model=PortfolioTeamWorkloadRead)
-def get_pm_portfolio_team_workload(
-    organization_id: UUID,
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    return build_portfolio_team_workload(db, organization_id, actor_user_id)
-
-
-@router.post("", response_model=ProjectRead, status_code=201)
-def create_project(
-    payload: ProjectCreate,
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    creator = db.get(User, actor_user_id)
-    if not creator:
-        raise HTTPException(status_code=404, detail="Usuario creador no encontrado")
-
-    org = db.get(Organization, payload.organization_id)
-    if not org:
-        raise HTTPException(status_code=404, detail="Organización no encontrada")
-    require_org_admin(db, payload.organization_id, actor_user_id)
-
-    pack_slug = payload.pack_slug or "software"
-    if pack_slug == "software":
-        template_slug = payload.template_slug or "t1_cliente_clasico"
-        tpl = get_template(template_slug)
-        pack_slug = tpl.pack_slug
-    else:
-        template_slug = payload.template_slug or "t1_cliente_clasico"
-        tpl = get_template(template_slug)
-        pack_slug = resolve_effective_pack_slug(pack_slug, template_slug)
-    fields = payload.model_dump(
-        exclude={"template_slug", "tipo", "pack_slug", "project_structure"}
-    )
-    project_structure = payload.project_structure
-    project = Project(
-        **fields,
-        template_slug=template_slug,
-        pack_slug=pack_slug,
-        created_by=actor_user_id,
-    )
-    db.add(project)
-    db.flush()
-
-    try:
-        roles = seed_project_from_pack(
-            db,
-            project,
-            pack_slug,
-            template_slug=template_slug,
-            project_structure=project_structure,
-            initial_created_by=actor_user_id if project_structure else None,
-        )
-    except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    manifest = get_pack_manifest(pack_slug)
-    creator_key = tpl.creator_role if pack_slug in (
-        "software",
-        "software-waterfall",
-        "software-scrum",
-    ) else (
-        manifest.roles[0].slug if manifest and manifest.roles else "owner"
-    )
-    creator_role = roles.get(creator_key)
-    if not creator_role:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Pack sin rol creador: {creator_key}",
-        )
-    db.add(
-        ProjectMember(
-            project_id=project.id,
-            user_id=actor_user_id,
-            role_id=creator_role.id,
-        )
-    )
-    db.commit()
-    db.refresh(project)
+def get_project_or_404(db: Session, project_id: str) -> Project:
+    project = db.query(Project).filter(Project.id == str(project_id)).first()
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado")
     return project
 
 
-@router.get("/{project_id}", response_model=ProjectRead)
+# ─── Schemas ─────────────────────────────────────────────────────────────────
+
+class CreateProjectRequest(BaseModel):
+    nombre: str
+    pack_slug: str
+    template_slug: str
+    delivery_mode: str
+    descripcion: str | None = None
+    fecha_inicio: date | None = None
+    fecha_fin: date | None = None
+
+
+class UpdateProjectRequest(BaseModel):
+    nombre: str | None = None
+    descripcion: str | None = None
+    fecha_inicio: date | None = None
+    fecha_fin: date | None = None
+
+
+class ProjectSettingsRequest(BaseModel):
+    effort_unit: str | None = None
+    hours_per_story_point: float | None = None
+
+
+class AddProjectMemberRequest(BaseModel):
+    user_id: str | None = None
+    email: str | None = None     # alternativa a user_id: busca por email
+    role_slug: str
+
+
+class ProjectMemberResponse(BaseModel):
+    membership_id: str
+    user_id: str
+    nombre: str
+    email: str
+    avatar_url: str | None
+    role_id: str
+    role_name: str
+    role_slug: str
+    joined_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ─── Endpoints ───────────────────────────────────────────────────────────────
+
+@router.get("/{project_id}", response_model=ProjectResponse)
 def get_project(
-    project_id: UUID,
-    actor_user_id: UUID = Depends(get_current_actor_id),
+    project_id: str,
     db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
 ):
-    project = get_project_or_404(project_id, db)
-    if not user_has_project_access(db, project, actor_user_id):
-        raise HTTPException(status_code=403, detail="Sin acceso al proyecto")
-    return project
-
-
-@router.get("/{project_id}/inbox-summary", response_model=ProjectInboxSummaryRead)
-def get_project_inbox_summary(
-    project_id: UUID,
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    project = get_project_or_404(project_id, db)
-    return build_inbox_summary(db, project, viewer_user_id=actor_user_id)
-
-
-@router.get("/{project_id}/team-board", response_model=TeamBoardRead)
-def get_project_team_board(
-    project_id: UUID,
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    project = get_project_or_404(project_id, db)
-    if not user_has_project_access(db, project, actor_user_id):
-        raise HTTPException(status_code=403, detail="Sin acceso al proyecto")
-    assert_capability(db, project.id, actor_user_id, WORKBENCH_TEAM)
-    return build_team_board(db, project)
-
-
-@router.patch("/{project_id}", response_model=ProjectRead)
-def patch_project(
-    project_id: UUID,
-    payload: ProjectUpdate,
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    project = get_project_or_404(project_id, db)
-    update_project(db, project, payload, actor_user_id=actor_user_id)
-    db.commit()
-    db.refresh(project)
-    return project
-
-
-@router.delete("/{project_id}", status_code=204)
-def remove_project(
-    project_id: UUID,
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    project = get_project_or_404(project_id, db)
-    delete_project(db, project, actor_user_id=actor_user_id)
-    db.commit()
-
-
-@router.post("/{project_id}/actions", response_model=ProjectRead)
-def perform_project_action(
-    project_id: UUID,
-    payload: ProjectEstadoAction,
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    project = get_project_or_404(project_id, db)
-    apply_project_estado_action(
-        db,
-        project,
-        action=payload.action,
-        actor_user_id=actor_user_id,
+    """Detalle básico de un proyecto."""
+    project = get_project_or_404(db, project_id)
+    require_project_member(db, actor_id, project_id)
+    return ProjectResponse(
+        id=project.id,
+        org_id=project.organization_id,
+        name=project.nombre,
+        description=project.descripcion,
+        pack_slug=project.pack_slug,
+        template_slug=project.template_slug,
+        delivery_mode=project.delivery_mode,
+        estado=project.estado,
+        fecha_inicio=project.fecha_inicio,
+        fecha_fin=project.fecha_fin,
+        created_at=project.created_at,
+        updated_at=project.updated_at,
     )
-    db.commit()
-    db.refresh(project)
-    return project
 
 
-@router.get("/{project_id}/members", response_model=list[ProjectMemberRead])
+@router.get("/{project_id}/access-context", response_model=AccessContextResponse)
+def access_context(
+    project_id: str,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    """
+    Bundle de runtime para el frontend.
+    Capabilities, workbenches, entity_types, workflows según (pack, template, rol del actor).
+    Solo accesible para miembros del proyecto.
+    """
+    project = get_project_or_404(db, project_id)
+    require_project_member(db, actor_id, project_id)
+    return build_access_context(db, project, actor_id)
+
+
+@router.get("/{project_id}/members", response_model=list[ProjectMemberResponse])
 def list_project_members(
-    project_id: UUID,
-    actor_user_id: UUID = Depends(get_current_actor_id),
+    project_id: str,
     db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
 ):
-    project = get_project_or_404(project_id, db)
-    if not user_has_project_access(db, project, actor_user_id):
-        raise HTTPException(status_code=403, detail="Sin acceso al proyecto")
-    from sqlalchemy.orm import joinedload
-
-    stmt = (
-        select(ProjectMember)
-        .options(joinedload(ProjectMember.role))
-        .where(ProjectMember.project_id == project_id)
-        .order_by(ProjectMember.joined_at.desc())
+    """Lista miembros del proyecto con su rol."""
+    get_project_or_404(db, project_id)
+    require_project_member(db, actor_id, project_id)
+    rows = (
+        db.query(ProjectMember, User, ProjectRole)
+        .join(User, User.id == ProjectMember.user_id)
+        .join(ProjectRole, ProjectRole.id == ProjectMember.role_id)
+        .filter(ProjectMember.project_id == str(project_id))
+        .order_by(User.nombre)
+        .all()
     )
-    return [member_to_read(m) for m in db.scalars(stmt)]
+    return [
+        ProjectMemberResponse(
+            membership_id=m.id,
+            user_id=u.id,
+            nombre=u.nombre,
+            email=u.email,
+            avatar_url=u.avatar_url,
+            role_id=r.id,
+            role_name=r.nombre,
+            role_slug=r.slug,
+            joined_at=m.joined_at,
+        )
+        for m, u, r in rows
+    ]
 
 
-@router.post(
-    "/{project_id}/members", response_model=ProjectMemberRead, status_code=201
-)
-def add_project_member_endpoint(
-    project_id: UUID,
-    payload: ProjectMemberCreate,
-    actor_user_id: UUID = Depends(get_current_actor_id),
+@router.patch("/{project_id}", response_model=ProjectResponse)
+def update_project(
+    project_id: str,
+    body: UpdateProjectRequest,
     db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
 ):
-    project = get_project_or_404(project_id, db)
-    user = db.get(User, payload.user_id)
+    """Actualiza nombre, descripción y fechas del proyecto."""
+    project = get_project_or_404(db, project_id)
+    ctx = require_project_member(db, actor_id, project_id)
+    require_capability(ctx, "workbench.settings")
+    if body.nombre is not None:
+        project.nombre = body.nombre
+    if body.descripcion is not None:
+        project.descripcion = body.descripcion
+    if body.fecha_inicio is not None:
+        project.fecha_inicio = body.fecha_inicio
+    if body.fecha_fin is not None:
+        project.fecha_fin = body.fecha_fin
+    db.commit()
+    db.refresh(project)
+    return ProjectResponse(
+        id=project.id, org_id=project.organization_id, name=project.nombre,
+        description=project.descripcion, pack_slug=project.pack_slug,
+        template_slug=project.template_slug, delivery_mode=project.delivery_mode,
+        estado=project.estado, fecha_inicio=project.fecha_inicio,
+        fecha_fin=project.fecha_fin, created_at=project.created_at, updated_at=project.updated_at,
+    )
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def archive_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    """Soft delete: marca el proyecto como archivado."""
+    project = get_project_or_404(db, project_id)
+    ctx = require_project_member(db, actor_id, project_id)
+    if ctx.role_slug != "pm":
+        raise HTTPException(status_code=403, detail="Solo el PM puede archivar el proyecto")
+    project.estado = "archivado"
+    db.commit()
+
+
+@router.get("/{project_id}/settings")
+def get_project_settings(
+    project_id: str,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    project = get_project_or_404(db, project_id)
+    require_project_member(db, actor_id, project_id)
+    return project.settings or {}
+
+
+@router.patch("/{project_id}/settings")
+def update_project_settings(
+    project_id: str,
+    body: ProjectSettingsRequest,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    project = get_project_or_404(db, project_id)
+    ctx = require_project_member(db, actor_id, project_id)
+    require_capability(ctx, "workbench.settings")
+    current = dict(project.settings or {})
+    if body.effort_unit is not None:
+        current["effort_unit"] = body.effort_unit
+    if body.hours_per_story_point is not None:
+        current["hours_per_story_point"] = body.hours_per_story_point
+    project.settings = current
+    write_audit(
+        db, project=project, actor_id=actor_id,
+        entity_type="project", entity_id=str(project.id), action="settings_updated",
+        changes={"settings": current},
+    )
+    db.commit()
+    db.refresh(project)
+    return project.settings
+
+
+@router.post("/{project_id}/members", response_model=ProjectMemberResponse, status_code=status.HTTP_201_CREATED)
+def add_project_member(
+    project_id: str,
+    body: AddProjectMemberRequest,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    project = get_project_or_404(db, project_id)
+    ctx = require_project_member(db, actor_id, project_id)
+    require_capability(ctx, "member.add")
+    # Resolver usuario por user_id o email
+    if body.email:
+        user = db.query(User).filter(User.email == body.email.strip().lower()).first()
+    elif body.user_id:
+        user = db.query(User).filter(User.id == body.user_id).first()
+    else:
+        raise HTTPException(status_code=422, detail="Se requiere user_id o email")
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    try:
-        member = add_project_member(
-            db, project, payload, actor_user_id=actor_user_id
-        )
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail="Ese usuario ya tiene ese rol en el proyecto",
-        )
-    db.refresh(member)
-    return member_to_read(member)
-
-
-@router.patch(
-    "/{project_id}/members/{member_id}",
-    response_model=ProjectMemberRead,
-)
-def patch_project_member(
-    project_id: UUID,
-    member_id: UUID,
-    payload: ProjectMemberUpdate,
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    project = get_project_or_404(project_id, db)
-    member = db.get(ProjectMember, member_id)
-    if not member or member.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Miembro no encontrado")
-
-    update_project_member_role(
-        db, project, member, payload, actor_user_id=actor_user_id
+    role = db.query(ProjectRole).filter(
+        ProjectRole.project_id == str(project_id),
+        ProjectRole.slug == body.role_slug,
+    ).first()
+    if not role:
+        raise HTTPException(status_code=404, detail=f"Rol '{body.role_slug}' no existe en este proyecto")
+    existing = db.query(ProjectMember).filter(
+        ProjectMember.project_id == str(project_id),
+        ProjectMember.user_id == user.id,
+        ProjectMember.role_id == role.id,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="El usuario ya es miembro con este rol")
+    member = ProjectMember(project_id=str(project_id), user_id=user.id, role_id=role.id)
+    db.add(member)
+    write_audit(
+        db, project=project, actor_id=actor_id,
+        entity_type="member", entity_id=str(user.id), action="member_added",
+        changes={"email": user.email, "role_slug": body.role_slug},
     )
     db.commit()
     db.refresh(member)
-    return member_to_read(member)
-
-
-@router.delete(
-    "/{project_id}/members/{member_id}",
-    status_code=204,
-)
-def delete_project_member(
-    project_id: UUID,
-    member_id: UUID,
-    actor_user_id: UUID = Depends(get_current_actor_id),
-    db: Session = Depends(get_db),
-):
-    project = get_project_or_404(project_id, db)
-    member = db.get(ProjectMember, member_id)
-    if not member or member.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Miembro no encontrado")
-
-    remove_project_member(
-        db, project, member, actor_user_id=actor_user_id
+    return ProjectMemberResponse(
+        membership_id=member.id, user_id=user.id, nombre=user.nombre,
+        email=user.email, avatar_url=user.avatar_url,
+        role_id=role.id, role_name=role.nombre, role_slug=role.slug,
+        joined_at=member.joined_at,
     )
+
+
+@router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_project_member(
+    project_id: str,
+    user_id: str,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    get_project_or_404(db, project_id)
+    ctx = require_project_member(db, actor_id, project_id)
+    require_capability(ctx, "member.remove")
+    project = get_project_or_404(db, project_id)
+    if user_id == actor_id:
+        raise HTTPException(status_code=400, detail="No podés removerte a vos mismo")
+    members = db.query(ProjectMember).filter(
+        ProjectMember.project_id == str(project_id),
+        ProjectMember.user_id == user_id,
+    ).all()
+    if not members:
+        raise HTTPException(status_code=404, detail="Miembro no encontrado")
+    for m in members:
+        write_audit(
+            db, project=project, actor_id=actor_id,
+            entity_type="member", entity_id=str(user_id), action="member_removed",
+            changes={"membership_id": str(m.id)},
+        )
+        db.delete(m)
     db.commit()
