@@ -18,6 +18,7 @@ from app.models.entities import (
     User,
 )
 from app.services.blockers import has_active_blocker_on_chain, has_unsatisfied_dependencies
+from app.services.scrum.sprint_membership import is_in_product_backlog, record_sprint_id
 from app.services.workflow.side_effects import restore_story_to_backlog
 from app.schemas.records import (
     AssigneeResponse,
@@ -86,8 +87,10 @@ def _to_response(db: Session, record: ProjectRecord) -> RecordResponse:
         extra=record.extra or {},
         assignees=assignees,
         active_blockers=blockers,
-        is_blocked=has_active_blocker_on_chain(db, record),
+        is_blocked=record.status == "blocked" or has_active_blocker_on_chain(db, record),
         has_unsatisfied_dependencies=has_unsatisfied_dependencies(db, record),
+        sprint_id=record_sprint_id(db, record),
+        in_product_backlog=is_in_product_backlog(db, record),
         created_by=str(record.created_by),
         created_at=record.created_at,
         updated_at=record.updated_at,

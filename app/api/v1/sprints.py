@@ -20,8 +20,15 @@ from app.api.v1.projects import get_project_or_404
 from app.database import get_db
 from app.models.entities import ProjectRecord
 from app.schemas.records import RecordResponse
+from app.schemas.sprints import AssignEpicSprintBody, UnassignEpicsPreviewBody, UnassignEpicsPreviewResponse
+from app.services.scrum.epic_unassign import build_unassign_preview, unassign_epics_from_sprint
 from app.services.access import require_capability, require_project_member
 from app.services.audit import write_audit
+from app.services.scrum.sprint_membership import (
+    assign_epic_to_sprint,
+    assign_story_to_sprint,
+    unassign_story_from_sprint,
+)
 from app.services.records.store import _load_query, _to_response
 from app.services.workflow.engine import apply_transition
 from app.services.workflow.side_effects import resolve_incomplete_sprint_stories, restore_story_to_backlog
@@ -329,20 +336,79 @@ def assign_stories_to_sprint(
     ).all()
 
     for story in stories:
+        if (story.extra or {}).get("scrum_role") != "story":
+            continue
         if body.sprint_id:
-            # Guardar parent original y mover al sprint
-            if story.parent_id != body.sprint_id:
-                extra = {**(story.extra or {}), "original_parent_id": story.parent_id}
-                story.extra = extra
-                story.parent_id = body.sprint_id
-                story.status = "to_do"
+            assign_story_to_sprint(db, story, body.sprint_id)
         else:
-            restore_story_to_backlog(story)
+            unassign_story_from_sprint(db, story)
 
     write_audit(
         db, project=project, actor_id=actor_id,
         entity_type="sprint", entity_id=body.sprint_id or "",
         action="stories_assigned",
         changes={"story_ids": body.story_ids, "sprint_id": body.sprint_id},
+    )
+    db.commit()
+
+
+@router.post(
+    "/{project_id}/sprints/unassign-epics/preview",
+    response_model=UnassignEpicsPreviewResponse,
+)
+def preview_unassign_epics(
+    project_id: str,
+    body: UnassignEpicsPreviewBody,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    """Preview de historias afectadas al desasignar épicas del sprint (modal H)."""
+    get_project_or_404(db, project_id)
+    require_project_member(db, actor_id, project_id)
+    return build_unassign_preview(db, project_id, body.epic_ids)
+
+
+@router.post("/{project_id}/sprints/assign-epics", status_code=status.HTTP_204_NO_CONTENT)
+def assign_epics_to_sprint(
+    project_id: str,
+    body: AssignEpicSprintBody,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    """Asigna épicas al sprint vía extra.sprint_id. sprint_id=None desasigna (modal H)."""
+    project = get_project_or_404(db, project_id)
+    ctx = require_project_member(db, actor_id, project_id)
+    require_capability(ctx, "record.epic.transition.move")
+    if body.sprint_id:
+        _get_sprint_or_404(db, project_id, body.sprint_id)
+        epics = db.query(ProjectRecord).filter(
+            ProjectRecord.id.in_(body.epic_ids),
+            ProjectRecord.project_id == project_id,
+        ).all()
+        for epic in epics:
+            if (epic.extra or {}).get("scrum_role") != "epic":
+                continue
+            assign_epic_to_sprint(db, epic, body.sprint_id)
+    else:
+        unassign_epics_from_sprint(
+            db,
+            project,
+            body.epic_ids,
+            on_unassign_stories=body.on_unassign_stories,
+            on_unassign_children=body.on_unassign_children,
+            actor_id=actor_id,
+            member_ctx=ctx,
+        )
+
+    write_audit(
+        db, project=project, actor_id=actor_id,
+        entity_type="sprint", entity_id=body.sprint_id or "",
+        action="epics_assigned",
+        changes={
+            "epic_ids": body.epic_ids,
+            "sprint_id": body.sprint_id,
+            "on_unassign_stories": body.on_unassign_stories,
+            "on_unassign_children": body.on_unassign_children,
+        },
     )
     db.commit()

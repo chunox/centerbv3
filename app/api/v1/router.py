@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1 import auth, organizations, projects, members, records, blockers, sprints, ceremonies, hub, comments, attachments, activity, view_preferences
+from app.api.v1 import auth, organizations, projects, members, records, blockers, sprints, ceremonies, hub, comments, attachments, activity, view_preferences, scrum
 
 api_router = APIRouter()
 
@@ -11,6 +11,7 @@ api_router.include_router(members.router,          prefix="/users",        tags=
 api_router.include_router(records.router,          prefix="/projects",     tags=["records"])
 api_router.include_router(blockers.router,         prefix="/projects",     tags=["blockers"])
 api_router.include_router(sprints.router,          prefix="/projects",     tags=["sprints"])
+api_router.include_router(scrum.router,            prefix="/projects",     tags=["scrum"])
 api_router.include_router(ceremonies.router,       prefix="/projects",     tags=["ceremonies"])
 api_router.include_router(hub.router,              prefix="/projects",     tags=["hub"])
 api_router.include_router(comments.router,         prefix="/projects",     tags=["comments"])

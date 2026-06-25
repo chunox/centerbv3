@@ -4,6 +4,7 @@ seed_demo.py — Crea datos demo para desarrollo local.
 Proyectos:
   - Software Demo (waterfall, pack=software-waterfall, template=t3_interno_clasico)
   - Scrum Demo    (scrum,     pack=software-scrum,     template=t6_scrum_interno)
+    Incluye 6 épicas «Kanban QA — …» en Sprint 1 para pruebas manuales de modales.
 
 Uso:
     cd proyecto-central-backend-v3
@@ -20,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.database import get_engine, get_session_factory
 from app.models.entities import (
     Base, Organization, OrganizationMember, Project, ProjectMember, ProjectRecord,
-    ProjectRecordAssignee, ProjectRecordBlocker, ProjectRole, User,
+    ProjectRecordAssignee, ProjectRecordBlocker, ProjectRecordDependency, ProjectRole, User,
     ScrumCeremonySession, ScrumCeremonyEntry, HubEntry,
 )
 from app.services.auth_service import hash_password
@@ -352,6 +353,12 @@ def seed_scrum_records(db, project: Project, pm_id: str, users: dict):
     s1.fecha_fin    = date(2026, 6, 20)
     db.flush()
 
+    for epic in (e1, e2):
+        extra = dict(epic.extra or {})
+        extra["sprint_id"] = str(s1.id)
+        epic.extra = extra
+    db.flush()
+
     # ── Historias Sprint 1 ────────────────────────────────────────────────────
 
     h1 = _make_record(db, p, pm_id, "task", "Como usuario quiero registrarme con email",
@@ -560,6 +567,220 @@ def seed_scrum_records(db, project: Project, pm_id: str, users: dict):
     print("    + registros scrum creados")
 
 
+def _epic_in_sprint(
+    db,
+    project_id: str,
+    actor_id: str,
+    backlog_id: str,
+    sprint_id: str,
+    title: str,
+    status: str,
+    orden: int,
+    estimacion: float | None = None,
+) -> ProjectRecord:
+    return _make_record(
+        db, project_id, actor_id, "task", title, status, orden, backlog_id,
+        {"scrum_role": "epic", "sprint_id": str(sprint_id)}, estimacion,
+    )
+
+
+def _make_dependency(
+    db,
+    project_id: str,
+    predecessor_id: str,
+    successor_id: str,
+    created_by: str,
+) -> ProjectRecordDependency | None:
+    existing = db.query(ProjectRecordDependency).filter(
+        ProjectRecordDependency.predecessor_id == predecessor_id,
+        ProjectRecordDependency.successor_id == successor_id,
+    ).first()
+    if existing:
+        return existing
+    dep = ProjectRecordDependency(
+        project_id=project_id,
+        predecessor_id=predecessor_id,
+        successor_id=successor_id,
+        created_by=created_by,
+    )
+    db.add(dep)
+    db.flush()
+    return dep
+
+
+def _apply_blocker_and_sync(
+    db,
+    project_id: str,
+    record: ProjectRecord,
+    created_by: str,
+    description: str,
+) -> None:
+    from app.services.blockers.sync import sync_block_on_create
+
+    blocker = _make_blocker(db, project_id, record.id, created_by, description)
+    if blocker:
+        sync_block_on_create(db, record)
+        db.flush()
+
+
+def seed_scrum_kanban_qa_scenario(db, project: Project, pm_id: str, users: dict):
+    """
+    Épicas [QA] en Sprint 1 — cubren modales F3–F10 y columna blocked (SCRUM_KANBAN_MOVEMENTS).
+
+    | Épica | Caso manual |
+    | ----- | ----------- |
+    | Kanban QA — bloqueos y sprint | Columna blocked, cadena bloqueada, devolver (G) |
+    | Kanban QA — épica done | Modal épica→done (historias desalineadas) |
+    | Kanban QA — dependencias | Modal cascada parcial (deps) |
+    | Kanban QA — desasignar épica | Modal H (sacar épica del sprint) |
+    | Kanban QA — backlog bloqueado | Historia blocked bajo épica (product backlog) |
+    | Kanban QA — reabrir y cancel | Modales reabrir (F) y cancel hijos |
+    """
+    p = project.id
+    tl_id = users["tl@center.demo"].id
+    dev_id = users["dev@center.demo"].id
+    dev2_id = users["dev2@center.demo"].id
+    qa_id = users["qa@center.demo"].id
+
+    backlog = _find_record(db, p, "Product Backlog")
+    s1 = _find_record(db, p, "Sprint 1 - Auth & Registro")
+    if not s1 or not backlog:
+        return
+
+    # ── A: Bloqueos y sprint ─────────────────────────────────────────────────
+    e_a = _epic_in_sprint(
+        db, p, pm_id, backlog.id, s1.id,
+        "Kanban QA — bloqueos y sprint", "in_progress", 15, 18,
+    )
+
+    h_a1 = _story_in_sprint(
+        db, p, pm_id, s1.id, e_a.id,
+        "[QA] Historia bloqueada en sprint", "in_progress", 5, 5, (dev2_id,),
+    )
+    d_a1 = _dev(db, p, pm_id, h_a1.id, "[QA] Dev con bloqueo heredado", "to_do", 10, 3, (dev2_id,))
+    _sub(db, p, pm_id, d_a1.id, "[QA] Subtask con bloqueo heredado", "to_do", 10, 1, (dev2_id,))
+    _apply_blocker_and_sync(
+        db, p, h_a1, tl_id,
+        "**QA:** Dependencia externa sin resolver — bloquea historia y descendientes.",
+    )
+
+    h_a2 = _story_in_sprint(
+        db, p, pm_id, s1.id, e_a.id,
+        "[QA] Historia activa en sprint", "to_do", 15, 3, (dev_id,),
+    )
+    d_a2 = _dev(db, p, pm_id, h_a2.id, "[QA] Dev en progreso", "in_progress", 10, 2, (dev_id,))
+    _sub(db, p, pm_id, d_a2.id, "[QA] Subtask activa", "in_progress", 20, 1, (dev_id,))
+
+    h_a3 = _story_in_sprint(
+        db, p, pm_id, s1.id, e_a.id,
+        "[QA] Historia para devolver (modal G)", "in_progress", 25, 5, (dev_id,),
+    )
+    _dev(db, p, pm_id, h_a3.id, "[QA] Dev activo al devolver", "in_progress", 10, 2, (dev_id,))
+    _dev(db, p, pm_id, h_a3.id, "[QA] Dev en backlog al devolver", "backlog", 20, 1, (dev2_id,))
+
+    # ── B: Épica done (historias desalineadas) ─────────────────────────────────
+    e_b = _epic_in_sprint(
+        db, p, pm_id, backlog.id, s1.id,
+        "Kanban QA — épica done", "in_review", 16, 21,
+    )
+    _story_in_sprint(
+        db, p, pm_id, s1.id, e_b.id,
+        "[QA] Historia done (épica done)", "done", 10, 5, (dev_id,),
+    )
+    h_b2 = _story_in_sprint(
+        db, p, pm_id, s1.id, e_b.id,
+        "[QA] Historia in_progress (desalineada)", "in_progress", 20, 8, (dev2_id,),
+    )
+    _dev(db, p, pm_id, h_b2.id, "[QA] Dev pendiente épica done", "in_progress", 10, 3, (dev2_id,))
+    _story_in_sprint(
+        db, p, pm_id, s1.id, e_b.id,
+        "[QA] Historia to_do (desalineada)", "to_do", 30, 3, (dev_id,),
+    )
+
+    # ── C: Dependencias → cascada parcial ────────────────────────────────────
+    e_c = _epic_in_sprint(
+        db, p, pm_id, backlog.id, s1.id,
+        "Kanban QA — dependencias", "in_progress", 17, 12,
+    )
+    h_c1 = _story_in_sprint(
+        db, p, pm_id, s1.id, e_c.id,
+        "[QA] Historia con deps en devs", "in_review", 10, 8, (dev_id,),
+    )
+    d_c_pred = _dev(
+        db, p, pm_id, h_c1.id, "[QA] Dev predecesor (to_do)", "to_do", 10, 2, (dev_id,),
+    )
+    d_c_succ = _dev(
+        db, p, pm_id, h_c1.id, "[QA] Dev sucesor (bloqueado por dep)", "to_do", 20, 3, (dev2_id,),
+    )
+    _dev(db, p, pm_id, h_c1.id, "[QA] Dev listo para done", "in_review", 30, 2, (qa_id,))
+    _make_dependency(db, p, d_c_pred.id, d_c_succ.id, pm_id)
+
+    # ── D: Desasignar épica (modal H) ────────────────────────────────────────
+    e_d = _epic_in_sprint(
+        db, p, pm_id, backlog.id, s1.id,
+        "Kanban QA — desasignar épica", "to_do", 18, 14,
+    )
+    _story_in_sprint(
+        db, p, pm_id, s1.id, e_d.id,
+        "[QA] Historia sprint p/ desasignar A", "in_progress", 10, 5, (dev_id,),
+    )
+    h_d2 = _story_in_sprint(
+        db, p, pm_id, s1.id, e_d.id,
+        "[QA] Historia sprint p/ desasignar B", "to_do", 20, 3, (dev2_id,),
+    )
+    _dev(db, p, pm_id, h_d2.id, "[QA] Dev hijo desasignar", "in_progress", 10, 2, (dev2_id,))
+
+    # ── E: Backlog bloqueado (sin sprint) ─────────────────────────────────────
+    e_e = _make_record(
+        db, p, pm_id, "task", "Kanban QA — backlog bloqueado",
+        "backlog", 19, backlog.id, {"scrum_role": "epic"}, 10,
+    )
+    h_e1 = _make_record(
+        db, p, pm_id, "task", "[QA] Historia blocked en product backlog",
+        "backlog", 10, e_e.id, {"scrum_role": "story"}, 5,
+    )
+    _assign(db, h_e1, dev_id)
+    _dev(db, p, pm_id, h_e1.id, "[QA] Dev bajo historia backlog blocked", "to_do", 10, 2, (dev_id,))
+    _apply_blocker_and_sync(
+        db, p, h_e1, tl_id,
+        "**QA:** Bloqueo en product backlog — historia permanece bajo épica.",
+    )
+
+    # ── F: Reabrir y cancel ───────────────────────────────────────────────────
+    e_f = _epic_in_sprint(
+        db, p, pm_id, backlog.id, s1.id,
+        "Kanban QA — reabrir y cancel", "in_progress", 20, 16,
+    )
+    h_f1 = _story_in_sprint(
+        db, p, pm_id, s1.id, e_f.id,
+        "[QA] Historia done p/ reabrir", "done", 10, 5, (dev_id,),
+    )
+    _dev(db, p, pm_id, h_f1.id, "[QA] Dev done p/ reabrir hijo", "done", 10, 2, (dev_id,))
+
+    h_f2 = _story_in_sprint(
+        db, p, pm_id, s1.id, e_f.id,
+        "[QA] Historia p/ cancel con hijos", "in_progress", 20, 5, (dev2_id,),
+    )
+    d_f2 = _dev(db, p, pm_id, h_f2.id, "[QA] Dev activo p/ cancel rama", "in_progress", 10, 2, (dev2_id,))
+    _sub(db, p, pm_id, d_f2.id, "[QA] Subtask activa p/ cancel", "to_do", 20, 1, (dev2_id,))
+
+    # Épica blocked en sprint (desasignar vía modal H con épica bloqueada)
+    e_g = _epic_in_sprint(
+        db, p, pm_id, backlog.id, s1.id,
+        "Kanban QA — épica blocked", "to_do", 21, 8,
+    )
+    _apply_blocker_and_sync(
+        db, p, e_g, tl_id,
+        "**QA:** Épica bloqueada en sprint — desasignar solo vía modal H.",
+    )
+    _story_in_sprint(
+        db, p, pm_id, s1.id, e_g.id,
+        "[QA] Historia bajo épica blocked", "to_do", 10, 3, (dev_id,),
+    )
+
+    print("    + escenarios Kanban QA (6 épicas: bloqueos, épica done, deps, unassign, backlog, reabrir/cancel)")
+
+
 def _make_blocker(
     db,
     project_id: str,
@@ -613,15 +834,47 @@ def seed_waterfall_extras(db, project: Project, pm_id: str):
 
 
 def seed_scrum_extras(db, project: Project, pm_id: str, users: dict):
-    """Bloqueante activo en historia de password recovery."""
+    """Bloqueante activo en historia de password recovery (+ sync status=blocked)."""
+    from app.services.blockers.sync import sync_block_on_create
+
     p = project.id
     h3 = _find_record(db, p, "Como usuario quiero recuperar mi password")
     if h3:
-        _make_blocker(
+        blocker = _make_blocker(
             db, p, h3.id, users["tl@center.demo"].id,
             "**Bloqueo activo:** servicio SMTP no configurado en staging.",
         )
+        if blocker:
+            sync_block_on_create(db, h3)
     print("    + bloqueantes scrum")
+
+
+def seed_scrum_qa_hub(db, project: Project, author_id: str):
+    """Nota en el hub con guía rápida de QA Kanban."""
+    p = project.id
+    titulo = "Guía QA — Kanban y modales"
+    exists = db.query(HubEntry).filter(HubEntry.project_id == p, HubEntry.titulo == titulo).first()
+    if exists:
+        return
+    db.add(HubEntry(
+        project_id=p,
+        author_id=author_id,
+        tipo="nota",
+        titulo=titulo,
+        contenido=(
+            "Épicas prefijo **Kanban QA —** en Sprint 1 (Auth & Registro).\n\n"
+            "1. **épica done** → Completar épica en revisión (historias desalineadas).\n"
+            "2. **dependencias** → Completar historia en revisión con dev sucesor bloqueado por dep.\n"
+            "3. **bloqueos y sprint** → Columna Bloqueado; intentar mover padre con hijo blocked.\n"
+            "4. **desasignar épica** → Sacar épica del sprint (modal H).\n"
+            "5. **devolver (G)** → Devolver historia con devs activos desde Sprint Planning.\n"
+            "6. **reabrir y cancel** → Reabrir historia done; cancelar historia con hijos.\n"
+            "7. **backlog bloqueado** → Historia blocked bajo épica sin sprint.\n"
+            "Ver SCRUM_KANBAN_MOVEMENTS.md y SCRUM_KANBAN_FRONTEND_PLAN.md."
+        ),
+    ))
+    db.flush()
+    print("    + hub QA kanban")
 
 
 def seed_hub_entries(db, project: Project, author_id: str):
@@ -741,7 +994,9 @@ def seed(db):
         delivery_mode="scrum",
     )
     seed_scrum_records(db, scrum_project, pm_id, users)
+    seed_scrum_kanban_qa_scenario(db, scrum_project, pm_id, users)
     seed_scrum_extras(db, scrum_project, pm_id, users)
+    seed_scrum_qa_hub(db, scrum_project, pm_id)
     seed_hub_entries(db, scrum_project, pm_id)
     seed_ceremony_sessions(db, scrum_project, pm_id, users)
 

@@ -11,21 +11,17 @@ Si todo OK, aplica el nuevo estado y retorna el record actualizado.
 """
 from __future__ import annotations
 
-from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.domain.packs.definitions import get_pack, TEMPLATE_TO_PACK, TransitionDef
 from app.models.entities import Project, ProjectRecord
 from app.services.access import MemberContext, get_member_context, require_capability
-from app.services.blockers import has_active_blocker_on_chain, has_unsatisfied_dependencies
+from app.services.blockers import has_active_blocker_on_chain, has_blocked_descendant, has_unsatisfied_dependencies
 from app.services.access_context import get_actor_role_slug
 from app.services.capability_map import capability_for_transition
+from app.services.workflow.errors import WorkflowError
+from app.services.workflow.movement_rules import assert_movement_allowed
 from app.services.workflow.side_effects import apply_side_effects
-
-
-class WorkflowError(HTTPException):
-    def __init__(self, detail: str) -> None:
-        super().__init__(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
 
 
 def _get_transition(
@@ -33,6 +29,7 @@ def _get_transition(
     entity_type: str,
     action_id: str,
     project_settings: dict,
+    current_status: str | None = None,
 ) -> TransitionDef:
     pack = get_pack(pack_key)
     if not pack:
@@ -47,10 +44,14 @@ def _get_transition(
     if wf is None:
         raise WorkflowError(f"No hay workflow definido para '{entity_type}'")
 
-    for t in wf.transitions:
-        if t.action_id == action_id:
-            return t
-    raise WorkflowError(f"Acción '{action_id}' no existe en el workflow de '{entity_type}'")
+    matches = [t for t in wf.transitions if t.action_id == action_id]
+    if not matches:
+        raise WorkflowError(f"Acción '{action_id}' no existe en el workflow de '{entity_type}'")
+    if current_status is not None:
+        for t in matches:
+            if current_status in t.from_states:
+                return t
+    return matches[0]
 
 
 def _check_gates(db: Session, record: ProjectRecord, transition: TransitionDef) -> None:
@@ -62,6 +63,21 @@ def _check_gates(db: Session, record: ProjectRecord, transition: TransitionDef) 
         elif gate == "dependency_satisfied":
             if has_unsatisfied_dependencies(db, record):
                 raise WorkflowError("Hay dependencias previas sin completar")
+
+        elif gate == "sprint_assigned":
+            from app.services.scrum.sprint_membership import is_epic_in_sprint, parent_is_sprint
+
+            role = (record.extra or {}).get("scrum_role")
+            if role == "story" and not parent_is_sprint(db, record.parent_id):
+                raise WorkflowError("La historia no tiene sprint asignado")
+            if role == "epic" and not is_epic_in_sprint(record):
+                raise WorkflowError("La épica no tiene sprint asignado")
+
+        elif gate == "not_blocked_descendant":
+            if has_blocked_descendant(db, record):
+                raise WorkflowError(
+                    "No se puede reabrir: hay descendientes en estado bloqueado."
+                )
 
 
 def _resolve_entity_type(record: ProjectRecord, pack_key: str) -> str:
@@ -102,7 +118,7 @@ def apply_transition(
     settings: dict = project.settings or {}
 
     entity_type = _resolve_entity_type(record, pack_key)
-    transition = _get_transition(pack_key, entity_type, action_id, settings)
+    transition = _get_transition(pack_key, entity_type, action_id, settings, record.status)
 
     # Verificar estado actual
     if record.status not in transition.from_states:
@@ -132,6 +148,9 @@ def apply_transition(
         trans_cap = capability_for_transition(entity_type, action_id)
         if trans_cap:
             require_capability(ctx, trans_cap)
+
+    # Regla global de bloqueos (antes de gates por transición)
+    assert_movement_allowed(db, record, action_id)
 
     # Verificar gates
     _check_gates(db, record, transition)

@@ -50,7 +50,8 @@ def test_parent_blocker_blocks_child_transition(client: TestClient, project_with
 
     res = _transition(client, project_id, task["id"], "start", headers)
     assert res.status_code == 422
-    assert "bloqueador" in res.json()["detail"].lower()
+    detail = res.json()["detail"].lower()
+    assert "bloqueador" in detail or "blocked" in detail
 
 
 def test_resolved_parent_unblocks_child(client: TestClient, project_with_pm):
@@ -148,4 +149,13 @@ def test_record_response_is_blocked_inherited(client: TestClient, project_with_p
     assert get_res.status_code == 200
     data = get_res.json()
     assert data["is_blocked"] is True
+    assert data["status"] == "blocked"
+    assert data["extra"].get("blocked_by_inheritance") is True
     assert len(data["active_blockers"]) == 0
+
+    feature_res = client.get(
+        f"/api/v1/projects/{project_id}/records/{feature['id']}",
+        headers=headers,
+    ).json()
+    assert feature_res["status"] == "blocked"
+    assert len(feature_res["active_blockers"]) == 1

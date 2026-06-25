@@ -182,7 +182,7 @@ def test_qa_can_revisar_story(client: TestClient, db):
         headers=qa_headers,
     )
     assert res.status_code == 200
-    assert res.json()["status"] == "en_revision"
+    assert res.json()["status"] == "in_review"
 
 
 def test_qa_cannot_comprometer_story(client: TestClient, db):

@@ -68,18 +68,40 @@ def capability_for_transition(entity_type: str, action_id: str) -> str | None:
     if entity_type == "dev_task":
         if action_id == "cancel":
             return "record.dev_task.transition.cancel"
+        if action_id == "reabrir":
+            return "record.dev_task.transition.reabrir"
         if action_id in _KANBAN_MOVE_ACTIONS:
             return "record.dev_task.transition.move"
         return f"record.dev_task.transition.{action_id}"
 
     if entity_type == "subtask":
-        if action_id == "start":
-            return "record.subtask.transition.start"
-        if action_id == "complete":
-            return "record.subtask.transition.complete"
         if action_id == "cancel":
             return "record.subtask.transition.cancel"
+        if action_id == "reabrir":
+            return "record.subtask.transition.reabrir"
+        if action_id in _KANBAN_MOVE_ACTIONS:
+            return "record.subtask.transition.move"
         return None
+
+    if entity_type == "epic":
+        if action_id == "cancel":
+            return "record.epic.transition.cancel"
+        if action_id == "reabrir":
+            return "record.epic.transition.reabrir"
+        if action_id in _KANBAN_MOVE_ACTIONS:
+            return "record.epic.transition.move"
+        return None
+
+    if entity_type == "story":
+        if action_id == "cancelar":
+            return "record.story.transition.cancelar"
+        if action_id == "reabrir":
+            return "record.story.transition.reabrir"
+        if action_id in ("comprometer", "iniciar", "revisar", "completar"):
+            return f"record.story.transition.{action_id}"
+        if action_id == "devolver":
+            return "record.story.transition.devolver"
+        return f"record.story.transition.{action_id}"
 
     if entity_type == "sprint":
         return f"sprint.transition.{action_id}"

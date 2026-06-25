@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ─── Response ────────────────────────────────────────────────────────────────
@@ -39,6 +39,8 @@ class RecordResponse(BaseModel):
     active_blockers: list[BlockerResponse]
     is_blocked: bool = False
     has_unsatisfied_dependencies: bool = False
+    sprint_id: str | None = None
+    in_product_backlog: bool = False
     created_by: str
     created_at: datetime
     updated_at: datetime
@@ -92,11 +94,30 @@ class UpdateRecordRequest(BaseModel):
 class TransitionRequest(BaseModel):
     action_id: str
     cascade: Literal["none", "all"] = "none"
-    skip_blocked: bool = False
+    cascade_mode: Literal[
+        "none", "all", "movable_only", "movable_and_cancel_rest", "cancel_misaligned_stories",
+    ] = "none"
+    sprint_id: str | None = None
+    reopen_children: bool = False
+    cancel_children: Literal["none", "all"] = "none"
+    children_on_return: Literal["unchanged", "return_to_backlog", "cancel"] = "return_to_backlog"
+    skip_blocked: bool | None = Field(
+        default=None,
+        description="Deprecado — rechazado si true",
+    )
+
+    @model_validator(mode="after")
+    def reject_deprecated_skip_blocked(self) -> TransitionRequest:
+        if self.skip_blocked is True:
+            raise ValueError(
+                "skip_blocked está deprecado y ya no tiene efecto; resuelve los bloqueos antes de cascadar."
+            )
+        return self
 
 
 class TransitionPreviewRequest(BaseModel):
     action_id: str
+    sprint_id: str | None = None
 
 
 class CascadeChildPreview(BaseModel):
@@ -112,6 +133,12 @@ class CascadeChildPreview(BaseModel):
     reason: str | None = None
 
 
+class MisalignedStoryPreview(BaseModel):
+    id: str
+    title: str
+    status: str
+
+
 class CascadePreviewResponse(BaseModel):
     record_id: str
     title: str
@@ -122,6 +149,14 @@ class CascadePreviewResponse(BaseModel):
     action_id: str
     children: list[CascadeChildPreview]
     requires_confirmation: bool
+    requires_sprint_assignment: bool = False
+    active_sprint_id: str | None = None
+    epic_done_blocked: bool = False
+    stories_misaligned: list[MisalignedStoryPreview] = []
+    blocked_in_chain: bool = False
+    children_ahead: list[CascadeChildPreview] = []
+    epic_done_misaligned: bool = False
+    cascade_modes_available: list[str] = []
 
 
 class ReorderRequest(BaseModel):

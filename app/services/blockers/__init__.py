@@ -79,3 +79,32 @@ def has_unsatisfied_dependencies(db: Session, record: ProjectRecord) -> bool:
         .first()
     )
     return unsatisfied is not None
+
+
+from app.services.blockers.sync import (  # noqa: E402
+    apply_block_to_record,
+    cascade_block_to_descendants,
+    cascade_unblock_inherited,
+    clear_blockers_on_record,
+    has_blocked_descendant,
+    has_own_active_blocker,
+    restore_record_after_unblock,
+    sync_block_on_create,
+    sync_unblock_on_resolve,
+)
+
+__all__ = [
+    "DONE_PREDECESSOR_STATES",
+    "has_active_blocker_on_chain",
+    "get_blocking_ancestor_id",
+    "has_unsatisfied_dependencies",
+    "has_own_active_blocker",
+    "has_blocked_descendant",
+    "apply_block_to_record",
+    "restore_record_after_unblock",
+    "cascade_block_to_descendants",
+    "cascade_unblock_inherited",
+    "clear_blockers_on_record",
+    "sync_block_on_create",
+    "sync_unblock_on_resolve",
+]

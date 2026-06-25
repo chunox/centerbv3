@@ -83,37 +83,32 @@ def sync_from_features(db: Session, record: ProjectRecord, project: Project) -> 
     db.flush()
 
 
-def restore_story_to_backlog(story: ProjectRecord) -> None:
+def restore_story_to_backlog(story: ProjectRecord, db: Session | None = None) -> None:
     """Devuelve una historia al backlog de su épica y limpia el vínculo al sprint."""
+    from app.services.blockers import has_active_blocker_on_chain
+
     extra = dict(story.extra or {})
     original_epic = extra.pop("original_parent_id", None)
     story.extra = extra
     if original_epic:
         story.parent_id = original_epic
-    story.status = "backlog"
+    if db is not None and has_active_blocker_on_chain(db, story):
+        story.status = "blocked"
+    else:
+        story.status = "backlog"
 
 
 def reparent_to_sprint(db: Session, record: ProjectRecord, project: Project) -> None:
     """Story comprometida: parent_id → sprint activo."""
+    from app.services.scrum.sprint_membership import assign_story_to_sprint, get_active_sprint
+
     scrum_role = (record.extra or {}).get("scrum_role")
     if scrum_role != "story":
         return
-    active_sprint = (
-        db.query(ProjectRecord)
-        .filter(
-            ProjectRecord.project_id == str(project.id),
-            ProjectRecord.record_type == "sprint",
-            ProjectRecord.status == "activo",
-        )
-        .first()
-    )
+    active_sprint = get_active_sprint(db, str(project.id))
     if not active_sprint:
         return
-    if record.parent_id != active_sprint.id:
-        extra = {**(record.extra or {}), "original_parent_id": record.parent_id}
-        record.extra = extra
-        record.parent_id = active_sprint.id
-    db.flush()
+    assign_story_to_sprint(db, record, str(active_sprint.id))
 
 
 def resolve_incomplete_sprint_stories(
@@ -138,7 +133,7 @@ def resolve_incomplete_sprint_stories(
     for story in incomplete:
         action = resolutions.get(story.id, default_action)
         if action == "backlog":
-            restore_story_to_backlog(story)
+            restore_story_to_backlog(story, db)
         elif action == "cancel":
             story.status = "cancelled"
         elif action == "complete":
@@ -156,11 +151,12 @@ def handle_incomplete_stories(db: Session, record: ProjectRecord, project: Proje
 
 def reparent_to_backlog(db: Session, record: ProjectRecord, project: Project) -> None:
     """Story devuelta al backlog: restaura parent original (épica)."""
+    from app.services.scrum.sprint_membership import unassign_story_from_sprint
+
     scrum_role = (record.extra or {}).get("scrum_role")
     if scrum_role != "story":
         return
-    restore_story_to_backlog(record)
-    db.flush()
+    unassign_story_from_sprint(db, record)
 
 
 def _rollup_estimacion(db: Session, parent: ProjectRecord, project: Project) -> None:
@@ -204,6 +200,85 @@ def rollup_to_epic(db: Session, record: ProjectRecord, project: Project) -> None
         _rollup_estimacion(db, parent, project)
 
 
+def _scrub_block_extra(record: ProjectRecord) -> None:
+    from app.domain.scrum.states import EXTRA_BLOCKED_BY_INHERITANCE, EXTRA_STATUS_BEFORE_BLOCK
+
+    extra = dict(record.extra or {})
+    extra.pop(EXTRA_STATUS_BEFORE_BLOCK, None)
+    extra.pop(EXTRA_BLOCKED_BY_INHERITANCE, None)
+    record.extra = extra
+
+
+def clear_blockers_on_cancel(db: Session, record: ProjectRecord, project: Project) -> None:
+    """Resuelve blockers activos al cancelar (SCRUM_KANBAN_MOVEMENTS § cancel)."""
+    from app.services.blockers import clear_blockers_on_record
+
+    clear_blockers_on_record(db, str(record.id))
+    _scrub_block_extra(record)
+    db.flush()
+
+
+def cancel_all_descendants(
+    db: Session,
+    record: ProjectRecord,
+    project: Project,
+    *,
+    resolved_by: str | None = None,
+) -> None:
+    """Cascada cancel_children=all: descendientes → cancelled + limpiar blockers."""
+    from app.services.blockers import clear_blockers_on_record
+    from app.services.scrum.descendants import collect_scrum_descendants
+
+    role = (record.extra or {}).get("scrum_role")
+    if role in ("epic", "story", "dev"):
+        descendants = collect_scrum_descendants(db, record, str(project.id))
+    else:
+        queue = [str(record.id)]
+        seen: set[str] = set()
+        descendants = []
+        while queue:
+            pid = queue.pop(0)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            for child in _children(db, pid, str(project.id)):
+                descendants.append(child)
+                queue.append(str(child.id))
+
+    for desc in descendants:
+        if desc.status == "cancelled":
+            continue
+        desc.status = "cancelled"
+        clear_blockers_on_record(db, str(desc.id), resolved_by=resolved_by)
+        _scrub_block_extra(desc)
+    if descendants:
+        db.flush()
+
+
+def reopen_direct_done_children(db: Session, record: ProjectRecord, project: Project) -> None:
+    """Hijos directos en done → in_review (un paso). Cascada opcional al reabrir padre."""
+    from app.services.scrum.descendants import stories_for_epic
+
+    role = (record.extra or {}).get("scrum_role")
+    targets: list[ProjectRecord] = []
+    if role == "epic":
+        targets = [s for s in stories_for_epic(db, record) if s.status == "done"]
+    elif role == "story":
+        targets = [
+            c for c in _children(db, str(record.id), str(project.id))
+            if (c.extra or {}).get("scrum_role") == "dev" and c.status == "done"
+        ]
+    elif role == "dev":
+        targets = [
+            c for c in _children(db, str(record.id), str(project.id))
+            if (c.extra or {}).get("scrum_role") == "subtask" and c.status == "done"
+        ]
+    for child in targets:
+        child.status = "in_review"
+    if targets:
+        db.flush()
+
+
 _HANDLERS = {
     "sync_parent_feature": sync_parent_feature,
     "sync_parent_milestone": sync_parent_milestone,
@@ -214,6 +289,7 @@ _HANDLERS = {
     "rollup_to_story": rollup_to_story,
     "rollup_to_dev_task": rollup_to_dev_task,
     "handle_incomplete_stories": handle_incomplete_stories,
+    "clear_blockers_on_cancel": clear_blockers_on_cancel,
 }
 
 

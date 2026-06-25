@@ -51,8 +51,8 @@ def test_complete_tasks_syncs_feature_and_milestone(client: TestClient, db):
         headers=headers,
     ).json()
 
-    assert feature_after["status"] == "completado"
-    assert milestone_after["status"] == "completado"
+    assert feature_after["status"] == "done"
+    assert milestone_after["status"] == "done"
 
 
 def _scrum_pm(db):
@@ -145,7 +145,63 @@ def test_devolver_reparents_story_to_epic(client: TestClient, db):
         headers=headers,
     ).json()
     assert story_after["parent_id"] == epic["id"]
-    assert story_after["status"] == "product_backlog"
+    assert story_after["status"] == "backlog"
+
+
+def test_devolver_blocked_story_stays_blocked(client: TestClient, db):
+    project, headers = _scrum_pm(db)
+
+    epic = client.post(
+        f"/api/v1/projects/{project.id}/records",
+        json={"record_type": "task", "title": "Epic Block", "extra": {"scrum_role": "epic"}},
+        headers=headers,
+    ).json()
+    story = client.post(
+        f"/api/v1/projects/{project.id}/records",
+        json={
+            "record_type": "task",
+            "title": "Story Block",
+            "parent_id": epic["id"],
+            "extra": {"scrum_role": "story"},
+        },
+        headers=headers,
+    ).json()
+    sprint = client.post(
+        f"/api/v1/projects/{project.id}/sprints",
+        json={"title": "Sprint Block"},
+        headers=headers,
+    ).json()
+    client.post(f"/api/v1/projects/{project.id}/sprints/{sprint['id']}/activate", headers=headers)
+    client.post(
+        f"/api/v1/projects/{project.id}/records/{story['id']}/transition",
+        json={"action_id": "comprometer"},
+        headers=headers,
+    )
+    client.post(
+        f"/api/v1/projects/{project.id}/records/{story['id']}/transition",
+        json={"action_id": "iniciar"},
+        headers=headers,
+    )
+    client.post(
+        f"/api/v1/projects/{project.id}/records/{story['id']}/blockers",
+        json={"description": "impedimento sprint"},
+        headers=headers,
+    )
+    devolver_res = client.post(
+        f"/api/v1/projects/{project.id}/records/{story['id']}/transition",
+        json={"action_id": "devolver"},
+        headers=headers,
+    )
+    assert devolver_res.status_code == 200, devolver_res.text
+
+    story_after = client.get(
+        f"/api/v1/projects/{project.id}/records/{story['id']}",
+        headers=headers,
+    ).json()
+    assert story_after["parent_id"] == epic["id"]
+    assert story_after["status"] == "blocked"
+    assert story_after["in_product_backlog"] is True
+    assert story_after["is_blocked"] is True
 
 
 def test_rollup_dev_task_to_story(client: TestClient, db):
