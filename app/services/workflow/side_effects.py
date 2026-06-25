@@ -83,6 +83,16 @@ def sync_from_features(db: Session, record: ProjectRecord, project: Project) -> 
     db.flush()
 
 
+def restore_story_to_backlog(story: ProjectRecord) -> None:
+    """Devuelve una historia al backlog de su épica y limpia el vínculo al sprint."""
+    extra = dict(story.extra or {})
+    original_epic = extra.pop("original_parent_id", None)
+    story.extra = extra
+    if original_epic:
+        story.parent_id = original_epic
+    story.status = "backlog"
+
+
 def reparent_to_sprint(db: Session, record: ProjectRecord, project: Project) -> None:
     """Story comprometida: parent_id → sprint activo."""
     scrum_role = (record.extra or {}).get("scrum_role")
@@ -128,9 +138,7 @@ def resolve_incomplete_sprint_stories(
     for story in incomplete:
         action = resolutions.get(story.id, default_action)
         if action == "backlog":
-            original_epic = (story.extra or {}).get("original_parent_id")
-            story.parent_id = original_epic
-            story.status = "backlog"
+            restore_story_to_backlog(story)
         elif action == "cancel":
             story.status = "cancelled"
         elif action == "complete":
@@ -151,9 +159,7 @@ def reparent_to_backlog(db: Session, record: ProjectRecord, project: Project) ->
     scrum_role = (record.extra or {}).get("scrum_role")
     if scrum_role != "story":
         return
-    original = (record.extra or {}).get("original_parent_id")
-    if original:
-        record.parent_id = original
+    restore_story_to_backlog(record)
     db.flush()
 
 

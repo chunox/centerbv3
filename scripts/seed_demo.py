@@ -234,6 +234,74 @@ def _assign(db, record: ProjectRecord, *user_ids):
     db.flush()
 
 
+def _dev(
+    db,
+    project_id: str,
+    actor_id: str,
+    parent_id: str,
+    title: str,
+    status: str,
+    orden: int,
+    estimacion: float | None = None,
+    assignees: tuple = (),
+) -> ProjectRecord:
+    task = _make_record(
+        db, project_id, actor_id, "task", title, status, orden, parent_id,
+        {"scrum_role": "dev"}, estimacion,
+    )
+    if assignees:
+        _assign(db, task, *assignees)
+    return task
+
+
+def _sub(
+    db,
+    project_id: str,
+    actor_id: str,
+    parent_id: str,
+    title: str,
+    status: str,
+    orden: int,
+    estimacion: float | None = None,
+    assignees: tuple = (),
+) -> ProjectRecord:
+    task = _make_record(
+        db, project_id, actor_id, "task", title, status, orden, parent_id,
+        {"scrum_role": "subtask"}, estimacion,
+    )
+    if assignees:
+        _assign(db, task, *assignees)
+    return task
+
+
+def _story_in_sprint(
+    db,
+    project_id: str,
+    actor_id: str,
+    sprint_id: str,
+    epic_id: str,
+    title: str,
+    status: str,
+    orden: int,
+    estimacion: float | None = None,
+    assignees: tuple = (),
+) -> ProjectRecord:
+    story = _make_record(
+        db, project_id, actor_id, "task", title, status, orden, sprint_id,
+        {"scrum_role": "story", "original_parent_id": epic_id}, estimacion,
+    )
+    if assignees:
+        _assign(db, story, *assignees)
+    return story
+
+
+def _find_record(db, project_id: str, title: str) -> ProjectRecord | None:
+    return db.query(ProjectRecord).filter(
+        ProjectRecord.project_id == project_id,
+        ProjectRecord.title == title,
+    ).first()
+
+
 def seed_scrum_records(db, project: Project, pm_id: str, users: dict):
     """Sprints, epics, historias, dev tasks y subtareas para el proyecto scrum."""
     p      = project.id
@@ -376,14 +444,120 @@ def seed_scrum_records(db, project: Project, pm_id: str, users: dict):
     _make_record(db, p, pm_id, "task", "Como PM quiero ver el historial de actividad",      "backlog", 20, e4.id, {"scrum_role": "story"}, 5)
     _make_record(db, p, pm_id, "task", "Como usuario quiero ver los cambios de estado",     "backlog", 30, e4.id, {"scrum_role": "story"}, 3)
 
+    # ── Épicas adicionales ────────────────────────────────────────────────────
+    e5 = _make_record(db, p, pm_id, "task", "Integraciones y API publica",  "backlog", 50, backlog.id, {"scrum_role": "epic"}, 32)
+    e6 = _make_record(db, p, pm_id, "task", "Calidad y observabilidad",   "backlog", 60, backlog.id, {"scrum_role": "epic"}, 24)
+
+    # ── Subtareas en dev tasks existentes ─────────────────────────────────────
+    for title, subs in (
+        ("Endpoint POST /auth/register", (
+            ("Tests unitarios endpoint register", "done", 10, 1),
+            ("Documentar contrato OpenAPI", "done", 20, 1),
+        )),
+        ("Endpoint POST /auth/login", (
+            ("Rate limiting por IP", "done", 10, 1),
+            ("Logs de intentos fallidos", "done", 20, 0.5),
+        )),
+        ("Endpoint POST /auth/forgot-password", (
+            ("Template email HTML", "done", 10, 1),
+            ("Token expira en 1h", "done", 20, 0.5),
+        )),
+        ("Pantalla de perfil con avatar", (
+            ("Formulario edicion nombre", "in_progress", 10, 1),
+            ("Validacion email unico", "to_do", 20, 1),
+        )),
+        ("Endpoint GET /projects", (
+            ("Paginacion cursor-based", "to_do", 10, 1),
+            ("Filtros por pack y estado", "to_do", 20, 1.5),
+        )),
+        ("Endpoint GET /projects/{id}/access-context", (
+            ("Cache ETag 60s", "to_do", 10, 1),
+            ("Tests contrato access-context", "to_do", 20, 1),
+        )),
+    ):
+        parent = _find_record(db, p, title)
+        if parent:
+            for sub_title, sub_status, sub_orden, sub_hours in subs:
+                assignee = (dev2_id,) if "email" in sub_title or "SMTP" in sub_title else (dev_id,)
+                _sub(db, p, pm_id, parent.id, sub_title, sub_status, sub_orden, sub_hours, assignee)
+
+    if t_alembic:
+        _sub(db, p, pm_id, t_alembic.id, "Revision autogenerate script", "done", 30, 0.5, (dev2_id,))
+        _sub(db, p, pm_id, t_alembic.id, "Seed idempotente demo", "done", 40, 1, (dev_id,))
+
+    # ── Historia y dev tasks adicionales en Sprint 1 ──────────────────────────
+    h13 = _story_in_sprint(
+        db, p, pm_id, s1.id, e2.id,
+        "Como usuario quiero cambiar mi password", "to_do", 70, 3, (dev_id,),
+    )
+    t_chg_pwd = _dev(db, p, pm_id, h13.id, "Endpoint PATCH /users/me/password", "to_do", 10, 2, (dev_id,))
+    _sub(db, p, pm_id, t_chg_pwd.id, "Validacion password actual", "to_do", 10, 0.5, (dev_id,))
+    _sub(db, p, pm_id, t_chg_pwd.id, "Pantalla cambio password", "to_do", 20, 1.5, (dev_id,))
+
+    h14 = _story_in_sprint(
+        db, p, pm_id, s1.id, e1.id,
+        "Como usuario quiero cerrar sesion en todos los dispositivos", "to_do", 80, 5, (dev_id,),
+    )
+    t_logout = _dev(db, p, pm_id, h14.id, "Endpoint POST /auth/logout-all", "to_do", 10, 2, (dev_id,))
+    _dev(db, p, pm_id, h14.id, "Boton cerrar sesion global en perfil", "to_do", 20, 2, (dev2_id,))
+    _sub(db, p, pm_id, t_logout.id, "Invalidar refresh tokens en BD", "to_do", 10, 1, (dev_id,))
+    _sub(db, p, pm_id, t_logout.id, "Notificar sesiones activas por email", "to_do", 20, 1, (dev2_id,))
+
+    # ── Sprint 3 — pendiente ──────────────────────────────────────────────────
+    s3 = _make_record(db, p, pm_id, "sprint", "Sprint 3 - Integraciones", "pendiente", 30,
+                      extra={"goal": "Webhooks, API keys y exportacion de datos"})
+    s3.fecha_inicio = date(2026, 7, 7)
+    s3.fecha_fin    = date(2026, 7, 20)
+    db.flush()
+
+    h15 = _story_in_sprint(
+        db, p, pm_id, s3.id, e5.id,
+        "Como dev quiero consumir webhooks de eventos", "to_do", 10, 8, (dev_id,),
+    )
+    t_webhook = _dev(db, p, pm_id, h15.id, "Endpoint CRUD /webhooks", "to_do", 10, 3, (dev_id,))
+    _sub(db, p, pm_id, t_webhook.id, "Modelo WebhookSubscription", "to_do", 10, 1, (dev_id,))
+    _sub(db, p, pm_id, t_webhook.id, "Firma HMAC de payloads", "to_do", 20, 2, (dev_id,))
+    _sub(db, p, pm_id, t_webhook.id, "Retry con backoff exponencial", "to_do", 30, 1.5, (dev2_id,))
+
+    h16 = _story_in_sprint(
+        db, p, pm_id, s3.id, e5.id,
+        "Como PM quiero generar API keys", "to_do", 20, 5, (pm_id, dev_id),
+    )
+    t_apikey = _dev(db, p, pm_id, h16.id, "Endpoint POST /api-keys", "to_do", 10, 2, (dev_id,))
+    t_revoke = _dev(db, p, pm_id, h16.id, "Revocacion y rotacion de keys", "to_do", 20, 2, (dev2_id,))
+    _sub(db, p, pm_id, t_apikey.id, "Hash bcrypt de secret", "to_do", 10, 0.5, (dev_id,))
+    _sub(db, p, pm_id, t_apikey.id, "UI modal generar key", "to_do", 20, 1.5, (dev_id,))
+    _sub(db, p, pm_id, t_revoke.id, "Audit log de revocacion", "to_do", 10, 1, (dev2_id,))
+
+    h17 = _story_in_sprint(
+        db, p, pm_id, s3.id, e6.id,
+        "Como PM quiero exportar registros a CSV", "to_do", 30, 5, (pm_id,),
+    )
+    t_export = _dev(db, p, pm_id, h17.id, "Servicio export CSV async", "to_do", 10, 3, (dev2_id,))
+    _dev(db, p, pm_id, h17.id, "Boton export en listados", "to_do", 20, 2, (dev_id,))
+    _sub(db, p, pm_id, t_export.id, "Streaming de filas grandes", "to_do", 10, 1.5, (dev2_id,))
+    _sub(db, p, pm_id, t_export.id, "Job en cola + notificacion", "to_do", 20, 1.5, (dev2_id,))
+
+    # ── Historias adicionales en Sprint 2 ─────────────────────────────────────
+    h18 = _story_in_sprint(
+        db, p, pm_id, s2.id, e2.id,
+        "Como PM quiero invitar miembros al proyecto", "to_do", 40, 5, (pm_id,),
+    )
+    t_invite = _dev(db, p, pm_id, h18.id, "Endpoint POST /projects/{id}/members", "to_do", 10, 2, (dev_id,))
+    _dev(db, p, pm_id, h18.id, "Modal invitar por email", "to_do", 20, 2, (dev2_id,))
+    _sub(db, p, pm_id, t_invite.id, "Email de invitacion con token", "to_do", 10, 1, (dev_id,))
+    _sub(db, p, pm_id, t_invite.id, "Asignacion de rol al aceptar", "to_do", 20, 1, (dev_id,))
+
+    # ── Backlog adicional ─────────────────────────────────────────────────────
+    _make_record(db, p, pm_id, "task", "Como dev quiero filtrar el backlog por epica",       "backlog", 60, e3.id, {"scrum_role": "story"}, 3)
+    _make_record(db, p, pm_id, "task", "Como dev quiero crear subtareas desde el kanban",    "backlog", 70, e3.id, {"scrum_role": "story"}, 2)
+    _make_record(db, p, pm_id, "task", "Como PM quiero configurar unidades de esfuerzo",      "backlog", 80, e3.id, {"scrum_role": "story"}, 2)
+    _make_record(db, p, pm_id, "task", "Como dev quiero integrar con Slack",                 "backlog", 10, e5.id, {"scrum_role": "story"}, 13)
+    _make_record(db, p, pm_id, "task", "Como PM quiero metricas de velocidad del equipo",    "backlog", 10, e6.id, {"scrum_role": "story"}, 8)
+    _make_record(db, p, pm_id, "task", "Como dev quiero tracing OpenTelemetry",              "backlog", 20, e6.id, {"scrum_role": "story"}, 5)
+    _make_record(db, p, pm_id, "task", "Como QA quiero reportes de cobertura por sprint",    "backlog", 30, e6.id, {"scrum_role": "story"}, 5)
+
     print("    + registros scrum creados")
-
-
-def _find_record(db, project_id: str, title: str) -> ProjectRecord | None:
-    return db.query(ProjectRecord).filter(
-        ProjectRecord.project_id == project_id,
-        ProjectRecord.title == title,
-    ).first()
 
 
 def _make_blocker(

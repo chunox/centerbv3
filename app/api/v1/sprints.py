@@ -24,7 +24,7 @@ from app.services.access import require_capability, require_project_member
 from app.services.audit import write_audit
 from app.services.records.store import _load_query, _to_response
 from app.services.workflow.engine import apply_transition
-from app.services.workflow.side_effects import resolve_incomplete_sprint_stories
+from app.services.workflow.side_effects import resolve_incomplete_sprint_stories, restore_story_to_backlog
 
 router = APIRouter()
 
@@ -337,10 +337,7 @@ def assign_stories_to_sprint(
                 story.parent_id = body.sprint_id
                 story.status = "to_do"
         else:
-            # Restaurar parent original
-            original = (story.extra or {}).get("original_parent_id")
-            story.parent_id = original
-            story.status = "backlog"
+            restore_story_to_backlog(story)
 
     write_audit(
         db, project=project, actor_id=actor_id,

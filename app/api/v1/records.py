@@ -17,10 +17,13 @@ from app.services.capability_map import (
 )
 from app.schemas.blockers import BlockerResponse, CreateBlockerRequest, ResolveBlockerRequest
 from app.schemas.records import (
+    CascadePreviewResponse,
+    CascadeChildPreview,
     CreateRecordRequest,
     RecordListResponse,
     RecordResponse,
     ReorderRequest,
+    TransitionPreviewRequest,
     TransitionRequest,
     UpdateRecordRequest,
 )
@@ -33,6 +36,7 @@ from app.services.records.store import (
     update_record,
 )
 from app.services.workflow.engine import apply_transition
+from app.services.workflow.cascade import apply_cascade_transition, preview_cascade_transition
 from app.services.audit import write_audit
 
 router = APIRouter()
@@ -197,6 +201,64 @@ def delete_project_record(
     delete_record(db, str(project_id), str(record_id))
 
 
+@router.post(
+    "/{project_id}/records/{record_id}/transition/preview",
+    response_model=CascadePreviewResponse,
+)
+def preview_transition(
+    project_id: str,
+    record_id: str,
+    body: TransitionPreviewRequest,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(get_current_actor_id),
+):
+    project = get_project_or_404(db, project_id)
+    ctx = require_project_member(db, actor_id, project_id)
+    from app.services.records.store import _load_query
+    from app.services.workflow.engine import _resolve_entity_type
+    from app.domain.packs.definitions import TEMPLATE_TO_PACK
+
+    record_orm = (
+        _load_query(db, str(project_id))
+        .filter(ProjectRecord.id == str(record_id))
+        .first()
+    )
+    if not record_orm:
+        raise HTTPException(status_code=404, detail="Record no encontrado")
+    pack_key = TEMPLATE_TO_PACK.get(str(project.template_slug), str(project.pack_slug))
+    entity_type = _resolve_entity_type(record_orm, pack_key)
+    trans_cap = capability_for_transition(entity_type, body.action_id)
+    if trans_cap:
+        require_capability(ctx, trans_cap)
+
+    preview = preview_cascade_transition(db, project, record_orm, body.action_id)
+    return CascadePreviewResponse(
+        record_id=preview.record_id,
+        title=preview.title,
+        entity_type=preview.entity_type,
+        scrum_role=preview.scrum_role,
+        from_status=preview.from_status,
+        to_status=preview.to_status,
+        action_id=preview.action_id,
+        children=[
+            CascadeChildPreview(
+                id=c.id,
+                title=c.title,
+                entity_type=c.entity_type,
+                scrum_role=c.scrum_role,
+                from_status=c.from_status,
+                to_status=c.to_status,
+                action_id=c.action_id,
+                can_transition=c.can_transition,
+                is_blocked=c.is_blocked,
+                reason=c.reason,
+            )
+            for c in preview.children
+        ],
+        requires_confirmation=preview.requires_confirmation,
+    )
+
+
 @router.post("/{project_id}/records/{record_id}/transition", response_model=RecordResponse)
 def transition_record(
     project_id: str,
@@ -223,11 +285,23 @@ def transition_record(
     if trans_cap:
         require_capability(ctx, trans_cap)
     prev_status = record_orm.status
-    apply_transition(db, project, record_orm, body.action_id, actor_id, ctx)
+    if body.cascade == "all":
+        apply_cascade_transition(
+            db, project, record_orm, body.action_id, actor_id, ctx,
+            cascade="all",
+            skip_blocked=body.skip_blocked,
+        )
+    else:
+        apply_transition(db, project, record_orm, body.action_id, actor_id, ctx)
     write_audit(db, project=project, actor_id=actor_id,
                 entity_type=record_orm.record_type, entity_id=record_orm.id,
                 action="transitioned",
-                changes={"from": prev_status, "to": record_orm.status, "action": body.action_id})
+                changes={
+                    "from": prev_status,
+                    "to": record_orm.status,
+                    "action": body.action_id,
+                    "cascade": body.cascade,
+                })
     db.commit()
     db.refresh(record_orm)
     return _to_response(db, record_orm)

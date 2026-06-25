@@ -393,8 +393,8 @@ SCRUM_PACK = PackDef(
     capabilities_by_role={
         "pm": (
             "sprint.create", "sprint.transition.activar", "sprint.transition.cerrar", "sprint.transition.cancelar",
-            "record.epic.create", "record.epic.edit", "record.epic.transition.iniciar",
-            "record.epic.transition.completar", "record.epic.transition.cancelar",
+            "record.epic.create", "record.epic.edit", "record.epic.delete",
+            "record.epic.transition.iniciar", "record.epic.transition.completar", "record.epic.transition.cancelar",
             "record.story.create", "record.story.edit", "record.story.delete",
             "record.story.transition.comprometer", "record.story.transition.iniciar",
             "record.story.transition.revisar", "record.story.transition.completar",

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -91,6 +91,37 @@ class UpdateRecordRequest(BaseModel):
 
 class TransitionRequest(BaseModel):
     action_id: str
+    cascade: Literal["none", "all"] = "none"
+    skip_blocked: bool = False
+
+
+class TransitionPreviewRequest(BaseModel):
+    action_id: str
+
+
+class CascadeChildPreview(BaseModel):
+    id: str
+    title: str
+    entity_type: str
+    scrum_role: str
+    from_status: str
+    to_status: str
+    action_id: str | None = None
+    can_transition: bool
+    is_blocked: bool
+    reason: str | None = None
+
+
+class CascadePreviewResponse(BaseModel):
+    record_id: str
+    title: str
+    entity_type: str
+    scrum_role: str
+    from_status: str
+    to_status: str
+    action_id: str
+    children: list[CascadeChildPreview]
+    requires_confirmation: bool
 
 
 class ReorderRequest(BaseModel):

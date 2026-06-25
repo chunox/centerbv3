@@ -18,6 +18,7 @@ from app.models.entities import (
     User,
 )
 from app.services.blockers import has_active_blocker_on_chain, has_unsatisfied_dependencies
+from app.services.workflow.side_effects import restore_story_to_backlog
 from app.schemas.records import (
     AssigneeResponse,
     BlockerResponse,
@@ -267,6 +268,20 @@ def delete_record(db: Session, project_id: str, record_id: str) -> None:
     )
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record no encontrado")
+
+    if record.record_type == "sprint":
+        children = (
+            db.query(ProjectRecord)
+            .filter(
+                ProjectRecord.parent_id == record_id,
+                ProjectRecord.project_id == project_id,
+            )
+            .all()
+        )
+        for child in children:
+            if (child.extra or {}).get("scrum_role") == "story":
+                restore_story_to_backlog(child)
+
     db.delete(record)
     db.commit()
 

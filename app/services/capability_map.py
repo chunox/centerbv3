@@ -49,6 +49,8 @@ def capability_for_record_delete(record: Any) -> str | None:
     rt = record.record_type
     if role == "story":
         return "record.story.delete"
+    if role == "epic":
+        return "record.epic.delete"
     if rt in ("milestone", "feature"):
         return f"record.{rt}.delete"
     return None

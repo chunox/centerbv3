@@ -167,6 +167,34 @@ def test_assign_stories_happy_path(client: TestClient, db):
     assert story_after["extra"].get("original_parent_id") == epic["id"]
 
 
+def test_unassign_stories_clears_sprint_link(client: TestClient, db):
+    project, pm_headers, _ = _setup_with_dev(db)
+    epic, story = _create_epic_story(client, project, pm_headers)
+    sprint = client.post(
+        f"/api/v1/projects/{project.id}/sprints",
+        json={"title": "Sprint Unassign"},
+        headers=pm_headers,
+    ).json()
+    client.post(
+        f"/api/v1/projects/{project.id}/sprints/assign-stories",
+        json={"story_ids": [story["id"]], "sprint_id": sprint["id"]},
+        headers=pm_headers,
+    )
+    res = client.post(
+        f"/api/v1/projects/{project.id}/sprints/assign-stories",
+        json={"story_ids": [story["id"]], "sprint_id": None},
+        headers=pm_headers,
+    )
+    assert res.status_code == 204
+    story_after = client.get(
+        f"/api/v1/projects/{project.id}/records/{story['id']}",
+        headers=pm_headers,
+    ).json()
+    assert story_after["parent_id"] == epic["id"]
+    assert story_after["status"] == "backlog"
+    assert "original_parent_id" not in story_after["extra"]
+
+
 def test_dev_forbidden_assign_stories(client: TestClient, db):
     project, pm_headers, dev_headers = _setup_with_dev(db)
     _, story = _create_epic_story(client, project, pm_headers)
@@ -211,7 +239,8 @@ def test_close_sprint_moves_incomplete_stories_to_backlog(client: TestClient, db
         headers=pm_headers,
     ).json()
     assert story_after["parent_id"] == epic["id"]
-    assert story_after["status"] == "product_backlog"
+    assert story_after["status"] == "backlog"
+    assert "original_parent_id" not in story_after["extra"]
 
 
 def test_activate_closes_previous_sprint(client: TestClient, db):
@@ -249,4 +278,5 @@ def test_activate_closes_previous_sprint(client: TestClient, db):
         headers=pm_headers,
     ).json()
     assert story_after["parent_id"] == epic["id"]
-    assert story_after["status"] == "product_backlog"
+    assert story_after["status"] == "backlog"
+    assert "original_parent_id" not in story_after["extra"]
