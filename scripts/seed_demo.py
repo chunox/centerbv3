@@ -870,7 +870,7 @@ def seed_scrum_qa_hub(db, project: Project, author_id: str):
             "5. **devolver (G)** → Devolver historia con devs activos desde Sprint Planning.\n"
             "6. **reabrir y cancel** → Reabrir historia done; cancelar historia con hijos.\n"
             "7. **backlog bloqueado** → Historia blocked bajo épica sin sprint.\n"
-            "Ver SCRUM_KANBAN_MOVEMENTS.md y SCRUM_KANBAN_FRONTEND_PLAN.md."
+            "Ver SCRUM_KANBAN_MOVEMENTS.md y SCRUM_KANBAN_MANUAL_TESTS.md."
         ),
     ))
     db.flush()
